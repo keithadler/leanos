@@ -56,6 +56,24 @@ static void put_fixed1(struct line *l, u64 thousandths) {   /* 45123 -> "45.1" *
     put_dec(l, thousandths / 100 % 10);
 }
 
+/* The firmware's revision is the time it was built, in seconds since 1970: a date. (An
+   emulator may report a small number instead; that is shown as it is.) */
+static void put_firmware(struct line *l, u64 t) {
+    if (t < 1000000000) { put_dec(l, t); return; }
+    long z = (long)(t / 86400) + 719468;            /* days to a civil date (Hinnant) */
+    long era = z / 146097, doe = z - era * 146097;
+    long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;
+    long d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9, y = yoe + era * 400 + (m <= 2);
+    static const char *const month[12] = {"January", "February", "March", "April", "May", "June", "July",
+                                          "August", "September", "October", "November", "December"};
+    put_s(l, month[m - 1]);
+    put_s(l, " ");
+    put_dec(l, (u64)d);
+    put_s(l, ", ");
+    put_dec(l, (u64)y);
+}
+
 /* The model, from the revision code's new-style fields (type in bits 4-11). */
 static const char *model_of(u64 rev) {
     if (!(rev & (1u << 23))) return "an older Raspberry Pi";
@@ -146,8 +164,7 @@ static void draw(struct settings *st) {
         row(st, y, "Revision", l.b);
         y += ROW_H;
         l.n = 0;
-        put_dec(&l, st->firmware);
-        put_s(&l, " (build)");
+        put_firmware(&l, st->firmware);
         l.b[l.n] = 0;
         row(st, y, "Firmware", l.b);
     }
@@ -155,7 +172,7 @@ static void draw(struct settings *st) {
     if (st->have_sensors) {
         l.n = 0;
         put_fixed1(&l, st->millideg);
-        put_s(&l, " \xc2\xb0""C");
+        put_s(&l, " C");
         l.b[l.n] = 0;
         row(st, y, "Temperature", l.b);
         y += ROW_H;

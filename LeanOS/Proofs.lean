@@ -1392,19 +1392,32 @@ def App (A : Nat) : Prop :=
 /-- The apps that may use the file server: Notes (0), Terminal (5), Files (9) and Apps (16). -/
 def FsClient (A : Nat) : Prop := A = 0 ∨ A = 5 ∨ A = 9 ∨ A = 16
 
+/-- Who may receive on an endpoint at boot: the display server on endpoint 0, the file
+server on endpoint 1, nobody else. (One pass over the manifest, not one per sender.) -/
+theorem recv_owner {B e : Nat} {d : Cap} (hB : B < numTasks) (hd : d ∈ initCaps B)
+    (hdo : d.obj = .endpoint e) (hr : d.rights.r = true) : (e = 0 ∧ B = 1) ∨ (e = 1 ∧ B = 8) := by
+  rcases cases17 hB with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hd <;>
+    rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp at hdo hr <;> subst hdo <;> simp
+
+/-- Who may send and grant through an endpoint at boot: the apps through endpoint 0, the
+file server's clients through endpoint 1. -/
+theorem grant_sender {A e : Nat} {c : Cap} (hA : A < numTasks) (hc : c ∈ initCaps A)
+    (hco : c.obj = .endpoint e) (hw : c.rights.w = true) (hx : c.rights.x = true) :
+    (e = 0 ∧ App A) ∨ (e = 1 ∧ FsClient A) := by
+  rcases cases17 hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc <;>
+    rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp at hco hw hx <;> subst hco <;> simp [App, FsClient]
+
 /-- The only grant edges in the manifest: from each app to the display server (1), and
 from the file server's clients to the file server (8). -/
 theorem edge_iff {A B : Nat} : Edge A B ↔ (App A ∧ B = 1) ∨ (FsClient A ∧ B = 8) := by
   constructor
   · rintro ⟨hA, hB, e, ⟨c, hc, hco, hw, hx⟩, ⟨d, hd, hdo, hr⟩⟩
-    rcases cases17 hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-      simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc <;>
-      rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-      simp at hco hw hx <;> subst hco <;>
-      rcases cases17 hB with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-      simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hd <;>
-      rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-      simp at hdo hr <;> simp [App, FsClient]
+    rcases recv_owner hB hd hdo hr with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;>
+      rcases grant_sender hA hc hco hw hx with ⟨he, h⟩ | ⟨he, h⟩ <;> simp_all
   · have hd0 : epCap 0 true false false 0 ∈ initCaps 1 := by
       simp [initCaps, frameCaps, snoc, runCap, launchCap]
     have hd1 : epCap 1 true false false 0 ∈ initCaps 8 := by
