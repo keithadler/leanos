@@ -896,13 +896,15 @@ static void on_wait(struct state *st, struct res *r, int poll) {
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
         if (!w->used || w->badge != badge) continue;
-        if (w->closing) {
+        /* Events that came before the close button still go first: keys typed just
+           before a click on close are the program's to handle (Notes saves them). */
+        if (w->closing && !w->qlen) {
             sys(SYS_REPLY, slot - 1, EV_CLOSE, 0, 0, 0);
             w->used = 0;
             w->closing = 0;
             return;
         }
-        if (dirty) composite_window(st, k);
+        if (dirty && !w->closing) composite_window(st, k);
         if (w->qlen) {
             unsigned *e = w->queue[w->qhead];
             sys(SYS_REPLY, slot - 1, e[0], e[1], e[2], 0);

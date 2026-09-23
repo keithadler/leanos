@@ -12,6 +12,7 @@ import http.server
 import json
 import os
 import secrets
+import signal
 import socketserver
 import subprocess
 import threading
@@ -289,6 +290,12 @@ if __name__ == "__main__":
         import shutil
         shutil.copyfile(os.path.join(ROOT, "build", "sd-template.img"), SD_IMAGE)
     print(f"leanos in the browser on http://127.0.0.1:{PORT}", flush=True)
+    # Stopped with a signal (as the preview pane stops it), still take QEMU down with it:
+    # otherwise the emulator keeps running, and keeps the SD card image open.
+    def leave(*_):
+        raise SystemExit(0)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, leave)
     try:
         Server(("127.0.0.1", PORT), Handler).serve_forever()
     finally:

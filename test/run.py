@@ -174,11 +174,14 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                             with cond:
                                 cond.wait_for(lambda: sum(l.startswith(chunk[1]) for l in seen) >= chunk[2],
                                               timeout=max(0, deadline - time.monotonic()))
-                            time.sleep(0.2)
+                            time.sleep(0.05)
                             continue
                         proc.stdin.write(chunk)
                         proc.stdin.flush()
-                        time.sleep(0.15)
+                        # QEMU holds what the UART cannot take yet, so no key is lost: keys
+                        # go fast. Mouse reports keep a hand's pace, so a drag is drawn one
+                        # move at a time, as the drawing-speed check expects.
+                        time.sleep(0.1 if chunk.startswith(b"\x1bm") else 0.02)
                 threading.Thread(target=type_steps, daemon=True).start()
                 waiting_for = until or "\0"
                 continue
@@ -222,7 +225,7 @@ def click(x, y):
 
 
 APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
-             *click(*DOCK["Notes"]), wait_for("alice: opened"),
+             *click(*DOCK["Notes"]), wait_for("alice: opened", 2),
              *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
              *keys("caps\r"), wait_for("terminal: caps"), *keys("boot\r"), wait_for("terminal: boot"),
              *keys("write hello.txt Hello from Terminal\r"), wait_for("terminal: write"),
@@ -232,7 +235,7 @@ APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
              *click(563, 332), wait_for("settings: the firmware reports"),
              *click(527, 466), wait_for("settings: activity light"),
              *click(154, 127), wait_for("terminal: window closed"),
-             mouse("v", 300, 300), *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
+             mouse("v", 300, 300), *click(*DOCK["Terminal"]), wait_for("terminal: opened", 2),
              *keys("caps\r"), wait_for("terminal: caps"),
              b"write fast.txt 0123456789abcdefghijklmnopqrstuvwxyz\r", wait_for("terminal: write fast.txt"),
              b"cat fast.txt\r", wait_for("terminal: cat fast.txt"),

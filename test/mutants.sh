@@ -3,37 +3,12 @@
 # break. A mutant that still builds means a guarantee is weaker than it claims.
 set -u
 cd "$(dirname "$0")/.."
-backup=$(mktemp)
-cp LeanOS/Kernel.lean "$backup"
-trap 'cp "$backup" LeanOS/Kernel.lean; rm -f "$backup"' EXIT
+# The mutants: a name, text in LeanOS/Kernel.lean, and what it becomes. test/mutants.py
+# runs them, several at once (JOBS, default half the cores), each in its own copy of the
+# project, so the working tree is never touched.
+mutant() { printf '%s\0%s\0%s\0' "$1" "$2" "$3"; }
 
-survived=0
-mutant() {
-  local name=$1 from=$2 to=$3
-  cp "$backup" LeanOS/Kernel.lean
-  if ! python3 - "$from" "$to" <<'PY'
-import sys
-p = 'LeanOS/Kernel.lean'
-s = open(p).read()
-if sys.argv[1] not in s:
-    sys.exit(1)
-open(p, 'w').write(s.replace(sys.argv[1], sys.argv[2], 1))
-PY
-  then
-    echo "BROKEN: $name (its target is no longer in Kernel.lean)"; survived=1; return
-  fi
-  # A mutant must be a working kernel: if it does not even compile, a failing build
-  # says nothing about the proofs.
-  if ! lake build LeanOS.Kernel >/dev/null 2>&1; then
-    echo "BROKEN: $name (the mutated kernel does not compile)"; survived=1; return
-  fi
-  if lake build >/dev/null 2>&1; then
-    echo "SURVIVED: $name"; survived=1
-  else
-    echo "caught: $name"
-  fi
-}
-
+{
 mutant "derive grants whatever is asked" \
   "⟨o, c.rights.meet (Rights.ofBits bits), c.badge⟩" "⟨o, Rights.ofBits bits, c.badge⟩"
 mutant "derive lets a task pick its badge" \
@@ -98,7 +73,7 @@ mutant "tasks start ready, unchecked" \
   "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .unverified, .nil, .nil, .nil⟩" "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil, .nil, .nil⟩"
 mutant "a stopped task may make system calls" \
   "    | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
+    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
 mutant "user pages always executable" \
   "privNoExec + (if m.rights.x then 0 else userNoExec)" "privNoExec + 0"
 mutant "read-only pages writable" \
@@ -134,7 +109,7 @@ mutant "manifest lets mallory grant to the file server" \
 mutant "manifest lets the file server grant to the display" \
   "| 8 => snoc (snoc (frameCaps 8) (epCap 1 true false false 0)) (blocksCap 0 diskBlocks)" "| 8 => snoc (snoc (snoc (frameCaps 8) (epCap 1 true false false 0)) (blocksCap 0 diskBlocks)) (epCap 0 false true true 8)"
 mutant "manifest lets Settings receive the file server's mail" \
-  "| 6 => snoc (frameCaps 6) (epCap 0 false true true 6)" "| 6 => snoc (snoc (frameCaps 6) (epCap 0 false true true 6)) (epCap 1 true false false 6)"
+  "| 6 => snoc (snoc (frameCaps 6) (epCap 0 false true true 6)) boardCap" "| 6 => snoc (snoc (snoc (frameCaps 6) (epCap 0 false true true 6)) boardCap) (epCap 1 true false false 6)"
 mutant "block I/O skips the memory check" \
   "if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then" "if Nat.ble (idx + 1) n && capRightFor write c.rights then"
 mutant "block I/O without the capability's right" \
@@ -185,12 +160,10 @@ mutant "Security also holds the board" \
 mutant "a tick moves the clock by two" \
   "schedule { s with now := s.now + 1," "schedule { s with now := s.now + 2,"
 mutant "time reports a tick ahead" \
-  "ret s t (0 :: s.now :: ms ::" "ret s t (0 :: s.now + 1 :: ms ::"
+  "ret s t (0 :: s.now :: ms ::" "ret s t (0 :: (s.now + 1) :: ms ::"
 mutant "the clock's minutes run past 59" \
   "(secs / 3600, secs / 60 % 60, secs % 60)" "(secs / 3600, secs / 60, secs % 60)"
 mutant "sleep rounds down" \
   "let ticks := (ms + tickMs - 1) / tickMs" "let ticks := ms / tickMs"
 
-cp "$backup" LeanOS/Kernel.lean
-lake build >/dev/null 2>&1 || { echo "FAIL: the unmutated kernel no longer builds"; exit 1; }
-[ $survived -eq 0 ] && echo "ok: every mutant was caught by the proofs" || exit 1
+} | python3 test/mutants.py ${JOBS:-}

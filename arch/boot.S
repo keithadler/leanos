@@ -11,6 +11,18 @@ _start:
     and     x0, x0, #0xff
     cbnz    x0, park
 
+    // Cores 1-3 wait in the boot stub's spin table (the firmware's armstub on a Pi 4,
+    // QEMU's own in emulation), each polling its slot at 0xe0, 0xe8, 0xf0 with wfe, which an
+    // emulator runs flat out: three host cores busy while leanos sits idle. Hand them
+    // `park`, where wfi sleeps for good (nothing routes an interrupt to them).
+    adr     x1, park
+    mov     x2, #0xe0
+    str     x1, [x2]
+    str     x1, [x2, #8]
+    str     x1, [x2, #16]
+    dsb     sy
+    sev
+
     // If started at EL2, drop to EL1.
     mrs     x0, CurrentEL
     lsr     x0, x0, #2
@@ -50,7 +62,7 @@ _start:
     isb
     bl      kmain
 park:
-    wfe
+    wfi
     b       park
 
 // ---- exception vectors ----
