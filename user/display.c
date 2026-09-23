@@ -8,27 +8,45 @@
 
    The input driver sends it keys and mouse reports (badge 3). Keys go to the focused window;
    a click focuses and raises a window, and dragging its title bar moves it. The sender's
-   badge, which the kernel sets, names every window, so no client can pass for another. */
+   badge, which the kernel sets, names every window, so no client can pass for another.
+
+   Its fonts, icons and wallpaper were loaded at boot into the start of its spare run
+   (capability 3), which it maps read-only. */
 #include "lib.h"
 #include "gfx.h"
+#include "assets.h"
 
 #define FRAMEBUFFER 5
 #define FB_PAGE 1024
 #define WIN_PAGE 2048   /* window k's pixels are mapped at WIN_PAGE + 64 k */
+#define ASSET_PAGE 4096
 #define MAX_WIN 4
-#define TITLE_H 26
-#define BAR_H 28
+#define TITLE_H 30
+#define BAR_H 30
 #define W 1024
 #define H 600
+#define RADIUS 12
 
 enum { OP_OPEN = 1, OP_WAIT = 2 };
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4 };
 enum { BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3 };
+enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
+
+/* The dock. */
+#define DOCK_N 5
+#define ICON 52
+#define ICON_GAP 16
+#define DOCK_PAD 14
+#define DOCK_W (DOCK_N * ICON + (DOCK_N - 1) * ICON_GAP + 2 * DOCK_PAD)
+#define DOCK_H (ICON + 2 * DOCK_PAD - 4)
+#define DOCK_X ((W - DOCK_W) / 2)
+#define DOCK_Y (H - DOCK_H - 10)
+static const char *const dock_names[DOCK_N] = {"Notes", "Files", "Terminal", "Settings", "Security"};
 
 struct win {
     int used;
     u64 badge;
-    int x, y, w, h;             /* outer frame */
+    int x, y;                   /* outer frame */
     struct surface content;
     char title[9];
     u64 slot;                   /* reply slot + 1 while the client waits, else 0 */
@@ -40,12 +58,14 @@ struct win {
    globals. */
 struct state {
     struct surface screen;
-    unsigned bg[H];
+    struct font ui, ui_bold, small, huge, medium;
+    struct picture wallpaper, icons[DOCK_N];
     struct win win[MAX_WIN];
     int z[MAX_WIN];             /* window indices, bottom to top */
     int nz;
     int px, py;                 /* pointer */
     int drag, grab_x, grab_y, drag_x0, drag_y0;
+    int hover;                  /* dock icon under the pointer + 1, or 0 */
 };
 
 static void say(struct line *l) { put_s(l, "\n"); flush(l); }
@@ -63,10 +83,12 @@ static void logo(struct surface *s, int x, int y, int size) {
     thick_line(s, x * 16 + 51 * u, y * 16 + 49 * u, x * 16 + 29 * u, y * 16 + 80 * u, stroke, rgb(255, 255, 255));
 }
 
+/* ---- the boot screen ---- */
+
 #define SPLASH_MS 1600
 #define PBAR_W 320
 #define PBAR_H 6
-#define PBAR_Y 420
+#define PBAR_Y 432
 
 /* Ease in and out: 0..1000 to 0..1000, slow at both ends. */
 static int ease(int t) {
@@ -75,25 +97,24 @@ static int ease(int t) {
     return t * t / 1000 * (3000 - 2 * t) / 1000;
 }
 
+static unsigned splash_bg(int y) { return mix(rgb(12, 16, 30), rgb(22, 34, 60), (unsigned)(y * 255 / (H - 1))); }
+
 static void splash_bar(struct state *st, int done /* 0..1000 */) {
     struct surface *s = &st->screen;
     int x = W / 2 - PBAR_W / 2;
     clip_to(s, x - 12, PBAR_Y - 12, PBAR_W + 24, PBAR_H + 24);
-    for (int j = s->cy0; j < s->cy1; j++)
-        fill(s, s->cx0, j, s->cx1 - s->cx0, 1, mix(rgb(14, 18, 34), rgb(24, 38, 64), (unsigned)(j * 255 / (H - 1))));
-    round_rect(s, x, PBAR_Y, PBAR_W, PBAR_H, PBAR_H / 2, rgb(44, 54, 84), 255);
+    for (int j = s->cy0; j < s->cy1; j++) fill(s, s->cx0, j, s->cx1 - s->cx0, 1, splash_bg(j));
+    round_rect(s, x, PBAR_Y, PBAR_W, PBAR_H, PBAR_H / 2, rgb(42, 52, 82), 255);
     int filled = PBAR_W * done / 1000;
     if (filled >= PBAR_H) {
         for (int i = 0; i < filled; i++) {
-            unsigned c = mix(rgb(70, 110, 230), rgb(80, 220, 200), (unsigned)(i * 255 / PBAR_W));
-            int cover = i < PBAR_H / 2 || i >= filled - PBAR_H / 2 ? 1 : 0;
-            if (cover) round_rect(s, x + i, PBAR_Y, 1, PBAR_H, 0, c, 200);
+            unsigned c = mix(rgb(88, 110, 240), rgb(80, 224, 204), (unsigned)(i * 255 / PBAR_W));
+            if (i < PBAR_H / 2 || i >= filled - PBAR_H / 2) round_rect(s, x + i, PBAR_Y, 1, PBAR_H, 0, c, 210);
             else fill(s, x + i, PBAR_Y, 1, PBAR_H, c);
         }
-        round_rect(s, x, PBAR_Y, filled, PBAR_H, PBAR_H / 2, rgb(80, 220, 200), 60);
         /* a soft glint riding the leading edge */
         for (int k = 5; k >= 1; k--)
-            round_rect(s, x + filled - 3 - k, PBAR_Y - k + 3, 2 * k + 3, 2 * k, k, rgb(200, 255, 245), 22);
+            round_rect(s, x + filled - 3 - k, PBAR_Y - k + 3, 2 * k + 3, 2 * k, k, rgb(200, 255, 245), 24);
     }
     clip_all(s);
 }
@@ -101,17 +122,14 @@ static void splash_bar(struct state *st, int done /* 0..1000 */) {
 static void splash(struct state *st) {
     struct surface *s = &st->screen;
     clip_all(s);
-    gradient(s, 0, 0, W, H, rgb(14, 18, 34), rgb(24, 38, 64));
-    logo(s, W / 2 - 70, 150, 140);
+    for (int y = 0; y < H; y++) fill(s, 0, y, W, 1, splash_bg(y));
+    logo(s, W / 2 - 66, 150, 132);
     const char *name = "leanos";
-    text(s, W / 2 - text_width(name, 6) / 2, 318, name, rgb(240, 242, 248), 6);
+    font_text(s, &st->huge, W / 2 - font_width(&st->huge, name) / 2, 356, name, rgb(244, 246, 252));
     const char *tag = "access control proved in Lean";
-    text(s, W / 2 - text_width(tag, 2) / 2, 376, tag, rgb(140, 150, 175), 2);
-    /* the copyright line at the foot of the screen */
-    const char *who = " 2026 Keith Adler";
-    int wide = 7 * 2 + 4 + text_width(who, 2);
-    int cx = copyright_sign(s, W / 2 - wide / 2, H - 40, rgb(110, 120, 150), 2);
-    text(s, cx, H - 40, who, rgb(110, 120, 150), 2);
+    font_text(s, &st->ui, W / 2 - font_width(&st->ui, tag) / 2, 396, tag, rgb(140, 152, 182));
+    const char *who = "\xc2\xa9 2026 Keith Adler";
+    font_text(s, &st->small, W / 2 - font_width(&st->small, who) / 2, H - 28, who, rgb(104, 114, 142));
     /* The bar fills over SPLASH_MS, eased, drawn as often as the time allows. Later it will
        follow real work: checking each program against the signed boot image. */
     u64 start = millis();
@@ -122,57 +140,92 @@ static void splash(struct state *st) {
     }
 }
 
+/* ---- the desktop ---- */
 
-
-static int outer_w(const struct win *w) { return w->content.w + 8; }
-static int outer_h(const struct win *w) { return w->content.h + TITLE_H + 4; }
-
+static int outer_w(const struct win *w) { return w->content.w; }
+static int outer_h(const struct win *w) { return w->content.h + TITLE_H; }
 static int focused(struct state *st) { return st->nz ? st->z[st->nz - 1] : -1; }
+
+static void traffic_lights(struct surface *s, int x, int y, int focus) {
+    unsigned c[3] = {rgb(255, 95, 87), rgb(254, 188, 46), rgb(40, 200, 64)};
+    for (int i = 0; i < 3; i++) {
+        unsigned col = focus ? c[i] : rgb(206, 206, 210);
+        round_rect(s, x + i * 20, y, 12, 12, 6, col, 255);
+    }
+}
 
 static void draw_window(struct state *st, int k) {
     struct surface *s = &st->screen;
     struct win *w = &st->win[k];
     int ow = outer_w(w), oh = outer_h(w), x = w->x, y = w->y;
     int focus = focused(st) == k;
-    shadow(s, x, y, ow, oh, 10);
-    round_rect(s, x, y, ow, oh, 10, rgb(246, 244, 238), 255);
-    if (focus) round_gradient(s, x, y, ow, TITLE_H + 10, 10, rgb(78, 120, 196), rgb(52, 88, 158));
-    else round_gradient(s, x, y, ow, TITLE_H + 10, 10, rgb(206, 206, 212), rgb(184, 184, 192));
-    fill(s, x, y + TITLE_H, ow, 10, rgb(246, 244, 238));
-    round_rect(s, x + ow - 22, y + 8, 11, 11, 5, focus ? rgb(238, 96, 88) : rgb(160, 160, 168), 255);
-    text(s, x + 12, y + 6, w->title, focus ? rgb(255, 255, 255) : rgb(80, 80, 88), 2);
-    blit(s, x + 4, y + TITLE_H, &w->content);
+    shadow(s, x, y, ow, oh, RADIUS);
+    if (focus) shadow(s, x, y + 2, ow, oh, RADIUS);
+    round_gradient(s, x, y, ow, TITLE_H + RADIUS, RADIUS, rgb(248, 248, 250), rgb(234, 234, 238));
+    fill(s, x, y + TITLE_H - 1, ow, 1, rgb(214, 214, 220));
+    traffic_lights(s, x + 12, y + 9, focus);
+    int tw = font_width(&st->ui_bold, w->title);
+    font_text(s, &st->ui_bold, x + ow / 2 - tw / 2, y + 20, w->title, focus ? rgb(40, 40, 46) : rgb(150, 150, 158));
+    blit_rounded(s, x, y + TITLE_H, &w->content, x, y, ow, oh, RADIUS);
 }
 
 static void top_bar(struct state *st) {
     struct surface *s = &st->screen;
-    fill_alpha(s, 0, 0, W, BAR_H, rgb(250, 250, 252), 215);
-    fill_alpha(s, 0, BAR_H, W, 1, rgb(0, 0, 0), 60);
-    logo(s, 8, 4, 20);
-    text(s, 36, 7, "leanos", rgb(30, 30, 36), 2);
+    fill_alpha(s, 0, 0, W, BAR_H, rgb(10, 12, 20), 120);
+    fill_alpha(s, 0, BAR_H, W, 1, rgb(255, 255, 255), 28);
+    logo(s, 10, 6, 18);
+    font_text(s, &st->ui_bold, 36, 20, "leanos", rgb(245, 246, 250));
+    int k = focused(st);
+    if (k >= 0) font_text(s, &st->ui, 104, 20, st->win[k].title, rgb(200, 204, 214));
     const char *right = "access control proved in Lean";
-    text(s, W - 10 - text_width(right, 2), 7, right, rgb(96, 96, 104), 2);
+    font_text(s, &st->small, W - 12 - font_width(&st->small, right), 19, right, rgb(190, 196, 210));
 }
 
-/* Redraw one rectangle of the screen: desktop, bar, windows bottom to top, pointer. */
+static int dock_icon_x(int i) { return DOCK_X + DOCK_PAD + i * (ICON + ICON_GAP); }
+
+static int running(struct state *st, int i) {
+    if (i != 0) return 0;
+    for (int k = 0; k < MAX_WIN; k++) if (st->win[k].used && st->win[k].badge == BADGE_ALICE) return 1;
+    return 0;
+}
+
+static void dock(struct state *st) {
+    struct surface *s = &st->screen;
+    round_rect(s, DOCK_X, DOCK_Y, DOCK_W, DOCK_H, 18, rgb(20, 22, 32), 110);
+    for (int i = 0; i < DOCK_N; i++) {
+        int lift = st->hover == i + 1 ? 4 : 0;
+        icon(s, dock_icon_x(i), DOCK_Y + (DOCK_H - ICON) / 2 - 4 - lift, &st->icons[i]);
+        if (running(st, i)) round_rect(s, dock_icon_x(i) + ICON / 2 - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, rgb(230, 232, 240), 255);
+    }
+    if (st->hover) {
+        const char *label = dock_names[st->hover - 1];
+        int lw = font_width(&st->ui, label) + 20;
+        int lx = dock_icon_x(st->hover - 1) + ICON / 2 - lw / 2, ly = DOCK_Y - 34;
+        round_rect(s, lx, ly, lw, 24, 8, rgb(24, 26, 36), 220);
+        font_text(s, &st->ui, lx + 10, ly + 17, label, rgb(240, 242, 248));
+    }
+}
+
+/* Redraw one rectangle of the screen: wallpaper, bar, windows bottom to top, dock, pointer. */
 static void composite(struct state *st, int x, int y, int w, int h) {
     struct surface *s = &st->screen;
     clip_to(s, x, y, w, h);
-    for (int j = s->cy0; j < s->cy1; j++) fill(s, s->cx0, j, s->cx1 - s->cx0, 1, st->bg[j]);
+    stretch(s, &st->wallpaper);
     if (s->cy0 < BAR_H + 1) top_bar(st);
     for (int i = 0; i < st->nz; i++) {
         struct win *wn = &st->win[st->z[i]];
-        if (wn->x - 8 < s->cx1 && wn->x + outer_w(wn) + 8 > s->cx0 &&
-            wn->y - 8 < s->cy1 && wn->y + outer_h(wn) + 12 > s->cy0)
+        if (wn->x - 10 < s->cx1 && wn->x + outer_w(wn) + 10 > s->cx0 &&
+            wn->y - 10 < s->cy1 && wn->y + outer_h(wn) + 14 > s->cy0)
             draw_window(st, st->z[i]);
     }
+    if (s->cy1 > DOCK_Y - 40) dock(st);
     pointer(s, st->px, st->py);
     clip_all(s);
 }
 
 static void composite_window(struct state *st, int k) {
     struct win *w = &st->win[k];
-    composite(st, w->x - 8, w->y - 8, outer_w(w) + 16, outer_h(w) + 20);
+    composite(st, w->x - 10, w->y - 10, outer_w(w) + 20, outer_h(w) + 24);
 }
 
 static void raise(struct state *st, int k) {
@@ -191,6 +244,13 @@ static int window_at(struct state *st, int x, int y) {
     return -1;
 }
 
+static int dock_at(int x, int y) {
+    if (y < DOCK_Y || y >= DOCK_Y + DOCK_H) return 0;
+    for (int i = 0; i < DOCK_N; i++)
+        if (x >= dock_icon_x(i) && x < dock_icon_x(i) + ICON) return i + 1;
+    return 0;
+}
+
 /* Give window k's client an event: now, if it is waiting, or when it next asks. */
 static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
     if (w->slot) {
@@ -203,6 +263,8 @@ static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
         w->queue[at][2] = b;
     }
 }
+
+static void redraw_all(struct state *st) { composite(st, 0, 0, W, H); }
 
 static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     if (kind == EV_KEY) {
@@ -221,7 +283,17 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     st->px = a < W ? (int)a : W - 1;
     st->py = b < H ? (int)b : H - 1;
     if (kind == EV_DOWN) {
-        int k = window_at(st, st->px, st->py);
+        int d = dock_at(st->px, st->py);
+        if (d == 1) {
+            for (int k = 0; k < MAX_WIN; k++)
+                if (st->win[k].used && st->win[k].badge == BADGE_ALICE) { raise(st, k); redraw_all(st); }
+        } else if (d) {
+            put_s(l, "display: ");
+            put_s(l, dock_names[d - 1]);
+            put_s(l, " is not installed yet");
+            say(l);
+        }
+        int k = d ? -1 : window_at(st, st->px, st->py);
         if (k >= 0) {
             raise(st, k);
             struct win *w = &st->win[k];
@@ -232,7 +304,7 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
                 st->drag_x0 = w->x;
                 st->drag_y0 = w->y;
             }
-            for (int i = 0; i < st->nz; i++) composite_window(st, st->z[i]);
+            redraw_all(st);
         }
     } else if (kind == EV_MOVE && st->drag) {
         struct win *w = &st->win[st->drag - 1];
@@ -241,9 +313,15 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
         int oxw = w->x, oyw = w->y;
         w->x = nx;
         w->y = ny;
-        int x0 = (oxw < nx ? oxw : nx) - 8, y0 = (oyw < ny ? oyw : ny) - 8;
-        int x1 = (oxw > nx ? oxw : nx) + outer_w(w) + 8, y1 = (oyw > ny ? oyw : ny) + outer_h(w) + 12;
+        int x0 = (oxw < nx ? oxw : nx) - 10, y0 = (oyw < ny ? oyw : ny) - 10;
+        int x1 = (oxw > nx ? oxw : nx) + outer_w(w) + 10, y1 = (oyw > ny ? oyw : ny) + outer_h(w) + 14;
         composite(st, x0, y0, x1 - x0, y1 - y0);
+    } else if (kind == EV_MOVE) {
+        int hv = dock_at(st->px, st->py);
+        if (hv != st->hover) {
+            st->hover = hv;
+            composite(st, DOCK_X - 60, DOCK_Y - 44, DOCK_W + 120, DOCK_H + 44);
+        }
     } else if (kind == EV_UP && st->drag) {
         struct win *w = &st->win[st->drag - 1];
         if (w->x != st->drag_x0 || w->y != st->drag_y0) {
@@ -269,7 +347,7 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     for (int i = 0; i < MAX_WIN; i++) if (!st->win[i].used) { k = i; break; }
     struct res info = sys1(SYS_CAPINFO, cap - 1);
     u64 need = (w * h * 4 + 4095) / 4096;
-    if (k < 0 || w == 0 || h == 0 || w > 560 || h > 380 || info.x[2] != 0 || info.x[3] < need ||
+    if (k < 0 || w == 0 || h == 0 || w > 900 || h > 480 || info.x[2] != 0 || info.x[3] < need ||
         need > 64 || sys2(SYS_MAP, cap - 1, WIN_PAGE + 64 * k).status != OK) {
         put_s(l, "display: ");
         put_s(l, name_of(badge));
@@ -284,12 +362,12 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     wn->content = surface_of((unsigned *)PAGE(WIN_PAGE + 64 * k), (int)w, (int)h);
     for (int i = 0; i < 8; i++) wn->title[i] = (char)(title >> (8 * i));
     wn->title[8] = 0;
-    wn->x = 70 + 40 * k;
+    wn->x = 96 + 40 * k;
     wn->y = 76 + 36 * k;
     wn->slot = 0;
     wn->qhead = wn->qlen = 0;
     st->z[st->nz++] = k;
-    composite(st, 0, 0, W, H);
+    redraw_all(st);
     put_s(l, "display: ");
     put_s(l, name_of(badge));
     put_s(l, " opened a ");
@@ -330,6 +408,18 @@ __attribute__((section(".text.start"))) void _start(void) {
         say(&l);
         exit_task();
     }
+    /* The assets: a read-only view of the start of the spare run. */
+    struct res ro = sys(SYS_DERIVE, 3, R, 0, 200, 0);
+    sys2(SYS_MAP, ro.x[1], ASSET_PAGE);
+    const unsigned char *assets = (const unsigned char *)PAGE(ASSET_PAGE);
+    st->ui = font_of(assets, F_UI);
+    st->ui_bold = font_of(assets, F_UI_BOLD);
+    st->small = font_of(assets, F_SMALL);
+    st->huge = font_of(assets, F_HUGE);
+    st->medium = font_of(assets, F_MEDIUM);
+    st->wallpaper = picture_of(assets, ASSET_IMAGE, 30);
+    for (int i = 0; i < DOCK_N; i++) st->icons[i] = picture_of(assets, ASSET_ICON, 10 + i);
+
     st->screen = surface_of((unsigned *)PAGE(FB_PAGE), W, H);
     st->px = W / 2;
     st->py = H / 2;
@@ -338,8 +428,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     say(&l);
     for (u64 t = millis(); millis() - t < 400;) {} /* hold the full bar a moment */
 
-    for (int j = 0; j < H; j++) st->bg[j] = mix(rgb(24, 42, 78), rgb(36, 118, 126), (unsigned)(j * 255 / (H - 1)));
-    composite(st, 0, 0, W, H);
+    redraw_all(st);
     put_s(&l, "display: desktop drawn on the 1024x600 framebuffer");
     say(&l);
 

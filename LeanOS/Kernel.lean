@@ -172,8 +172,8 @@ def maxCaps : Nat := 64
 def numTasks : Nat := 5
 def maxTasks : Nat := 8
 
-/-- Each task owns 64 frames (256 KiB) of the pool: task `i` owns frames `64i` to `64i+63`. -/
-def framesPerTask : Nat := 64
+/-- Each task owns 256 frames (1 MiB) of the pool: task `i` owns frames `256i` to `256i+255`. -/
+def framesPerTask : Nat := 256
 def poolFrames : Nat := framesPerTask * maxTasks
 
 def runCap (base count : Nat) (r : Rights) : Cap := ⟨.frames base count, r, 0⟩
@@ -207,10 +207,12 @@ def epCap (e : Nat) (recv send grant : Bool) (badge : Nat) : Cap := ⟨.endpoint
 def irqCap (n : Nat) : Cap := ⟨.irq n, ⟨true, true, false⟩, 0⟩
 
 /-- Task `i`'s frames, as four runs: 16 pages of code (read/execute), 8 of data, 4 of
-stack, and 36 spare pages it holds a capability to but has not mapped. -/
+stack, and 228 spare pages it holds a capability to but has not mapped. The machine layer
+loads the task's assets (fonts, icons, pictures), if it has any, at the start of the spare
+run. -/
 def frameCaps (i : Nat) : List Cap :=
-  runCap (64 * i) 16 Rights.rx :: runCap (64 * i + 16) 8 Rights.rw ::
-    runCap (64 * i + 24) 4 Rights.rw :: runCap (64 * i + 28) 36 Rights.rw :: .nil
+  runCap (256 * i) 16 Rights.rx :: runCap (256 * i + 16) 8 Rights.rw ::
+    runCap (256 * i + 24) 4 Rights.rw :: runCap (256 * i + 28) 228 Rights.rw :: .nil
 
 /-- Endpoint 0 is the display server's inbox. Task 0 (alice) may send to it and grant
 frames, with badge 1. Task 1 (the display server) receives from it, and holds the
@@ -228,8 +230,8 @@ def initCaps : Nat → List Cap
 
 /-- Code at pages 0–15, data at 16–23, the stack in the last four pages of the window. -/
 def initMaps (i : Nat) : List Mapping :=
-  app (runMaps 0 (64 * i) Rights.rx 16)
-    (app (runMaps 16 (64 * i + 16) Rights.rw 8) (runMaps (userPages - 4) (64 * i + 24) Rights.rw 4))
+  app (runMaps 0 (256 * i) Rights.rx 16)
+    (app (runMaps 16 (256 * i + 16) Rights.rw 8) (runMaps (userPages - 4) (256 * i + 24) Rights.rw 4))
 
 def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil, .nil⟩
 

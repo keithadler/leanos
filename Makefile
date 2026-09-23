@@ -63,7 +63,25 @@ build/%.o: rt/%.c arch/arch.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -Wall -Wno-unused-parameter -c $< -o $@
 
-build/boot.o: arch/boot.S $(USER_BINS)
+# Fonts, icons and the wallpaper, rasterized and scaled for each task that uses them.
+FONTS := assets/fonts
+DISPLAY_ASSETS := font:1:$(FONTS)/Inter-Regular.ttf:15 font:2:$(FONTS)/Inter-SemiBold.ttf:15 \
+  font:3:$(FONTS)/Inter-Regular.ttf:12 font:4:$(FONTS)/Inter-Bold.ttf:48 font:5:$(FONTS)/Inter-Medium.ttf:17 \
+  icon:10:assets/icons/memo_3d.png:52 icon:11:assets/icons/file_folder_3d.png:52 \
+  icon:12:assets/icons/laptop_3d.png:52 icon:13:assets/icons/gear_3d.png:52 \
+  icon:14:assets/icons/locked_3d.png:52 image:30:assets/wallpapers/earthrise-512x300.png
+ALICE_ASSETS := font:5:$(FONTS)/Inter-SemiBold.ttf:20 font:6:$(FONTS)/Inter-Regular.ttf:17 \
+  font:3:$(FONTS)/Inter-Regular.ttf:12
+
+build/assets/display.bin: tools/mkassets.py $(wildcard assets/*/*)
+	@mkdir -p build/assets
+	python3 tools/mkassets.py $@ $(DISPLAY_ASSETS)
+
+build/assets/alice.bin: tools/mkassets.py $(wildcard assets/fonts/*)
+	@mkdir -p build/assets
+	python3 tools/mkassets.py $@ $(ALICE_ASSETS)
+
+build/boot.o: arch/boot.S $(USER_BINS) build/assets/display.bin build/assets/alice.bin
 	@mkdir -p build
 	$(CC) $(TARGET) -c $< -o $@
 
@@ -71,7 +89,7 @@ build/user/font.h: user/font5x7.txt tools/mkfont.py
 	@mkdir -p build/user
 	python3 tools/mkfont.py $< $@
 
-build/user/%.elf: user/%.c user/lib.h user/gfx.h user/user.ld build/user/font.h
+build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/user.ld build/user/font.h
 	@mkdir -p build/user
 	$(CC) $(UCFLAGS) -Ibuild/user -c $< -o build/user/$*.o
 	$(LD) -T user/user.ld --gc-sections build/user/$*.o -o $@

@@ -108,6 +108,9 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   fires, `handle_irq` masks it before telling Lean, and unmasks it only when a Reply says
   so (an acknowledge from the capability's holder).
 - The idle loop waits for interrupts with WFI when no task is ready.
+- Assets: `load_programs` copies each task's asset blob (fonts, icons, pictures, built by
+  `tools/mkassets.py`) into the start of that task's own spare run, next to its code. The
+  blob is data the task reads; it grants nothing.
 - User mode may read the processor's virtual counter (CNTKCTL_EL1.EL0VCTEN), for
   animations and timeouts. This gives no new power: a task could already time itself by
   counting loops. Timing side channels remain out of scope.

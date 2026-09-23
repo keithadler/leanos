@@ -729,7 +729,7 @@ theorem initCaps_frame {j f : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ ini
   rcases cases4 hj with rfl | rfl | rfl | rfl | rfl <;>
     simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap] at hc <;>
     rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> obtain ⟨rfl, rfl⟩ := ho <;>
-    by_cases hfp : f < 512 <;> by_cases hfd : f < 1112 <;>
+    by_cases hfp : f < 2048 <;> by_cases hfd : f < 2648 <;>
     simp [WX, Rights.rx, Rights.rw, owner, poolFrames, framesPerTask, maxTasks, fbPages,
       displayTask, inputTask, devBase, devPages, hfp, hfd] at h1 h2 ⊢ <;> omega
 
@@ -748,11 +748,11 @@ theorem mkTask_ok {fb : Bool} {j : Nat} (hj : j < numTasks) : TaskOK fb j (mkTas
   refine ⟨?_, ?_, fun c hc => initCap_ok hj hc, trivial, ?_⟩
   · intro m hm
     simp only [mkTask, initMaps] at hm
-    have hcode : runCap (64 * j) 16 Rights.rx ∈ initCaps j := by
+    have hcode : runCap (256 * j) 16 Rights.rx ∈ initCaps j := by
       rcases cases4 hj with rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
-    have hdata : runCap (64 * j + 16) 8 Rights.rw ∈ initCaps j := by
+    have hdata : runCap (256 * j + 16) 8 Rights.rw ∈ initCaps j := by
       rcases cases4 hj with rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
-    have hstack : runCap (64 * j + 24) 4 Rights.rw ∈ initCaps j := by
+    have hstack : runCap (256 * j + 24) 4 Rights.rw ∈ initCaps j := by
       rcases cases4 hj with rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
     rcases mem_app.1 hm with hm | hm
     · obtain ⟨k, hk, -, hf, hr⟩ := mem_runMaps hm
@@ -1000,14 +1000,14 @@ theorem reach_iff {A B : Nat} (h : Reach A B) : A = B ∨ (A = 0 ∧ B = 1) := b
     · cases h
 
 /-- **mallory is confined.** Whatever happens, task 2 holds capabilities only to its own
-frames (128 to 191), so it can never map, read or write anyone else's memory. -/
+frames (512 to 767), so it can never map, read or write anyone else's memory. -/
 theorem mallory_confined {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 2 = some t)
     {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : owner f = 2 := by
   rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩
   · exact h
   · cases h
 
-/-- carol (task 3) holds capabilities only to her own frames (192 to 255). -/
+/-- carol (task 3) holds capabilities only to her own frames (768 to 1023). -/
 theorem carol_confined {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 3 = some t)
     {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : owner f = 3 := by
   rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩

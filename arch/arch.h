@@ -9,7 +9,9 @@
 #define FRAME_BASE 0x04000000UL
 #define PAGE_SIZE 4096UL
 #define MAX_TASKS 8
-#define FRAMES_PER_TASK 64
+#define FRAMES_PER_TASK 256
+#define SPARE_FIRST 28     /* the spare run starts 28 frames into a task's frames */
+#define SPARE_PAGES 228
 #define NFRAMES (FRAMES_PER_TASK * MAX_TASKS)
 
 /* Every task sees its 8192 user pages (32 MiB) at the same virtual window (the same

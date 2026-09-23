@@ -203,6 +203,29 @@ static inline void blit(struct surface *dst, int x, int y, const struct surface 
     }
 }
 
+/* Copy `src` to (x, y), rounding off the corners that fall outside the rounded rectangle
+   (fx, fy, fw, fh, r): those pixels are blended by how much of them the shape covers. */
+static inline void blit_rounded(struct surface *dst, int x, int y, const struct surface *src,
+                                int fx, int fy, int fw, int fh, int r) {
+    int x0 = x < dst->cx0 ? dst->cx0 : x, y0 = y < dst->cy0 ? dst->cy0 : y;
+    int x1 = x + src->w > dst->cx1 ? dst->cx1 : x + src->w;
+    int y1 = y + src->h > dst->cy1 ? dst->cy1 : y + src->h;
+    for (int j = y0; j < y1; j++) {
+        const unsigned *from = src->px + (j - y) * src->stride;
+        unsigned *to = dst->px + j * dst->stride;
+        int corner_row = j < fy + r || j >= fy + fh - r;
+        for (int i = x0; i < x1; i++) {
+            unsigned c = from[i - x];
+            if (corner_row && (i < fx + r || i >= fx + fw - r)) {
+                unsigned a = round_cover(i, j, fx, fy, fw, fh, r);
+                if (a) to[i] = a >= 255 ? c : mix(to[i], c, a);
+            } else {
+                to[i] = c;
+            }
+        }
+    }
+}
+
 /* The mouse pointer: an arrow, 12 x 19, '#' outline, '.' fill. */
 static const char *const pointer_art[19] = {
     "#           ", "##          ", "#.#         ", "#..#        ", "#...#       ",

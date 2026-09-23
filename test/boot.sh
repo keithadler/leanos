@@ -33,7 +33,7 @@ check_order() {
 
 check_order alice \
   "alice: wrote secret 0x5ec12e7 to my data page" \
-  "alice: opened a 240x150 window, read-only, 36 pages -> ok"
+  "alice: opened a 300x200 window, read-only, 59 pages -> ok"
 
 check_order mallory \
   "mallory: I am task 2" \
@@ -62,12 +62,12 @@ display=$(echo "$out" | grep -E "^display: ")
 expected_head=$(printf '%s\n' "display: boot logo drawn" "display: desktop drawn on the 1024x600 framebuffer")
 [ "$(echo "$display" | head -2)" = "$expected_head" ] || fail "display did not draw the logo and desktop"
 for line in \
-  "display: alice opened a 240x150 window from a read-only capability to 36 pages" \
+  "display: alice opened a 300x200 window from a read-only capability to 59 pages" \
   "display: mallory asked for a window but sent no pixels; ignored"; do
   [ "$(echo "$display" | grep -cxF "$line")" = 1 ] || fail "display line missing or repeated: $line"
 done
 expected_tail=$(printf '%s\n' "display: key 'H' to alice" "display: key 'i' to alice" "display: key '!' to alice" \
-  "display: moved alice's window to (250, 208)")
+  "display: moved alice's window to (276, 208)")
 [ "$(echo "$display" | tail -4)" = "$expected_tail" ] || fail "keys or drag not handled"
 [ "$(echo "$display" | wc -l | tr -d ' ')" = 8 ] || fail "display printed unexpected lines"
 
@@ -89,17 +89,17 @@ def load(path):
 logo = load("build/logo.ppm")
 r, g, b = logo(566, 172)          # the logo tile, off the lambda: indigo to teal
 assert b > r + 40 and b > 120, ("logo", (r, g, b))
-assert logo(512, 422)[1] > 150, ("progress bar, full", logo(512, 422))
-assert sum(1 for x in range(400, 640) if max(logo(x, 566)) > 90) > 40, "copyright line"
+assert logo(512, 434)[1] > 150, ("progress bar, full", logo(512, 434))
+assert sum(1 for x in range(440, 590) if max(logo(x, 567)) > 80) > 20, "copyright line"
+assert sum(1 for x in range(430, 600) if min(logo(x, 340)) > 200) > 20, "the wordmark"
 
 at = load("build/screen.ppm")
-for x in (0, 1):                  # the menu bar, where mallory tried to write 0xbad
-    assert min(at(x, 0)) > 200, ("menu bar", x, at(x, 0))
-r, g, b = at(320, 214)            # the Notes title bar after the drag: focused, blue
-assert b > r + 60, ("title bar", (r, g, b))
-r, g, b = at(90, 110)             # where the window was: desktop again
-assert r < 60 and b > g, ("old place", (r, g, b))
-dark = sum(1 for y in range(272, 290) for x in range(264, 304) if max(at(x, y)) < 90)
+# mallory wrote 0xbad over the first two pixels of the menu bar; they match their neighbors
+assert at(0, 0) == at(2, 0) == at(3, 0) and at(1, 0) == at(2, 0), ("menu bar", at(0, 0), at(2, 0))
+assert min(at(500, 214)) > 220, ("title bar after the drag", at(500, 214))
+assert max(at(150, 150)) < 40, ("where the window was: the night sky", at(150, 150))
+dark = sum(1 for y in range(292, 314) for x in range(292, 330) if max(at(x, y)) < 100)
 assert dark > 20, ("typed text", dark)
-print("ok: the boot logo, the desktop, the typed note and the moved window are on screen; mallory's write never landed")
+assert max(at(376, 548)) > 120, ("the Notes icon in the dock", at(376, 548))
+print("ok: the boot screen, the desktop, the dock, the typed note and the moved window are on screen; mallory's write never landed")
 PY

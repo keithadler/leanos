@@ -11,7 +11,7 @@ specification that could drift from what runs. Underneath, about 1,000 lines of 
 assembly boot the board, write page tables and switch tasks, but make no access decisions.
 
 Today it boots the Pi 4 (tested on QEMU's `raspi4b` machine) to a graphical desktop at
-1024×600. You can type into a window and drag it around. A display server in user space
+1024×600, set in Inter, with Apollo 8's Earthrise as wallpaper and a dock of Fluent icons. You can type into a window and drag it around. A display server in user space
 owns the screen; an input driver in user space owns the serial port and its interrupt;
 alice's Notes app draws in her own memory and lends the display a read-only view of it.
 mallory tries to reach the screen, the keyboard and everyone's memory, and cannot.
@@ -38,22 +38,22 @@ mallory: map the framebuffer (capability 5, which is the display's) -> refused, 
 mallory: map the endpoint as memory -> refused, not allowed
 mallory: asked for every right on the endpoint, got send
 carol: asked for write+execute on my data frame, got -w-
-input: listening on the UART
 carol: jumping into the instruction I wrote in my data page
 leanos: carol stopped: instruction fetch not allowed at 0x80010000
+input: listening on the UART
 display: boot logo drawn
 display: desktop drawn on the 1024x600 framebuffer
-display: alice opened a 240x150 window from a read-only capability to 36 pages
-alice: opened a 240x150 window, read-only, 36 pages -> ok
+display: alice opened a 300x200 window from a read-only capability to 59 pages
 display: mallory asked for a window but sent no pixels; ignored
 mallory: ask the display for a window without pixels -> ok
 mallory: writing to the screen's physical address 0x3c100000 directly
 leanos: mallory stopped: data access not allowed at 0x3c100000
-leanos: idle, 3 tasks waiting (45 system calls, 170 timer ticks, 0 device interrupts, kernel heap 76400 bytes live, 96624 peak)
+alice: opened a 300x200 window, read-only, 59 pages -> ok
+leanos: idle, 3 tasks waiting (47 system calls, 170 timer ticks, 0 device interrupts, kernel heap 109744 bytes live, 136368 peak)
 display: key 'H' to alice
 display: key 'i' to alice
 display: key '!' to alice
-display: moved alice's window to (250, 208)
+display: moved alice's window to (276, 208)
 ```
 
 alice, mallory and carol are test personas: a legitimate app, an attacker, and a program
@@ -162,4 +162,4 @@ manifest.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Third-party assets, when added, keep their own licenses and are listed in `THIRD_PARTY.md`; nothing GPL-licensed goes into the system image.
+MIT, © 2026 Keith Adler. See [LICENSE](LICENSE). The font, icons and wallpaper keep their own licenses (OFL, MIT, public domain), listed in [THIRD_PARTY.md](THIRD_PARTY.md); nothing GPL-licensed goes into the system image.

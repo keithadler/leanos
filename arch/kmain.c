@@ -300,6 +300,7 @@ static void handle_irq(void) {
 }
 
 extern const uint64_t user_progs[], user_prog_ends[];
+extern const uint64_t user_assets[], user_asset_ends[];
 
 static void sync_icache(uint64_t start, uint64_t len) {
     for (uint64_t a = start & ~63UL; a < start + len; a += 64)
@@ -318,6 +319,12 @@ static void load_programs(void) {
         uint64_t code = FRAME_BASE + FRAMES_PER_TASK * i * PAGE_SIZE; /* frame 64i, as `frameCaps` says */
         memcpy((void *)code, (const void *)user_progs[i], len);
         sync_icache(code, len);
+        /* The task's assets (fonts, icons, pictures), if any, at the start of its spare run,
+           where `frameCaps` in LeanOS/Kernel.lean puts capability 3. */
+        uint64_t alen = user_asset_ends[i] - user_assets[i];
+        if (alen > SPARE_PAGES * PAGE_SIZE) kpanic("assets larger than the spare run");
+        memcpy((void *)(FRAME_BASE + (FRAMES_PER_TASK * i + SPARE_FIRST) * PAGE_SIZE),
+               (const void *)user_assets[i], alen);
         saved[i].elr = USER_BASE;
         saved[i].sp = USER_BASE + USER_PAGES * PAGE_SIZE;
         saved[i].spsr = 0; /* EL0, interrupts on */

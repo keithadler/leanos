@@ -155,6 +155,18 @@ user_progs:
     .quad prog0, prog1, prog2, prog3, prog4
 user_prog_ends:
     .quad prog0_end, prog1_end, prog2_end, prog3_end, prog4_end
+.global user_assets, user_asset_ends
+user_assets:
+    .quad asset0, asset1, asset2, asset2, asset2
+user_asset_ends:
+    .quad asset0_end, asset1_end, asset2, asset2, asset2
+.balign 16
+asset0: .incbin "build/assets/alice.bin"
+asset0_end:
+.balign 16
+asset1: .incbin "build/assets/display.bin"
+asset1_end:
+asset2:
 .balign 16
 prog0: .incbin "build/user/alice.bin"
 prog0_end:
