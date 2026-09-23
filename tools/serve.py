@@ -11,6 +11,7 @@ leanos's input driver reads them (the emulated Pi 4 has no USB). QEMU keeps runn
 import http.server
 import json
 import os
+import secrets
 import socketserver
 import subprocess
 import threading
@@ -27,11 +28,17 @@ QEMU = ["qemu-system-aarch64", "-M", "raspi4b", "-display", "none",
         "-serial", "stdio", "-semihosting", "-kernel", IMAGE]
 
 lock = threading.Lock()
-current = {"proc": None, "id": 0}
+current = {"proc": None, "id": ""}
 
 
-def stop_qemu():
+def log(*parts):
+    print(time.strftime("%H:%M:%S"), *parts, flush=True)
+
+
+def stop_qemu(why):
     proc = current["proc"]
+    if proc and proc.poll() is None:
+        log("stopping QEMU:", why)
     current["proc"] = None
     if proc and proc.poll() is None:
         proc.terminate()
@@ -91,7 +98,7 @@ import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.7.0/core/rfb.js';
 const out = document.getElementById('out'), status = document.getElementById('status');
 const bootBtn = document.getElementById('boot'), stopBtn = document.getElementById('stop');
 const off = document.getElementById('off'), vncEl = document.getElementById('vnc');
-let es = null, rfb = null, bootId = 0;
+let es = null, rfb = null, bootId = '';
 
 function cls(line) {
   if (/PANIC|SHOULD NOT|CHANGED/.test(line)) return 'bad';
@@ -199,12 +206,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
     def boot_id(self):
+        """The boot a request names. Boot ids are random, so a page left over from an
+        earlier server can never name the current boot."""
         query = self.path.partition("?")[2]
         for part in query.split("&"):
             key, _, value = part.partition("=")
-            if key == "id" and value.isdigit():
-                return int(value)
-        return -1
+            if key == "id" and value:
+                return value
+        return None
 
     def do_POST(self):
         path = self.path.partition("?")[0]
@@ -223,8 +232,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/stop":
             self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
             with lock:
+                log("stop request for boot", self.boot_id(), "current", current["id"])
                 if self.boot_id() == current["id"]:
-                    stop_qemu()
+                    stop_qemu("the page asked")
             self.send_response(204)
             self.end_headers()
         else:
@@ -236,12 +246,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def stream_boot(self):
         with lock:
-            stop_qemu()
+            stop_qemu("a new boot")
             proc = subprocess.Popen(QEMU, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT)
             current["proc"] = proc
-            current["id"] += 1
-            my_id = current["id"]
+            my_id = secrets.token_hex(8)
+            current["id"] = my_id
         start = time.monotonic()
         try:
             self.send_event({"started": True, "id": my_id})
@@ -250,12 +260,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if line:
                     self.send_event({"t": time.monotonic() - start, "line": line})
             self.send_event({"done": True, "code": proc.wait()})
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        except (BrokenPipeError, ConnectionResetError) as e:
+            log("event stream closed:", repr(e))
         finally:
             with lock:
                 if current["proc"] is proc:
-                    stop_qemu()
+                    stop_qemu("its page went away")
                 elif proc.poll() is None:
                     proc.kill()
 
@@ -272,4 +282,4 @@ if __name__ == "__main__":
     try:
         Server(("127.0.0.1", PORT), Handler).serve_forever()
     finally:
-        stop_qemu()
+        stop_qemu("?")
