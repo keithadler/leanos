@@ -40,7 +40,7 @@ leanos: MMU on
 leanos: SD card ready
 leanos: Lean kernel initialized, 10 tasks
 leanos: alice verified, sha256 0x9fffc938...
-leanos: display verified, sha256 0xa41c3aec...
+leanos: display verified, sha256 0x8383eed9...
 leanos: mallory verified, sha256 0x2dbdf014...
 leanos: carol verified, sha256 0x1c54ae17...
 leanos: input verified, sha256 0x7b5792ff...
@@ -71,7 +71,7 @@ mallory: ask the display for a window without pixels -> ok
 mallory: writing to the screen's physical address 0x3c100000 directly
 leanos: mallory stopped: data access not allowed at 0x3c100000
 alice: opened a 300x200 window, read-only, 59 pages -> ok
-leanos: idle, 4 tasks waiting (100 system calls, 154 timer ticks, 0 device interrupts, kernel heap 148960 bytes live, 175584 peak, stack 66976 bytes peak)
+leanos: idle, 4 tasks waiting (100 system calls, 155 timer ticks, 0 device interrupts, kernel heap 148960 bytes live, 175584 peak, stack 66976 bytes peak)
 display: key 'H' to alice
 display: key 'i' to alice
 display: key '!' to alice
@@ -92,7 +92,7 @@ display: start Notes -> ok
 alice: loaded notes.txt, 2 bytes
 alice: opened a 300x200 window, read-only, 59 pages -> ok
 leanos: terminal started
-leanos: terminal verified, sha256 0xb6bd104a...
+leanos: terminal verified, sha256 0xc817d2c5...
 display: start Terminal -> ok
 terminal: opened a window -> ok
 terminal: caps -> 7 capabilities
@@ -108,17 +108,19 @@ settings: background set to Graphite -> ok
 display: closed Terminal's window
 terminal: window closed, exiting
 leanos: terminal started
-leanos: terminal verified, sha256 0xb6bd104a...
+leanos: terminal verified, sha256 0xc817d2c5...
 display: start Terminal -> ok
 terminal: opened a window -> ok
 terminal: caps -> 7 capabilities
+terminal: write fast.txt -> ok
+terminal: cat fast.txt -> 36 bytes
 leanos: files started
 leanos: files verified, sha256 0x8e4f96ff...
 display: start Files -> ok
-files: listed 3 files
+files: listed 4 files
 files: showing welcome.txt (169 bytes)
 files: opened a window -> ok
-files: listed 3 files
+files: listed 4 files
 files: showing hello.txt (19 bytes)
 leanos: security started
 leanos: security verified, sha256 0x5de181c6...

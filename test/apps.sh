@@ -39,17 +39,19 @@ check_order terminal \
   "terminal: ls -> 3 files" \
   "terminal: window closed, exiting" \
   "terminal: opened a window -> ok" \
-  "terminal: caps -> 7 capabilities"
+  "terminal: caps -> 7 capabilities" \
+  "terminal: write fast.txt -> ok" \
+  "terminal: cat fast.txt -> 36 bytes"
 
 check_order settings \
   "settings: opened a window -> ok" \
   "settings: background set to Graphite -> ok"
 
 check_order files \
-  "files: listed 3 files" \
+  "files: listed 4 files" \
   "files: showing welcome.txt (169 bytes)" \
   "files: opened a window -> ok" \
-  "files: listed 3 files" \
+  "files: listed 4 files" \
   "files: showing hello.txt (19 bytes)"
 
 check_order security \
@@ -103,7 +105,7 @@ PY
 again=$(python3 test/run.py 40 --keep-sd)
 [ $? -eq 0 ] || fail "the second boot did not reach idle"
 echo "$again" | grep -E "^(fs|alice): " | sed 's/^/  | /'
-echo "$again" | grep -qx "fs: ready, 3 files on the SD card" || fail "the files did not survive a restart"
+echo "$again" | grep -qx "fs: ready, 4 files on the SD card" || fail "the files did not survive a restart"
 echo "$again" | grep -qx "alice: loaded notes.txt, 2 bytes" || fail "Notes did not get its note back after a restart"
 
 # And with no card at all, the system still comes up, with files in memory only.

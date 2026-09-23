@@ -199,6 +199,8 @@ APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
              *click(154, 127), wait_for("terminal: window closed"),
              mouse("v", 300, 300), *click(512, 548), wait_for("terminal: opened"),
              *keys("caps\r"), wait_for("terminal: caps"),
+             b"write fast.txt 0123456789abcdefghijklmnopqrstuvwxyz\r", wait_for("terminal: write fast.txt"),
+             b"cat fast.txt\r", wait_for("terminal: cat fast.txt"),
              *click(444, 548), wait_for("files: opened"),
              *click(306, 311), wait_for("files: showing hello.txt"),
              *click(648, 548), wait_for("security: 10")]

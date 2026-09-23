@@ -10,6 +10,7 @@
 #define PAD 12
 #define ROWS 13
 #define COLS 52
+#define CMD_MAX 160      /* a command line may be longer than the window; it scrolls */
 #define LINE_H 19
 enum { F_MONO = 1 };
 
@@ -17,7 +18,7 @@ struct term {
     char text[ROWS][COLS + 1];  /* scrollback, oldest first; the prompt line is drawn below */
     unsigned char kind[ROWS];   /* 0 output, 1 a command that was typed */
     int n;
-    char cmd[COLS + 1];
+    char cmd[CMD_MAX + 1];
     int len;
     struct font mono;
     struct surface win;
@@ -65,7 +66,9 @@ static void draw(struct term *t) {
     }
     int x = font_text(s, &t->mono, PAD, y, "$ ", GREEN);
     t->cmd[t->len] = 0;
-    x = font_text(s, &t->mono, x, y, t->cmd, FG);
+    /* the end of the line, if it is wider than the window */
+    int from = t->len > COLS - 3 ? t->len - (COLS - 3) : 0;
+    x = font_text(s, &t->mono, x, y, t->cmd + from, FG);
     fill(s, x + 1, y - 12, 8, 16, GREEN);
 }
 
@@ -298,7 +301,7 @@ __attribute__((section(".text.start"))) void _start(void) {
             push(t, t->cmd, (u64)t->len, 1);
             run(t, &l);
             t->len = 0;
-        } else if (ch >= 32 && ch < 127 && t->len < COLS - 2) t->cmd[t->len++] = ch;
+        } else if (ch >= 32 && ch < 127 && t->len < CMD_MAX) t->cmd[t->len++] = ch;
         else continue;
         draw(t);
         dirty = 1;

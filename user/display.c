@@ -35,6 +35,7 @@
 #define WIN_MAX_PAGES 160
 #define ASSET_PAGE 4096
 #define MAX_WIN 6
+#define QUEUE 128        /* a pasted line, or fast typing into a busy app, must not be lost */
 #define TITLE_H 30
 #define BAR_H 30
 #define W 1024
@@ -77,7 +78,7 @@ struct win {
     char title[9];
     int closing;                /* closed on screen; the client hears EV_CLOSE when it next waits */
     u64 slot;                   /* reply slot + 1 while the client waits, else 0 */
-    u64 queue[16][3];
+    u64 queue[QUEUE][3];         /* events waiting for the client, oldest at qhead */
     int qhead, qlen;
 };
 
@@ -105,6 +106,7 @@ struct state {
     u64 cap_badge[64];
     int cap_win[64];
 };
+_Static_assert(sizeof(struct state) <= 8 * 4096, "the server's state must fit in its 8 data pages");
 
 static void say(struct line *l) { put_s(l, "\n"); flush(l); }
 
@@ -392,8 +394,8 @@ static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
     if (w->slot) {
         sys(SYS_REPLY, w->slot - 1, kind, a, b, 0);
         w->slot = 0;
-    } else if (w->qlen < 16) {
-        int at = (w->qhead + w->qlen++) % 16;
+    } else if (w->qlen < QUEUE) {
+        int at = (w->qhead + w->qlen++) % QUEUE;
         w->queue[at][0] = kind;
         w->queue[at][1] = a;
         w->queue[at][2] = b;
@@ -645,7 +647,7 @@ static void on_wait(struct state *st, struct res *r) {
         if (w->qlen) {
             u64 *e = w->queue[w->qhead];
             sys(SYS_REPLY, slot - 1, e[0], e[1], e[2], 0);
-            w->qhead = (w->qhead + 1) % 16;
+            w->qhead = (w->qhead + 1) % QUEUE;
             w->qlen--;
         } else {
             w->slot = slot;
