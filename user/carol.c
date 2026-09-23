@@ -10,12 +10,12 @@ __attribute__((section(".text.start"))) void _start(void) {
     put_s(&l, "\n");
     flush(&l);
 
-    volatile unsigned *code = (unsigned *)PAGE(1);
+    volatile unsigned *code = (unsigned *)DATA;
     code[0] = 0xd65f03c0; /* ret */
     spin(1000000);
     put_s(&l, "carol: jumping into the instruction I wrote in my data page\n");
     flush(&l);
-    ((void (*)(void))PAGE(1))();
+    ((void (*)(void))DATA)();
     put_s(&l, "carol: SHOULD NOT GET HERE\n");
     flush(&l);
     exit_task();

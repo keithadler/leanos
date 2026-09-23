@@ -26,12 +26,12 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `frame_flow` | A task holds a frame only if a chain of grant edges leads to it from the frame's owner at boot, and never with more rights than the owner had. |
 | `endpoints_fixed` | Endpoint capabilities never gain rights and keep their badge, so no task can forge who it is. |
 | `edge_iff` | In the demo manifest the only grant edge is alice to the server. |
-| `mallory_confined`, `carol_confined`, `alice_confined` | Each of these tasks only ever holds its own frames. |
+| `mallory_confined`, `carol_confined`, `alice_confined` | Each of these tasks only ever holds its own 64 frames. |
 | `server_frames` | The server holds only its own frames and alice's. |
 | `maps_backed` | Every page a task can see comes from one of its own capabilities, with that capability's rights. |
 | `no_write_execute` | No page is ever both writable and executable. |
-| `maps_in_range` | Every mapping is inside the 512-page user window and the frame pool. |
-| `derive_never_amplifies` | A derived capability names its parent's object, keeps its badge, and allows nothing the parent does not. |
+| `maps_in_range` | Every mapping is inside the 8192-page user window and the frame pool. |
+| `derive_never_amplifies` | A derived capability covers only frames its parent covers (or names the same endpoint), keeps its badge, and allows nothing the parent does not. |
 | `write_reads_only_readable` | When `write` asks the machine layer to print user memory, every byte is in a page the calling task has mapped readable. |
 | `schedule_picks_ready` | If any task is ready, the scheduler picks a ready task. |
 
@@ -41,14 +41,14 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 
 | Theorem | Statement |
 |---|---|
-| `walk_eq_view` | For every virtual address, what user mode may do there is exactly what the task's mappings say, and nothing outside the 2 MiB user window. |
+| `walk_eq_view` | For every virtual address, what user mode may do there is exactly what the task's mappings say, and nothing outside the 32 MiB user window. |
 | `el0_only_frame_pool` | User mode can reach only the frame pool: never the kernel image, heap, tables or peripherals. |
 | `el0_no_write_execute` | No address user mode can reach is both writable and executable. |
 | `el0_flow`, `el0_shared` | A physical page user mode can reach came along grant edges from its owner; two tasks share a page only if one owner reaches both. |
 | `el0_mallory_isolated` | mallory's user mode never reaches a page any other task can reach. |
 
-`make mutants` breaks the kernel in 17 specific ways (a `derive` that amplifies or forges a
-badge, a send without the grant right, an endpoint granted like a frame, a manifest that
+`make mutants` breaks the kernel in 19 specific ways (a `derive` that amplifies, forges a
+badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, a kernel page-table entry missing its execute-never bit, and
 so on) and checks that the proofs reject every one.
 
@@ -80,8 +80,8 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 
 **`arch/boot.S` and `arch/kmain.c` (~530 lines)**
 - Storing the tables: `mmu_init`, `tables_init` and `build_user_pages` must store each
-  word Lean computes at its index, in the three page-aligned arrays whose addresses they
-  pass to Lean. This is exactly the `Installed` hypothesis. The kernel is identity-mapped,
+  word Lean computes at its index, in the page-aligned arrays whose addresses they pass to
+  Lean (a level-1 table, a level-2 table, and 16 level-3 tables in one array). This is exactly the `Installed` hypothesis. The kernel is identity-mapped,
   so those addresses are physical. TTBR0 must point at the task's level-1 table, and the
   TLB must be invalidated after every change (`tlb_flush_all`).
 - MMU configuration: TCR_EL1 and SCTLR_EL1 must be set as `LeanOS/Arm.lean` assumes (4 KiB

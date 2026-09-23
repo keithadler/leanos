@@ -44,9 +44,10 @@ def rw : Rights := ⟨true, true, false⟩
 
 end Rights
 
-/-- What a capability names: a physical 4 KiB frame, or an endpoint messages pass through. -/
+/-- What a capability names: a run of `count` physical 4 KiB frames starting at frame
+`base`, or an endpoint messages pass through. -/
 inductive Obj where
-  | frame (f : Nat)
+  | frames (base count : Nat)
   | endpoint (e : Nat)
 
 /-- A capability: an object, what its holder may do with it, and a badge. The badge of an
@@ -63,7 +64,7 @@ structure Mapping where
   frame : Nat
   rights : Rights
 
-/-- A message: the sender's badge, three words, and at most one frame capability. -/
+/-- A message: the sender's badge, three words, and at most one frame-run capability. -/
 structure Msg where
   badge : Nat
   w0 : Nat
@@ -115,10 +116,24 @@ def len {α : Type} : List α → Nat
   | .nil => 0
   | _ :: l => len l + 1
 
+def app {α : Type} : List α → List α → List α
+  | .nil, l => l
+  | a :: l, l' => a :: app l l'
+
 /-- Remove every mapping of virtual page `v`. -/
 def dropVpn (v : Nat) : List Mapping → List Mapping
   | .nil => .nil
   | m :: ms => if m.vpn == v then dropVpn v ms else m :: dropVpn v ms
+
+/-- Remove every mapping of pages `vpn` to `vpn + count - 1`. -/
+def dropRange (vpn : Nat) : Nat → List Mapping → List Mapping
+  | 0, ms => ms
+  | k + 1, ms => dropRange (vpn + 1) k (dropVpn vpn ms)
+
+/-- `count` pages: virtual page `vpn + k` shows frame `base + k`. -/
+def runMaps (vpn base : Nat) (r : Rights) : Nat → List Mapping
+  | 0 => .nil
+  | k + 1 => ⟨vpn, base, r⟩ :: runMaps (vpn + 1) (base + 1) r k
 
 /-! ## The boot manifest
 
@@ -126,8 +141,8 @@ The tasks the system starts with and the capabilities each one holds. Endpoint
 capabilities are fixed here: tasks can pass frames to each other, but not endpoints, so
 the ways authority can flow are set by this manifest (see `Proofs.lean`, `Reach`). -/
 
-/-- Each task's user window is 512 pages (2 MiB) starting at virtual address `userBase`. -/
-def userPages : Nat := 512
+/-- Each task's user window is 8192 pages (32 MiB) starting at virtual address `userBase`. -/
+def userPages : Nat := 8192
 def userBase : Nat := 0x80000000
 def pageSize : Nat := 4096
 
@@ -138,19 +153,22 @@ def maxWrite : Nat := 256
 without bound by deriving or being granted capabilities. -/
 def maxCaps : Nat := 64
 
-/-- The number of tasks. The frame pool holds four frames for each. -/
+/-- The number of tasks in the manifest, and the most the frame pool has room for. -/
 def numTasks : Nat := 4
-def maxTasks : Nat := 4
-def poolFrames : Nat := 4 * maxTasks
+def maxTasks : Nat := 8
 
-def frameCap (f : Nat) (r : Rights) : Cap := ⟨.frame f, r, 0⟩
+/-- Each task owns 64 frames (256 KiB) of the pool: task `i` owns frames `64i` to `64i+63`. -/
+def framesPerTask : Nat := 64
+def poolFrames : Nat := framesPerTask * maxTasks
+
+def runCap (base count : Nat) (r : Rights) : Cap := ⟨.frames base count, r, 0⟩
 def epCap (e : Nat) (recv send grant : Bool) (badge : Nat) : Cap := ⟨.endpoint e, ⟨recv, send, grant⟩, badge⟩
 
-/-- Task `i` owns frames `4i` to `4i+3`: code (read/execute), data, stack, and a spare
-frame it holds a capability to but has not mapped. -/
+/-- Task `i`'s frames, as four runs: 16 pages of code (read/execute), 16 of data, 4 of
+stack, and 28 spare pages it holds a capability to but has not mapped. -/
 def frameCaps (i : Nat) : List Cap :=
-  frameCap (4 * i) Rights.rx :: frameCap (4 * i + 1) Rights.rw :: frameCap (4 * i + 2) Rights.rw ::
-    frameCap (4 * i + 3) Rights.rw :: .nil
+  runCap (64 * i) 16 Rights.rx :: runCap (64 * i + 16) 16 Rights.rw ::
+    runCap (64 * i + 32) 4 Rights.rw :: runCap (64 * i + 36) 28 Rights.rw :: .nil
 
 /-- Endpoint 0 is the server's inbox. Task 0 (alice) may send to it and grant frames, with
 badge 1. Task 1 (the server) receives from it. Task 2 (mallory) may send to it, without
@@ -162,8 +180,10 @@ def initCaps : Nat → List Cap
   | 2 => snoc (frameCaps 2) (epCap 0 false true false 2)
   | i => frameCaps i
 
+/-- Code at pages 0–15, data at 16–31, the stack in the last four pages of the window. -/
 def initMaps (i : Nat) : List Mapping :=
-  ⟨0, 4 * i, Rights.rx⟩ :: ⟨1, 4 * i + 1, Rights.rw⟩ :: ⟨511, 4 * i + 2, Rights.rw⟩ :: .nil
+  app (runMaps 0 (64 * i) Rights.rx 16)
+    (app (runMaps 16 (64 * i + 16) Rights.rw 16) (runMaps (userPages - 4) (64 * i + 32) Rights.rw 4))
 
 def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil⟩
 
@@ -264,40 +284,57 @@ def eBadArg : Nat := 2       -- wrong kind of capability, missing right, or bad 
 def eNoCall : Nat := 3       -- no such system call
 def eFull : Nat := 4         -- too many capabilities
 
-/-- Map the frame named by capability `ci` at virtual page `vpn`, with that capability's
-rights. The only way a task gains a mapping. -/
+/-- Map the run of frames named by capability `ci` at virtual pages `vpn` onward, with that
+capability's rights. The only way a task gains mappings. -/
 def sysMap (s : KState) (t : Task) (ci vpn : Nat) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
   | some c =>
     match c.obj with
     | .endpoint _ => ret s t (eBadArg :: .nil)
-    | .frame f =>
-      if vpn < userPages && c.rights.r then
-        ⟨setTask s s.cur { t with maps := ⟨vpn, f, c.rights⟩ :: dropVpn vpn t.maps,
+    | .frames base count =>
+      if vpn + count ≤ userPages && c.rights.r then
+        ⟨setTask s s.cur { t with maps := app (runMaps vpn base c.rights count)
+                                               (dropRange vpn count t.maps),
                                   result := 0 :: .nil }, 0, 0, true⟩
       else ret s t (eBadArg :: .nil)
 
-def sysUnmap (s : KState) (t : Task) (vpn : Nat) : Reply :=
-  ⟨setTask s s.cur { t with maps := dropVpn vpn t.maps, result := 0 :: .nil }, 0, 0, true⟩
+/-- Unmap pages `vpn` to `vpn + count - 1`. -/
+def sysUnmap (s : KState) (t : Task) (vpn count : Nat) : Reply :=
+  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true⟩
 
-/-- A new capability to the same object with at most the rights asked for, and the same
-badge. Returns its index in x1. -/
-def sysDerive (s : KState) (t : Task) (ci bits : Nat) : Reply :=
+/-- The object a derived capability names: for a run of frames, the `count` frames from
+`offset` on (`count = 0`: all of them from `offset` on), if they lie inside the run. -/
+def subObj (o : Obj) (offset count : Nat) : Option Obj :=
+  match o with
+  | .endpoint e => some (.endpoint e)
+  | .frames base n =>
+    if count = 0 then
+      if offset < n then some (.frames (base + offset) (n - offset)) else none
+    else if offset + count ≤ n then some (.frames (base + offset) count) else none
+
+/-- A new capability with at most the rights asked for, the same badge, and for a run of
+frames a piece of it. Returns its index in x1. -/
+def sysDerive (s : KState) (t : Task) (ci bits offset count : Nat) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
   | some c =>
-    if len t.caps < maxCaps then
-      ret s { t with caps := snoc t.caps ⟨c.obj, c.rights.meet (Rights.ofBits bits), c.badge⟩ }
-        (0 :: len t.caps :: .nil)
-    else ret s t (eFull :: .nil)
+    match subObj c.obj offset count with
+    | none => ret s t (eBadArg :: .nil)
+    | some o =>
+      if len t.caps < maxCaps then
+        ret s { t with caps := snoc t.caps ⟨o, c.rights.meet (Rights.ofBits bits), c.badge⟩ }
+          (0 :: len t.caps :: .nil)
+      else ret s t (eFull :: .nil)
 
-/-- x1 = rights bits, x2 = kind (0 frame, 1 endpoint). -/
+/-- x1 = rights bits, x2 = kind (0 frames, 1 endpoint), x3 = number of frames. -/
 def sysCapInfo (s : KState) (t : Task) (ci : Nat) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
   | some c =>
-    ret s t (0 :: c.rights.toBits :: (match c.obj with | .frame _ => 0 | .endpoint _ => 1) :: .nil)
+    match c.obj with
+    | .frames _ n => ret s t (0 :: c.rights.toBits :: 0 :: n :: .nil)
+    | .endpoint _ => ret s t (0 :: c.rights.toBits :: 1 :: 0 :: .nil)
 
 /-- Virtual page `v` is mapped with read rights. -/
 def readableAt : List Mapping → Nat → Bool
@@ -320,7 +357,7 @@ def sysWrite (s : KState) (t : Task) (va n : Nat) : Reply :=
   else ret s t (eBadArg :: .nil)
 
 /-- The capability a send carries: none if `gi = 0`, else capability `gi - 1`, which must be
-a frame, through an endpoint capability with the grant right. `none` means the grant is
+a run of frames, through an endpoint capability with the grant right. `none` means the grant is
 not allowed. -/
 def grantOf (t : Task) (ep : Cap) (gi : Nat) : Option (Option Cap) :=
   if gi = 0 then some none
@@ -328,7 +365,7 @@ def grantOf (t : Task) (ep : Cap) (gi : Nat) : Option (Option Cap) :=
     match nth? t.caps (gi - 1) with
     | some g =>
       match g.obj with
-      | .frame _ => some (some g)
+      | .frames _ _ => some (some g)
       | .endpoint _ => none
     | none => none
   else none
@@ -341,7 +378,7 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) : Reply :=
   | none => ret s t (eNoCap :: .nil)
   | some c =>
     match c.obj with
-    | .frame _ => ret s t (eBadArg :: .nil)
+    | .frames _ _ => ret s t (eBadArg :: .nil)
     | .endpoint e =>
       if c.rights.w then
         match grantOf t c gi with
@@ -367,7 +404,7 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) : Reply :=
   | none => ret s t (eNoCap :: .nil)
   | some c =>
     match c.obj with
-    | .frame _ => ret s t (eBadArg :: .nil)
+    | .frames _ _ => ret s t (eBadArg :: .nil)
     | .endpoint e =>
       if c.rights.r then
         match findSender e s.tasks 0 with
@@ -385,8 +422,9 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) : Reply :=
       else ret s t (eBadArg :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
-  0 write(va, len) · 1 yield · 2 map(cap, vpn) · 3 unmap(vpn) · 4 derive(cap, rights)
-  5 exit · 6 capinfo(cap) · 7 whoami · 8 send(cap, w0, w1, w2, grant) · 9 recv(cap) -/
+  0 write(va, len) · 1 yield · 2 map(cap, vpn) · 3 unmap(vpn, count)
+  4 derive(cap, rights, offset, count) · 5 exit · 6 capinfo(cap) · 7 whoami
+  8 send(cap, w0, w1, w2, grant) · 9 recv(cap) -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with
   | none => ⟨s, 0, 0, false⟩
@@ -395,8 +433,8 @@ def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
     | 0 => sysWrite s t a0 a1
     | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false⟩
     | 2 => sysMap s t a0 a1
-    | 3 => sysUnmap s t a0
-    | 4 => sysDerive s t a0 a1
+    | 3 => sysUnmap s t a0 a1
+    | 4 => sysDerive s t a0 a1 a2 a3
     | 5 => ⟨killCurrent s, 0, 0, false⟩
     | 6 => sysCapInfo s t a0
     | 7 => ret s t (0 :: s.cur :: .nil)
@@ -499,15 +537,19 @@ def findVpn : List Mapping → Nat → Option Mapping
   | .nil, _ => none
   | m :: ms, v => if m.vpn == v then some m else findVpn ms v
 
-/-- Entry `k` of task `i`'s level-3 table: its user pages. -/
+/-- Entry `k` of task `i`'s level-3 tables: its user pages. The 16 tables are one array of
+8192 words, table `k / 512` covering virtual pages `k` to `k + 511` of the window. -/
 def l3Word (s : KState) (i k : Nat) : Nat :=
   match findVpn (mapsOf s i) k with
   | some m => pageDesc m
   | none => 0
 
-/-- Entry `k` of a task's level-2 table: only entry 0, pointing at the level-3 table at
-physical address `l3`. -/
-def l2Word (l3 k : Nat) : Nat := if k = 0 then l3 + dValid + dTableOrPage else 0
+/-- The number of level-3 tables per task: the window is 16 × 2 MiB. -/
+def l3Tables : Nat := 16
+
+/-- Entry `k` of a task's level-2 table: entries 0–15 point at the task's level-3 tables,
+which sit one after another from physical address `l3`. -/
+def l2Word (l3 k : Nat) : Nat := if k < l3Tables then l3 + k * pageSize + dValid + dTableOrPage else 0
 
 /-- The kernel's own level-1 entries, the same in every address space: the first GiB of
 RAM (kernel only, never run from user mode) and the peripherals (kernel only, never run). -/

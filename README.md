@@ -20,8 +20,14 @@ leanos: MMU on
 leanos: Lean kernel initialized, 4 tasks
 alice: wrote secret 0x5ec12e7 to my data page
 server: waiting for messages
-server: from badge 1: 44 0 0, with a frame capability (r--); mapped at page 8, it says: a page alice drew into and shared, read-only
+server: from badge 1: 44 0 0, with a capability to 1 page (r--); mapped at page 100, it says: a page alice drew into and shared, read-only
 mallory: I am task 2
+carol: asked for write+execute on my data frame, got -w-
+carol: jumping into the instruction I wrote in my data page
+leanos: carol stopped: instruction fetch not allowed at 0x80010000
+alice: granted the server read-only capability 5 to one page of my memory -> ok
+alice: sent the words 7 8 9 -> ok
+server: from badge 1: 7 8 9
 mallory: map capability 9 (not mine) at page 5 -> refused, no such capability
 mallory: print 16 bytes of kernel memory at 0x80000 -> refused, not allowed
 mallory: receive on the server's endpoint -> refused, not allowed
@@ -29,21 +35,15 @@ mallory: grant my data page to the server -> refused, not allowed
 mallory: map the endpoint as memory -> refused, not allowed
 mallory: asked for every right on the endpoint, got send
 mallory: send 666 to the server -> ok
-mallory: reading page 2 directly, which nobody mapped for me
-leanos: mallory stopped: data access not allowed at 0x80002000
-carol: asked for write+execute on my data frame, got -w-
-carol: jumping into the instruction I wrote in my data page
-leanos: carol stopped: instruction fetch not allowed at 0x80001000
-alice: granted the server read-only capability 5 to my page 2 -> ok
-server: from badge 2: 666 0 0
-alice: sent the words 7 8 9 -> ok
-server: from badge 1: 7 8 9
-server: done
+mallory: reading page 64 directly, which nobody mapped for me
+leanos: mallory stopped: data access not allowed at 0x80040000
 alice: secret intact, exiting
-leanos: every task has finished (45 system calls, 2 timer ticks, kernel heap 8400 bytes live, 8704 peak)
+server: from badge 2: 666 0 0
+server: done
+leanos: every task has finished (42 system calls, 2 timer ticks, kernel heap 23296 bytes live, 23568 peak)
 ```
 
-alice draws into a page and grants the server read-only access to it, the way a GUI client
+alice draws into a page and grants the server read-only access to just that page, the way a GUI client
 will hand the display server a buffer. mallory may talk to the server but has no right to
 receive, grant or read anyone's memory, and the kernel stamps her messages with her badge,
 so she cannot pass for alice.
@@ -66,7 +66,7 @@ can reach, under any sequence of system calls with any arguments:
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
 MMU proves that user mode reaches exactly its own mappings, nothing of the kernel or the
 peripherals, and shares a physical page with another task only along a grant path.
-`make mutants` breaks the kernel in 17 ways and checks the proofs catch each one.
+`make mutants` breaks the kernel in 19 ways and checks the proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
 Lean compiler, the runtime shim, the machine layer, the MMU model, the hardware).
@@ -121,14 +121,16 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 |---|---|---|
 | 0 | `write(va, len)` | prints up to 256 bytes of the task's own readable memory |
 | 1 | `yield()` | lets the next ready task run |
-| 2 | `map(cap, page)` | maps a frame capability at a page of the user window |
-| 3 | `unmap(page)` | removes a mapping |
-| 4 | `derive(cap, rights)` | a new capability to the same object with at most those rights |
+| 2 | `map(cap, page)` | maps a capability's run of frames at consecutive pages of the user window |
+| 3 | `unmap(page, count)` | removes mappings |
+| 4 | `derive(cap, rights, offset, count)` | a new capability with at most those rights, to the same endpoint or to a piece of the same run of frames |
 | 5 | `exit()` | stops the task |
-| 6 | `capinfo(cap)` | the rights a capability carries, and whether it is a frame or an endpoint |
+| 6 | `capinfo(cap)` | the rights a capability carries, whether it names frames or an endpoint, and how many frames |
 | 7 | `whoami()` | the task's number |
 | 8 | `send(cap, w0, w1, w2, grant)` | sends three words, and optionally a frame capability, through an endpoint; waits for a receiver |
 | 9 | `recv(cap)` | receives the badge, three words and any granted capability; waits for a sender |
 
-Frame capabilities carry read, write and execute rights. Endpoint capabilities carry
+Frame capabilities name a run of physical frames and carry read, write and execute rights.
+Each task starts with 64 frames (code, data, stack and 28 spare pages) and a 32 MiB
+window to map them in. Endpoint capabilities carry
 receive, send and grant rights, and a badge the kernel delivers with every message.

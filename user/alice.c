@@ -5,7 +5,7 @@
 static const char text[] = "a page alice drew into and shared, read-only";
 
 __attribute__((section(".text.start"))) void _start(void) {
-    volatile u64 *secret = (u64 *)PAGE(1);
+    volatile u64 *secret = (u64 *)DATA;
     *secret = 0x5ec12e7;
     struct line l = {.n = 0};
     put_s(&l, "alice: wrote secret ");
@@ -13,16 +13,17 @@ __attribute__((section(".text.start"))) void _start(void) {
     put_s(&l, " to my data page\n");
     flush(&l);
 
-    /* Draw into the spare frame, then hand the server a read-only capability to it. */
-    sys2(SYS_MAP, 3, 2);
-    char *shared = (char *)PAGE(2);
+    /* Draw into the first spare page, then hand the server a read-only capability to just
+       that page: offset 0, one frame of the 28. */
+    sys2(SYS_MAP, 3, 64);
+    char *shared = (char *)PAGE(64);
     u64 n = 0;
     for (; text[n]; n++) shared[n] = text[n];
-    struct res ro = sys2(SYS_DERIVE, 3, R);
+    struct res ro = sys(SYS_DERIVE, 3, R, 0, 1, 0);
     struct res sent = sys(SYS_SEND, ENDPOINT, n, 0, 0, ro.x[1] + 1);
     put_s(&l, "alice: granted the server read-only capability ");
     put_dec(&l, ro.x[1]);
-    put_s(&l, " to my page 2");
+    put_s(&l, " to one page of my memory");
     put_s(&l, outcome(sent.status));
     put_s(&l, "\n");
     flush(&l);

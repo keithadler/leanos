@@ -31,7 +31,7 @@ check_order() {
 
 check_order alice \
   "alice: wrote secret 0x5ec12e7 to my data page" \
-  "alice: granted the server read-only capability 5 to my page 2 -> ok" \
+  "alice: granted the server read-only capability 5 to one page of my memory -> ok" \
   "alice: sent the words 7 8 9 -> ok" \
   "alice: secret intact, exiting"
 
@@ -44,20 +44,20 @@ check_order mallory \
   "mallory: map the endpoint as memory -> refused, not allowed" \
   "mallory: asked for every right on the endpoint, got send" \
   "mallory: send 666 to the server -> ok" \
-  "mallory: reading page 2 directly, which nobody mapped for me" \
-  "leanos: mallory stopped: data access not allowed at 0x80002000"
+  "mallory: reading page 64 directly, which nobody mapped for me" \
+  "leanos: mallory stopped: data access not allowed at 0x80040000"
 
 check_order carol \
   "carol: asked for write+execute on my data frame, got -w-" \
   "carol: jumping into the instruction I wrote in my data page" \
-  "leanos: carol stopped: instruction fetch not allowed at 0x80001000"
+  "leanos: carol stopped: instruction fetch not allowed at 0x80010000"
 
 # The server's three messages may arrive in any order; each must arrive exactly once.
 server=$(echo "$out" | grep -E "^server: ")
 [ "$(echo "$server" | head -1)" = "server: waiting for messages" ] || fail "server did not start"
 [ "$(echo "$server" | tail -1)" = "server: done" ] || fail "server did not finish"
 for line in \
-  "server: from badge 1: 44 0 0, with a frame capability (r--); mapped at page 8, it says: a page alice drew into and shared, read-only" \
+  "server: from badge 1: 44 0 0, with a capability to 1 page (r--); mapped at page 100, it says: a page alice drew into and shared, read-only" \
   "server: from badge 2: 666 0 0" \
   "server: from badge 1: 7 8 9"; do
   [ "$(echo "$server" | grep -cxF "$line")" = 1 ] || fail "server line missing or repeated: $line"

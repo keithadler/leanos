@@ -27,13 +27,17 @@ PY
 }
 
 mutant "derive grants whatever is asked" \
-  "⟨c.obj, c.rights.meet (Rights.ofBits bits), c.badge⟩" "⟨c.obj, Rights.ofBits bits, c.badge⟩"
+  "⟨o, c.rights.meet (Rights.ofBits bits), c.badge⟩" "⟨o, Rights.ofBits bits, c.badge⟩"
 mutant "derive lets a task pick its badge" \
-  "⟨c.obj, c.rights.meet (Rights.ofBits bits), c.badge⟩" "⟨c.obj, c.rights.meet (Rights.ofBits bits), bits⟩"
-mutant "map ignores the capability's frame" \
-  "⟨vpn, f, c.rights⟩ :: dropVpn" "⟨vpn, f + 1, c.rights⟩ :: dropVpn"
+  "⟨o, c.rights.meet (Rights.ofBits bits), c.badge⟩" "⟨o, c.rights.meet (Rights.ofBits bits), bits⟩"
+mutant "level-2 table points past the 16 level-3 tables" \
+  "def l2Word (l3 k : Nat) : Nat := if k < l3Tables then" "def l2Word (l3 k : Nat) : Nat := if k < l3Tables + 1 then"
+mutant "map ignores the capability's frames" \
+  "app (runMaps vpn base c.rights count)" "app (runMaps vpn (base + 1) c.rights count)"
+mutant "derive cuts a piece past the end of the run" \
+  "else if offset + count ≤ n then some (.frames (base + offset) count) else none" "else some (.frames (base + offset) count)"
 mutant "map outside the user window" \
-  "if vpn < userPages && c.rights.r then" "if c.rights.r then"
+  "if vpn + count ≤ userPages && c.rights.r then" "if c.rights.r then"
 mutant "write skips the page check" \
   "allReadable t.maps ((va - userBase) / pageSize)" "true || allReadable t.maps ((va - userBase) / pageSize)"
 mutant "send without the send right" \

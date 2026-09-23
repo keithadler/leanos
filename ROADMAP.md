@@ -40,6 +40,10 @@ the display server over IPC and hand it the memory they draw into.
 
 ## 4. Drivers in user space
 
+Groundwork done: capabilities name runs of frames (so one capability can cover a window
+buffer or the framebuffer), `derive` cuts out sub-runs, each task has 64 frames and a
+32 MiB window through 16 level-3 tables, all with the proofs carried over.
+
 Device-frame and interrupt capabilities. The framebuffer (allocated through the VideoCore
 mailbox) goes to a display-server task as a device capability; the UART driver moves out
 of the kernel. After this stage the kernel prints nothing on its own and never touches the

@@ -15,8 +15,10 @@ enum { OK = 0, NO_CAP = 1, BAD_ARG = 2, NO_CALL = 3, FULL = 4 };
 enum { R = 1, W = 2, X = 4 };
 enum { RECV = 1, SEND = 2, GRANT = 4 };
 
-/* Every task's window: code page 0, data page 1, stack at the top. Capabilities 0-3 are
-   the task's code, data, stack and spare frames; capability 4, if any, is its endpoint. */
+/* Every task's window: code at pages 0-15, data at 16-31, stack at the top. Capabilities
+   0-3 are runs of frames: code (16 pages), data (16), stack (4) and spare (28, unmapped).
+   Capability 4, if any, is the task's endpoint. */
+#define DATA PAGE(16)
 #define PAGE(n) (0x80000000UL + (n) * 4096UL)
 #define ENDPOINT 4
 

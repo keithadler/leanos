@@ -32,9 +32,9 @@ __attribute__((section(".text.start"))) void _start(void) {
 
     report("send 666 to the server", sys(SYS_SEND, ENDPOINT, 666, 0, 0, 0));
 
-    put_s(&l, "mallory: reading page 2 directly, which nobody mapped for me\n");
+    put_s(&l, "mallory: reading page 64 directly, which nobody mapped for me\n");
     flush(&l);
-    volatile u64 *p = (u64 *)PAGE(2);
+    volatile u64 *p = (u64 *)PAGE(64);
     u64 v = *p;
     put_s(&l, "mallory: SHOULD NOT GET HERE, read ");
     put_hex(&l, v);

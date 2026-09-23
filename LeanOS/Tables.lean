@@ -7,7 +7,7 @@ import LeanOS.Arm
 The theorem `walk_eq_view`: if the machine layer stores the words the kernel computes
 (`l1Word`, `l2Word`, `l3Word`) in three page-aligned tables, then for every virtual
 address the MMU's answer for EL0, as modelled in `LeanOS/Arm.lean`, is exactly
-`el0View`: nothing outside the 2 MiB user window, and inside it the frame and rights the
+`el0View`: nothing outside the 32 MiB user window, and inside it the frame and rights the
 task's mapping names, or nothing.
 
 Combined with `isolation`, this means user code cannot touch the kernel, the peripherals,
@@ -58,7 +58,7 @@ theorem pageDesc_read (m : Mapping) (hr : m.rights.r = true) :
   all_goals omega
 
 /-- Every field of such a descriptor, for either choice of AP (`a`) and UXN (`u`). -/
-theorem desc_fields (f a u : Nat) (hf : f < 16) (ha : a = 64 ∨ a = 192)
+theorem desc_fields (f a u : Nat) (hf : f < 512) (ha : a = 64 ∨ a = 192)
     (hu : u = 0 ∨ u = 18014398509481984) :
     Arm.field (67108864 + f * 4096 + 3 + 4 + a + 768 + 1024 + 2048 + 9007199254740992 + u) 0 2 = 3 ∧
     Arm.field (67108864 + f * 4096 + 3 + 4 + a + 768 + 1024 + 2048 + 9007199254740992 + u) 10 1 = 1 ∧
@@ -72,7 +72,7 @@ theorem desc_fields (f a u : Nat) (hf : f < 16) (ha : a = 64 ∨ a = 192)
   omega
 
 /-- A readable page descriptor, read back field by field. -/
-theorem leaf_pageDesc (m : Mapping) (hr : m.rights.r = true) (hf : m.frame < 16) (va : Nat) :
+theorem leaf_pageDesc (m : Mapping) (hr : m.rights.r = true) (hf : m.frame < 512) (va : Nat) :
     Arm.field (pageDesc m) 0 2 = 3 ∧
     Arm.leaf (pageDesc m) 12 va =
       some (framePA m.frame + va % pageSize, ⟨true, m.rights.w, m.rights.x⟩) := by
@@ -87,14 +87,14 @@ theorem leaf_pageDesc (m : Mapping) (hr : m.rights.r = true) (hf : m.frame < 16)
 /-! ## The walk -/
 
 /-- **The MMU gives user mode exactly its mappings.** If the machine layer has stored the
-kernel's words in three page-aligned tables at physical addresses `l1`, `l2`, `l3` (below
-2^48), then the EL0 translation of every virtual address `va` is `el0View`. -/
+kernel's words in its page-aligned tables at physical addresses `l1`, `l2` and `l3` onward
+(below 2^47), then the EL0 translation of every virtual address `va` is `el0View`. -/
 theorem walk_eq_view {s : KState} (h : Reachable s) (i : Nat)
     (mem : Arm.Mem) (l1 l2 l3 : Nat)
-    (hl2 : l2 % 4096 = 0) (hl3 : l3 % 4096 = 0) (hl2' : l2 < 2 ^ 48) (hl3' : l3 < 2 ^ 48)
+    (hl2 : l2 % 4096 = 0) (hl3 : l3 % 4096 = 0) (hl2' : l2 < 2 ^ 47) (hl3' : l3 < 2 ^ 47)
     (h1 : ∀ k < 512, mem (l1 + 8 * k) = l1Word l2 k)
     (h2 : ∀ k < 512, mem (l2 + 8 * k) = l2Word l3 k)
-    (h3 : ∀ k < 512, mem (l3 + 8 * k) = l3Word s i k)
+    (h3 : ∀ k < userPages, mem (l3 + 8 * k) = l3Word s i k)
     (va : Nat) : Arm.walkEL0 mem l1 va = el0View s i va := by
   have hfr := reachable_frames h i
   unfold Arm.walkEL0 el0View
@@ -116,27 +116,37 @@ theorem walk_eq_view {s : KState} (h : Reachable s) (i : Nat)
     simp only [show (3 : Nat) = 1 ↔ False by decide, if_false, if_true]
     have hk2 : Arm.field va 21 9 < 512 := by simp [Arm.field]; omega
     rw [h2 _ hk2]
-    by_cases h0 : Arm.field va 21 9 = 0
-    · have hd2 : l2Word l3 (Arm.field va 21 9) = l3 + 3 := by
-        simp [l2Word, h0, dValid, dTableOrPage]
+    by_cases h0 : Arm.field va 21 9 < l3Tables
+    · -- one of the 16 level-3 tables
+      have hd2 : l2Word l3 (Arm.field va 21 9) = l3 + Arm.field va 21 9 * 4096 + 3 := by
+        simp [l2Word, h0, dValid, dTableOrPage, pageSize]
       rw [hd2]
-      have ht2 : Arm.field (l3 + 3) 0 2 = 3 := by simp [Arm.field]; omega
-      have ho2 : Arm.outAddr (l3 + 3) 12 = l3 := by simp [Arm.outAddr, Arm.field]; omega
+      have h16 : Arm.field va 21 9 < 16 := by simpa [l3Tables] using h0
+      have ht2 : Arm.field (l3 + Arm.field va 21 9 * 4096 + 3) 0 2 = 3 := by
+        simp only [Arm.field] at h16 ⊢; simp; omega
+      have ho2 : Arm.outAddr (l3 + Arm.field va 21 9 * 4096 + 3) 12 =
+          l3 + Arm.field va 21 9 * 4096 := by
+        simp only [Arm.outAddr, Arm.field] at h16 ⊢; simp; omega
       simp only [ht2, ho2]
       simp only [show (3 : Nat) = 1 ↔ False by decide, if_false, if_true]
       have hk3 : Arm.field va 12 9 < 512 := by simp [Arm.field]; omega
-      rw [h3 _ hk3]
-      -- inside the window, and the page index is the level-3 index
+      -- the level-3 entry is entry `vpn` of the task's 8192-word array
+      have hidx : Arm.field va 21 9 * 512 + Arm.field va 12 9 < userPages := by
+        simp [userPages]; omega
+      have haddr : l3 + Arm.field va 21 9 * 4096 + 8 * Arm.field va 12 9 =
+          l3 + 8 * (Arm.field va 21 9 * 512 + Arm.field va 12 9) := by omega
+      rw [haddr, h3 _ hidx]
       have hin : userBase ≤ va ∧ va < userBase + userPages * pageSize := by
-        simp [Arm.field] at h2k h0; simp [userBase, userPages, pageSize]; omega
-      have hvpn : (va - userBase) / pageSize = Arm.field va 12 9 := by
-        simp [Arm.field] at h2k h0 ⊢; simp [userBase, pageSize]; omega
+        simp [Arm.field] at h2k h16; simp [userBase, userPages, pageSize]; omega
+      have hvpn : (va - userBase) / pageSize = Arm.field va 21 9 * 512 + Arm.field va 12 9 := by
+        simp [Arm.field] at h2k h16 ⊢; simp [userBase, pageSize]; omega
       simp only [hin, and_self, if_true, hvpn]
       unfold l3Word
       split
       · rename_i m hm
         have hmem := (findVpn_mem hm).1
-        have hf : m.frame < 16 := by have := hfr m hmem; simp [poolFrames, maxTasks] at this; omega
+        have hf : m.frame < 512 := by
+          have := hfr m hmem; simp [poolFrames, framesPerTask, maxTasks] at this; omega
         by_cases hr : m.rights.r = true
         · obtain ⟨hty, hleaf⟩ := leaf_pageDesc m hr hf va
           rw [hm]
@@ -147,10 +157,10 @@ theorem walk_eq_view {s : KState} (h : Reachable s) (i : Nat)
       · rename_i hm
         rw [hm]
         simp [Arm.field]
-    · -- the rest of that gigabyte: level-2 entries other than 0 are empty
+    · -- the rest of that gigabyte: level-2 entries past the 16 tables are empty
       have hd2 : l2Word l3 (Arm.field va 21 9) = 0 := by simp [l2Word, h0]
       have hout : ¬ (userBase ≤ va ∧ va < userBase + userPages * pageSize) := by
-        simp [Arm.field] at h2k h0; simp [userBase, userPages, pageSize]; omega
+        simp [Arm.field, l3Tables] at h2k h0; simp [userBase, userPages, pageSize]; omega
       rw [hd2]
       simp [hout, Arm.field]
   · -- every other gigabyte holds only kernel entries, which user mode cannot use
@@ -165,7 +175,7 @@ theorem walk_eq_view {s : KState} (h : Reachable s) (i : Nat)
     · simp only [hz, if_true]
       simp [Arm.leaf, Arm.field, dValid, attrNormal, shInner, accessFlag, userNoExec]
     · by_cases h3k : Arm.field va 30 9 = 3
-      · simp only [h3k, hz, if_true, if_false, show (3 : Nat) = 0 ↔ False by decide]
+      · simp only [h3k, if_true, if_false, show (3 : Nat) = 0 ↔ False by decide]
         simp [Arm.leaf, Arm.field, dValid, attrDevice, accessFlag, privNoExec, userNoExec]
       · simp only [hz, h3k, if_false]
         simp [Arm.field]
@@ -194,16 +204,17 @@ theorem el0View_some {s : KState} {i va pa : Nat} {p : Arm.Perm}
     · simp at hv
   · simp at hv
 
-/-- The hypotheses under which the machine layer's tables for task `i` are the kernel's:
-three page-aligned tables at `l1`, `l2`, `l3` holding exactly the computed words. -/
+/-- The hypotheses under which the machine layer's tables for task `i` are the kernel's: a
+level-1 and a level-2 table at `l1` and `l2`, and the 16 level-3 tables one after another
+from `l3`, all page-aligned and holding exactly the computed words. -/
 structure Installed (s : KState) (i : Nat) (mem : Arm.Mem) (l1 l2 l3 : Nat) : Prop where
   l2_aligned : l2 % 4096 = 0
   l3_aligned : l3 % 4096 = 0
-  l2_lt : l2 < 2 ^ 48
-  l3_lt : l3 < 2 ^ 48
+  l2_lt : l2 < 2 ^ 47
+  l3_lt : l3 < 2 ^ 47
   l1_words : ∀ k < 512, mem (l1 + 8 * k) = l1Word l2 k
   l2_words : ∀ k < 512, mem (l2 + 8 * k) = l2Word l3 k
-  l3_words : ∀ k < 512, mem (l3 + 8 * k) = l3Word s i k
+  l3_words : ∀ k < userPages, mem (l3 + 8 * k) = l3Word s i k
 
 theorem Installed.walk {s : KState} {i : Nat} {mem : Arm.Mem} {l1 l2 l3 : Nat}
     (h : Reachable s) (hi : Installed s i mem l1 l2 l3) (va : Nat) :
@@ -244,7 +255,7 @@ page, the task that owned that page at boot can pass frames to `i` along grant e
 theorem el0_flow {s : KState} (h : Reachable s) {i : Nat} {mem : Arm.Mem}
     {l1 l2 l3 : Nat} (hi : Installed s i mem l1 l2 l3)
     {va pa : Nat} {p : Arm.Perm} (hw : Arm.walkEL0 mem l1 va = some (pa, p)) :
-    Reach ((pa / pageSize - frameBase / pageSize) / 4) i := by
+    Reach ((pa / pageSize - frameBase / pageSize) / 64) i := by
   rw [hi.walk h] at hw
   obtain ⟨t, m, ht, hm, -, rfl, -⟩ := el0View_some hw
   rw [framePA_page, Nat.add_sub_cancel_left]

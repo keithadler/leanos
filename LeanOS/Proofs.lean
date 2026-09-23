@@ -85,7 +85,25 @@ theorem mem_dropVpn : ∀ {v : Nat} {ms : List Mapping} {m : Mapping},
       · have := mem_dropVpn h
         exact ⟨List.mem_cons_of_mem _ this.1, this.2⟩
 
-/-! ## Rights -/
+theorem mem_app {α : Type} : ∀ {l l' : List α} {a : α}, a ∈ app l l' ↔ a ∈ l ∨ a ∈ l'
+  | [], l', a => by simp [app]
+  | x :: l, l', a => by simp [app, mem_app (l := l), or_assoc]
+
+theorem mem_dropRange : ∀ {vpn count : Nat} {ms : List Mapping} {m : Mapping},
+    m ∈ dropRange vpn count ms → m ∈ ms
+  | _, 0, _, _, h => h
+  | vpn, k + 1, ms, m, h => (mem_dropVpn (mem_dropRange (count := k) h)).1
+
+theorem mem_runMaps : ∀ {vpn base : Nat} {r : Rights} {count : Nat} {m : Mapping},
+    m ∈ runMaps vpn base r count → ∃ k < count, m.vpn = vpn + k ∧ m.frame = base + k ∧ m.rights = r
+  | _, _, _, 0, _, h => by simp [runMaps] at h
+  | vpn, base, r, k + 1, m, h => by
+    simp only [runMaps, List.mem_cons] at h
+    rcases h with h | h
+    · subst h; exact ⟨0, by omega, by simp, by simp, rfl⟩
+    · obtain ⟨j, hj, h1, h2, h3⟩ := mem_runMaps h
+      exact ⟨j + 1, by omega, by rw [h1]; omega, by rw [h2]; omega, h3⟩
+
 /-! ## Rights -/
 
 /-- `a` allows nothing that `b` does not. -/
@@ -132,19 +150,22 @@ theorem Reach.trans {A B C : Nat} (h1 : Reach A B) (h2 : Reach B C) : Reach A C 
 Every property is about one task at a time, measured against the boot manifest. So a
 system call that changes one or two tasks only has to show those tasks are still fine. -/
 
-/-- A frame capability held by task `j` is in the pool, is never writable and executable,
-and came to `j` along a chain of edges from the frame's owner at boot, with no more rights
-than the owner had. -/
+/-- Capability `c` covers frame `f`: it names a run of frames that includes `f`. -/
+def Covers (c : Cap) (f : Nat) : Prop := ∃ b n, c.obj = .frames b n ∧ b ≤ f ∧ f < b + n
+
+/-- Task `j` may hold frame `f` with rights `r`: the frame is in the pool, `r` is never
+writable and executable, and the frame came to `j` along a chain of edges from its owner at
+boot, with no more rights than the owner had. -/
 def FrameOK (j f : Nat) (r : Rights) : Prop :=
   f < poolFrames ∧ ¬ WX r ∧
-    ∃ A c0, A < numTasks ∧ Reach A j ∧ c0 ∈ initCaps A ∧ c0.obj = .frame f ∧ RLe r c0.rights
+    ∃ A c0, A < numTasks ∧ Reach A j ∧ c0 ∈ initCaps A ∧ Covers c0 f ∧ RLe r c0.rights
 
 /-- An endpoint capability held by task `j` is one `j` held at boot, or weaker. -/
 def EndpointOK (j e : Nat) (r : Rights) (badge : Nat) : Prop :=
   ∃ c0 ∈ initCaps j, c0.obj = .endpoint e ∧ RLe r c0.rights ∧ c0.badge = badge
 
 def CapOK (j : Nat) (c : Cap) : Prop :=
-  (∀ f, c.obj = .frame f → FrameOK j f c.rights) ∧
+  (∀ f, Covers c f → FrameOK j f c.rights) ∧
   (∀ e, c.obj = .endpoint e → EndpointOK j e c.rights c.badge)
 
 /-- A task waiting to send carries only a frame, one that is fine for it to hold, through an
@@ -153,13 +174,13 @@ given the receive right on that endpoint at boot. -/
 def StatusOK (j : Nat) : Status → Prop
   | .sending e m =>
     (∃ c0 ∈ initCaps j, c0.obj = .endpoint e ∧ c0.rights.w = true ∧ c0.badge = m.badge) ∧
-    ∀ g, m.grant = some g → CapOK j g ∧ (∃ f, g.obj = .frame f) ∧
+    ∀ g, m.grant = some g → CapOK j g ∧ (∃ b n, g.obj = .frames b n) ∧
       ∃ c0 ∈ initCaps j, c0.obj = .endpoint e ∧ c0.rights.w = true ∧ c0.rights.x = true
   | .receiving e => ∃ c0 ∈ initCaps j, c0.obj = .endpoint e ∧ c0.rights.r = true
   | _ => True
 
 structure TaskOK (j : Nat) (t : Task) : Prop where
-  backed : ∀ m ∈ t.maps, ∃ c ∈ t.caps, c.obj = .frame m.frame ∧ c.rights = m.rights
+  backed : ∀ m ∈ t.maps, ∃ c ∈ t.caps, Covers c m.frame ∧ c.rights = m.rights
   vpnOk : ∀ m ∈ t.maps, m.vpn < userPages
   caps : ∀ c ∈ t.caps, CapOK j c
   status : StatusOK j t.status
@@ -213,22 +234,45 @@ theorem inv_clearResult {s : KState} (hs : Inv s) (j : Nat) : Inv (clearResult s
 
 /-! ## Capabilities -/
 
-theorem capOK_derive {j : Nat} {c : Cap} (h : CapOK j c) (r : Rights) :
-    CapOK j ⟨c.obj, c.rights.meet r, c.badge⟩ := by
+theorem subObj_covers {o o' : Obj} {off cnt f : Nat} (h : subObj o off cnt = some o')
+    (hf : ∃ b n, o' = .frames b n ∧ b ≤ f ∧ f < b + n) : ∃ b n, o = .frames b n ∧ b ≤ f ∧ f < b + n := by
+  obtain ⟨b', n', rfl, h1, h2⟩ := hf
+  unfold subObj at h
+  split at h
+  · simp at h
+  · rename_i base n
+    split at h
+    · split at h
+      · simp at h; obtain ⟨rfl, rfl⟩ := h; exact ⟨base, n, rfl, by omega, by omega⟩
+      · simp at h
+    · split at h
+      · simp at h; obtain ⟨rfl, rfl⟩ := h; exact ⟨base, n, rfl, by omega, by omega⟩
+      · simp at h
+
+theorem subObj_endpoint {o o' : Obj} {off cnt e : Nat} (h : subObj o off cnt = some o')
+    (he : o' = .endpoint e) : o = .endpoint e := by
+  subst he
+  unfold subObj at h
+  split at h
+  · simp at h; exact h.symm ▸ rfl
+  · split at h <;> (try split at h) <;> simp at h
+
+theorem capOK_derive {j : Nat} {c : Cap} {o : Obj} {off cnt : Nat} (h : CapOK j c)
+    (ho : subObj c.obj off cnt = some o) (r : Rights) : CapOK j ⟨o, c.rights.meet r, c.badge⟩ := by
   constructor
   · intro f hf
-    obtain ⟨hlt, hwx, A, c0, hA, hr, hc0, ho, hle⟩ := h.1 f hf
-    exact ⟨hlt, not_wx_of_le (meet_le _ _) hwx, A, c0, hA, hr, hc0, ho,
+    obtain ⟨hlt, hwx, A, c0, hA, hr, hc0, hcov, hle⟩ := h.1 f (subObj_covers ho hf)
+    exact ⟨hlt, not_wx_of_le (meet_le _ _) hwx, A, c0, hA, hr, hc0, hcov,
       RLe.trans (meet_le _ _) hle⟩
   · intro e he
-    obtain ⟨c0, hc0, ho, hle, hb⟩ := h.2 e he
-    exact ⟨c0, hc0, ho, RLe.trans (meet_le _ _) hle, hb⟩
+    obtain ⟨c0, hc0, hco, hle, hb⟩ := h.2 e (subObj_endpoint ho he)
+    exact ⟨c0, hc0, hco, RLe.trans (meet_le _ _) hle, hb⟩
 
 /-- A frame capability that is fine for `A` to hold is fine for `B` to hold, if `A` can pass
 frames to `B`. -/
-theorem capOK_grant {A B : Nat} {g : Cap} (hg : CapOK A g) (hf : ∃ f, g.obj = .frame f)
+theorem capOK_grant {A B : Nat} {g : Cap} (hg : CapOK A g) (hf : ∃ b n, g.obj = .frames b n)
     (he : Edge A B) : CapOK B g := by
-  obtain ⟨f, hgf⟩ := hf
+  obtain ⟨b, n, hgf⟩ := hf
   constructor
   · intro f' hf'
     obtain ⟨hlt, hwx, C, c0, hC, hr, hc0, ho, hle⟩ := hg.1 f' hf'
@@ -243,7 +287,7 @@ theorem boot_rights {j : Nat} {c : Cap} {e : Nat} (h : CapOK j c) (he : c.obj = 
   h.2 e he
 
 theorem grantOf_some {t : Task} {ep g : Cap} {gi : Nat} (h : grantOf t ep gi = some (some g)) :
-    ep.rights.x = true ∧ g ∈ t.caps ∧ ∃ f, g.obj = .frame f := by
+    ep.rights.x = true ∧ g ∈ t.caps ∧ ∃ b n, g.obj = .frames b n := by
   unfold grantOf at h
   split at h
   · simp at h
@@ -252,9 +296,9 @@ theorem grantOf_some {t : Task} {ep g : Cap} {gi : Nat} (h : grantOf t ep gi = s
       split at h
       · rename_i g' hg'
         split at h
-        · rename_i f hf
+        · rename_i b n hf
           simp at h; subst h
-          exact ⟨hx, nth?_mem hg', f, hf⟩
+          exact ⟨hx, nth?_mem hg', b, n, hf⟩
         · simp at h
       · simp at h
     · simp at h
@@ -339,50 +383,55 @@ theorem inv_sysMap {s : KState} {t : Task} {ci vpn : Nat} (hs : Inv s) (ht : Tas
     have hcm := nth?_mem hc
     split
     · exact inv_ret hs ht _
-    · rename_i f hf
+    · rename_i base count hf
       split
       · rename_i hcond
         simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
         refine inv_setTask hs ⟨?_, ?_, ht.caps, ht.status⟩
         · intro m hm
-          simp only [List.mem_cons] at hm
-          rcases hm with hm | hm
-          · subst hm; exact ⟨c, hcm, hf, rfl⟩
-          · exact ht.backed m (mem_dropVpn hm).1
+          rcases mem_app.1 hm with hm | hm
+          · obtain ⟨k, hk, -, hf', hr⟩ := mem_runMaps hm
+            exact ⟨c, hcm, ⟨base, count, hf, by omega, by omega⟩, hr.symm⟩
+          · exact ht.backed m (mem_dropRange hm)
         · intro m hm
-          simp only [List.mem_cons] at hm
-          rcases hm with hm | hm
-          · subst hm; exact hcond.1
-          · exact ht.vpnOk m (mem_dropVpn hm).1
+          rcases mem_app.1 hm with hm | hm
+          · obtain ⟨k, hk, hv, -, -⟩ := mem_runMaps hm
+            omega
+          · exact ht.vpnOk m (mem_dropRange hm)
       · exact inv_ret hs ht _
 
-theorem inv_sysUnmap {s : KState} {t : Task} {vpn : Nat} (hs : Inv s) (ht : TaskOK s.cur t) :
-    Inv (sysUnmap s t vpn).state :=
-  inv_setTask hs ⟨fun m hm => ht.backed m (mem_dropVpn hm).1,
-    fun m hm => ht.vpnOk m (mem_dropVpn hm).1, ht.caps, ht.status⟩
+theorem inv_sysUnmap {s : KState} {t : Task} {vpn count : Nat} (hs : Inv s) (ht : TaskOK s.cur t) :
+    Inv (sysUnmap s t vpn count).state :=
+  inv_setTask hs ⟨fun m hm => ht.backed m (mem_dropRange hm),
+    fun m hm => ht.vpnOk m (mem_dropRange hm), ht.caps, ht.status⟩
 
-theorem inv_sysDerive {s : KState} {t : Task} {ci bits : Nat} (hs : Inv s) (ht : TaskOK s.cur t) :
-    Inv (sysDerive s t ci bits).state := by
+theorem inv_sysDerive {s : KState} {t : Task} {ci bits off cnt : Nat} (hs : Inv s)
+    (ht : TaskOK s.cur t) : Inv (sysDerive s t ci bits off cnt).state := by
   unfold sysDerive
   split
   · exact inv_ret hs ht _
   · rename_i c hc
     split
-    · apply inv_ret hs
-      refine ⟨?_, ht.vpnOk, ?_, ht.status⟩
-      · intro m hm
-        obtain ⟨c0, hc0, h1, h2⟩ := ht.backed m hm
-        exact ⟨c0, mem_snoc.2 (Or.inl hc0), h1, h2⟩
-      · intro c' hc'
-        rcases mem_snoc.1 hc' with h | h
-        · exact ht.caps c' h
-        · subst h; exact capOK_derive (ht.caps c (nth?_mem hc)) _
     · exact inv_ret hs ht _
+    · rename_i o ho
+      split
+      · apply inv_ret hs
+        refine ⟨?_, ht.vpnOk, ?_, ht.status⟩
+        · intro m hm
+          obtain ⟨c0, hc0, h1, h2⟩ := ht.backed m hm
+          exact ⟨c0, mem_snoc.2 (Or.inl hc0), h1, h2⟩
+        · intro c' hc'
+          rcases mem_snoc.1 hc' with h | h
+          · exact ht.caps c' h
+          · subst h; exact capOK_derive (ht.caps c (nth?_mem hc)) ho _
+      · exact inv_ret hs ht _
 
 theorem inv_sysCapInfo {s : KState} {t : Task} {ci : Nat} (hs : Inv s) (ht : TaskOK s.cur t) :
     Inv (sysCapInfo s t ci).state := by
   unfold sysCapInfo
-  split <;> exact inv_ret hs ht _
+  split
+  · exact inv_ret hs ht _
+  · split <;> exact inv_ret hs ht _
 
 theorem inv_sysWrite {s : KState} {t : Task} {va n : Nat} (hs : Inv s) (ht : TaskOK s.cur t) :
     Inv (sysWrite s t va n).state := by
@@ -412,7 +461,7 @@ theorem inv_sysSend {s : KState} {t : Task} {ci w0 w1 w2 gi : Nat} (hs : Inv s)
         · exact inv_ret hs ht _
         · rename_i g hg
           -- a granted capability is a frame the sender may hold, through a grant-right endpoint
-          have hgr : ∀ g', g = some g' → CapOK s.cur g' ∧ (∃ f, g'.obj = .frame f) ∧
+          have hgr : ∀ g', g = some g' → CapOK s.cur g' ∧ (∃ b n, g'.obj = .frames b n) ∧
               ∃ c1 ∈ initCaps s.cur, c1.obj = .endpoint e ∧ c1.rights.w = true ∧
                 c1.rights.x = true := by
             intro g' hg'
@@ -525,32 +574,49 @@ theorem len_mkTasksFrom : ∀ (k n : Nat), len (mkTasksFrom k n) = n
 theorem cases4 {j : Nat} (h : j < numTasks) : j = 0 ∨ j = 1 ∨ j = 2 ∨ j = 3 := by
   simp [numTasks] at h; omega
 
-/-- At boot, task `j` owns frames `4j` to `4j+3`, as read-execute or read-write. -/
+/-- At boot, task `j`'s frames lie in `64j` to `64j+63`, and are read-execute or read-write. -/
 theorem initCaps_frame {j f : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps j)
-    (hf : c.obj = .frame f) : f / 4 = j ∧ ¬ WX c.rights := by
+    (hf : Covers c f) : f / 64 = j ∧ ¬ WX c.rights := by
+  obtain ⟨b, n, ho, h1, h2⟩ := hf
   rcases cases4 hj with rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, frameCap, epCap] at hc <;>
-    rcases hc with rfl | rfl | rfl | rfl | rfl <;> simp at hf <;> subst hf <;>
-    simp [WX, Rights.rx, Rights.rw]
+    simp [initCaps, frameCaps, snoc, runCap, epCap] at hc <;>
+    rcases hc with rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> obtain ⟨rfl, rfl⟩ := ho <;>
+    simp [WX, Rights.rx, Rights.rw] <;> omega
 
 theorem initCap_ok {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps j) : CapOK j c := by
   constructor
   · intro f hf
-    have ⟨h4, hwx⟩ := initCaps_frame hj hc hf
+    have ⟨h64, hwx⟩ := initCaps_frame hj hc hf
     refine ⟨?_, hwx, j, c, hj, Reach.refl j, hc, hf, RLe.refl _⟩
-    simp [poolFrames, maxTasks, numTasks] at hj ⊢; omega
+    simp [poolFrames, framesPerTask, maxTasks, numTasks] at hj ⊢; omega
   · intro e he
     exact ⟨c, hc, he, RLe.refl _, rfl⟩
 
 theorem mkTask_ok {j : Nat} (hj : j < numTasks) : TaskOK j (mkTask j) := by
   refine ⟨?_, ?_, fun c hc => initCap_ok hj hc, trivial⟩
   · intro m hm
-    rcases cases4 hj with rfl | rfl | rfl | rfl <;>
-      simp [mkTask, initMaps] at hm <;> rcases hm with h | h | h <;> subst h <;>
-      simp [mkTask, initCaps, frameCaps, snoc, frameCap, epCap]
+    simp only [mkTask, initMaps] at hm
+    have hcode : runCap (64 * j) 16 Rights.rx ∈ initCaps j := by
+      rcases cases4 hj with rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
+    have hdata : runCap (64 * j + 16) 16 Rights.rw ∈ initCaps j := by
+      rcases cases4 hj with rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
+    have hstack : runCap (64 * j + 32) 4 Rights.rw ∈ initCaps j := by
+      rcases cases4 hj with rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
+    rcases mem_app.1 hm with hm | hm
+    · obtain ⟨k, hk, -, hf, hr⟩ := mem_runMaps hm
+      exact ⟨_, hcode, ⟨_, _, rfl, by omega, by omega⟩, hr.symm⟩
+    · rcases mem_app.1 hm with hm | hm
+      · obtain ⟨k, hk, -, hf, hr⟩ := mem_runMaps hm
+        exact ⟨_, hdata, ⟨_, _, rfl, by omega, by omega⟩, hr.symm⟩
+      · obtain ⟨k, hk, -, hf, hr⟩ := mem_runMaps hm
+        exact ⟨_, hstack, ⟨_, _, rfl, by omega, by omega⟩, hr.symm⟩
   · intro m hm
-    simp [mkTask, initMaps] at hm
-    rcases hm with h | h | h <;> subst h <;> simp [userPages]
+    simp only [mkTask, initMaps] at hm
+    rcases mem_app.1 hm with hm | hm
+    · obtain ⟨k, hk, hv, -⟩ := mem_runMaps hm; simp [userPages]; omega
+    · rcases mem_app.1 hm with hm | hm
+      · obtain ⟨k, hk, hv, -⟩ := mem_runMaps hm; simp [userPages]; omega
+      · obtain ⟨k, hk, hv, -⟩ := mem_runMaps hm; simp [userPages] at hv ⊢; omega
 
 theorem inv_init : Inv init := by
   constructor
@@ -583,13 +649,12 @@ theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
 
 /-! ## The guarantees -/
 
-/-- **Authority flow.** In every reachable state, a frame capability held by task `j` came
-along a chain of grant edges from the task that owned that frame at boot (task `f / 4`),
-with no more rights than it had at boot. -/
+/-- **Authority flow.** In every reachable state, a frame task `j` holds a capability to came
+along a chain of grant edges from the task that owned it at boot (task `f / 64`), with no
+more rights than it had at boot. -/
 theorem frame_flow {s : KState} (h : Reachable s) {j : Nat} {t : Task}
-    (ht : nth? s.tasks j = some t) {c : Cap} (hc : c ∈ t.caps) {f : Nat}
-    (hf : c.obj = .frame f) :
-    Reach (f / 4) j ∧ ∃ c0 ∈ initCaps (f / 4), c0.obj = .frame f ∧ RLe c.rights c0.rights := by
+    (ht : nth? s.tasks j = some t) {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) :
+    Reach (f / 64) j ∧ ∃ c0 ∈ initCaps (f / 64), Covers c0 f ∧ RLe c.rights c0.rights := by
   obtain ⟨-, -, A, c0, hA, hr, hc0, ho, hle⟩ :=
     ((reachable_inv h).tasks j t ht).caps c hc |>.1 f hf
   have := (initCaps_frame hA hc0 ho).1
@@ -607,7 +672,7 @@ theorem endpoints_fixed {s : KState} (h : Reachable s) {j : Nat} {t : Task}
 
 theorem maps_backed {s : KState} (h : Reachable s) {i : Nat} {t : Task}
     (ht : nth? s.tasks i = some t) :
-    ∀ m ∈ t.maps, ∃ c ∈ t.caps, c.obj = .frame m.frame ∧ c.rights = m.rights :=
+    ∀ m ∈ t.maps, ∃ c ∈ t.caps, Covers c m.frame ∧ c.rights = m.rights :=
   ((reachable_inv h).tasks i t ht).backed
 
 /-- **W^X.** No page of any task is ever both writable and executable. -/
@@ -630,16 +695,19 @@ theorem maps_in_range {s : KState} (h : Reachable s) {i : Nat} {t : Task}
 
 /-- A page a task can see belongs, at boot, to a task that can reach it. -/
 theorem mapping_flow {s : KState} (h : Reachable s) {j : Nat} {t : Task}
-    (ht : nth? s.tasks j = some t) {m : Mapping} (hm : m ∈ t.maps) : Reach (m.frame / 4) j := by
+    (ht : nth? s.tasks j = some t) {m : Mapping} (hm : m ∈ t.maps) : Reach (m.frame / 64) j := by
   obtain ⟨c, hc, hf, _⟩ := maps_backed h ht m hm
   exact (frame_flow h ht hc hf).1
 
-/-- **No amplification.** A derived capability names its parent's object and allows nothing
-the parent does not. -/
-theorem derive_never_amplifies (c : Cap) (bits : Nat) :
-    let d : Cap := ⟨c.obj, c.rights.meet (Rights.ofBits bits), c.badge⟩
-    d.obj = c.obj ∧ d.badge = c.badge ∧ RLe d.rights c.rights :=
-  ⟨rfl, rfl, meet_le _ _⟩
+/-- **No amplification.** A derived capability covers only frames its parent covers, names
+the same endpoint if its parent names one, keeps the badge, and allows nothing the parent
+does not. -/
+theorem derive_never_amplifies (c : Cap) (bits off cnt : Nat) (o : Obj)
+    (ho : subObj c.obj off cnt = some o) :
+    let d : Cap := ⟨o, c.rights.meet (Rights.ofBits bits), c.badge⟩
+    (∀ f, Covers d f → Covers c f) ∧ (∀ e, d.obj = .endpoint e → c.obj = .endpoint e) ∧
+      d.badge = c.badge ∧ RLe d.rights c.rights :=
+  ⟨fun _ hf => subObj_covers ho hf, fun _ he => subObj_endpoint ho he, rfl, meet_le _ _⟩
 
 /-! ## The demo manifest: who can reach whom -/
 
@@ -648,11 +716,11 @@ theorem edge_iff {A B : Nat} : Edge A B ↔ A = 0 ∧ B = 1 := by
   constructor
   · rintro ⟨hA, hB, e, ⟨c, hc, hco, hw, hx⟩, ⟨d, hd, hdo, hr⟩⟩
     rcases cases4 hA with rfl | rfl | rfl | rfl <;>
-      simp [initCaps, frameCaps, snoc, frameCap, epCap] at hc <;>
+      simp [initCaps, frameCaps, snoc, runCap, epCap] at hc <;>
       rcases hc with rfl | rfl | rfl | rfl | rfl <;> simp at hco hw hx
     subst hco
     rcases cases4 hB with rfl | rfl | rfl | rfl <;>
-      simp [initCaps, frameCaps, snoc, frameCap, epCap] at hd <;>
+      simp [initCaps, frameCaps, snoc, runCap, epCap] at hd <;>
       rcases hd with rfl | rfl | rfl | rfl | rfl <;> simp at hdo hr
     simp
   · rintro ⟨rfl, rfl⟩
@@ -671,30 +739,30 @@ theorem reach_iff {A B : Nat} (h : Reach A B) : A = B ∨ (A = 0 ∧ B = 1) := b
     · cases h
 
 /-- **mallory is confined.** Whatever happens, task 2 holds capabilities only to its own
-frames (8 to 11), so it can never map, read or write anyone else's memory. -/
+frames (128 to 191), so it can never map, read or write anyone else's memory. -/
 theorem mallory_confined {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 2 = some t)
-    {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : c.obj = .frame f) : f / 4 = 2 := by
+    {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : f / 64 = 2 := by
   rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩
   · exact h
   · cases h
 
-/-- carol (task 3) holds capabilities only to her own frames (12 to 15). -/
+/-- carol (task 3) holds capabilities only to her own frames (192 to 255). -/
 theorem carol_confined {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 3 = some t)
-    {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : c.obj = .frame f) : f / 4 = 3 := by
+    {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : f / 64 = 3 := by
   rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩
   · exact h
   · cases h
 
 /-- alice (task 0) is never given anyone's memory: she only ever holds her own frames. -/
 theorem alice_confined {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 0 = some t)
-    {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : c.obj = .frame f) : f / 4 = 0 := by
+    {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : f / 64 = 0 := by
   rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩
   · exact h
   · cases h
 
 /-- The server (task 1) holds only its own frames and frames alice granted it. -/
 theorem server_frames {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 1 = some t)
-    {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : c.obj = .frame f) : f / 4 = 1 ∨ f / 4 = 0 := by
+    {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : f / 64 = 1 ∨ f / 64 = 0 := by
   rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨h, _⟩
   · exact Or.inl h
   · exact Or.inr h
@@ -736,10 +804,16 @@ theorem outLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
     all_goals exfalso
     all_goals first
       | (simp at h; done)
-      | (unfold sysMap at h; split at h <;> (try split at h) <;> (try split at h) <;> simp at h; done)
+      | (unfold sysMap at h; repeat' split at h
+         all_goals simp at h
+         done)
       | (unfold sysUnmap at h; simp at h; done)
-      | (unfold sysDerive at h; split at h <;> (try split at h) <;> simp at h; done)
-      | (unfold sysCapInfo at h; split at h <;> simp at h; done)
+      | (unfold sysDerive at h; repeat' split at h
+         all_goals simp at h
+         done)
+      | (unfold sysCapInfo at h; repeat' split at h
+         all_goals simp at h
+         done)
       | (unfold sysSend at h; repeat' (first | split at h | dsimp only at h)
          all_goals simp at h
          done)

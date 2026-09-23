@@ -130,7 +130,7 @@ void kpanic(const char *msg) {
 static uint64_t kl1[512] __attribute__((aligned(4096)));
 static uint64_t tl1[MAX_TASKS][512] __attribute__((aligned(4096)));
 static uint64_t tl2[MAX_TASKS][512] __attribute__((aligned(4096)));
-static uint64_t tl3[MAX_TASKS][512] __attribute__((aligned(4096)));
+static uint64_t tl3[MAX_TASKS][USER_PAGES] __attribute__((aligned(4096))); /* 16 tables each */
 
 static uint64_t word(lean_object *w) {
     if (!lean_is_scalar(w)) kpanic("table word outside the small range");
@@ -176,10 +176,10 @@ static void tables_init(uint64_t i) {
     }
 }
 
-/* Rewrite task i's level-3 table from the Lean state. Only level 3 changes, so the
+/* Rewrite task i's level-3 tables from the Lean state. Only level 3 changes, so the
    kernel's own entries stay valid even when i is the task whose address space is live. */
 static void build_user_pages(uint64_t i) {
-    for (uint64_t k = 0; k < 512; k++) tl3[i][k] = word(leanos_l3(K1, lean_box(i), lean_box(k)));
+    for (uint64_t k = 0; k < USER_PAGES; k++) tl3[i][k] = word(leanos_l3(K1, lean_box(i), lean_box(k)));
     tlb_flush_all();
 }
 
@@ -230,8 +230,8 @@ static void load_programs(void) {
     memset((void *)FRAME_BASE, 0, NFRAMES * PAGE_SIZE);
     for (uint64_t i = 0; i < ntasks; i++) {
         uint64_t len = user_prog_ends[i] - user_progs[i];
-        if (len > PAGE_SIZE) kpanic("user program larger than its code frame");
-        uint64_t code = FRAME_BASE + 4 * i * PAGE_SIZE; /* frame 4i, as `mkTask` says */
+        if (len > CODE_PAGES * PAGE_SIZE) kpanic("user program larger than its code run");
+        uint64_t code = FRAME_BASE + FRAMES_PER_TASK * i * PAGE_SIZE; /* frame 64i, as `frameCaps` says */
         memcpy((void *)code, (const void *)user_progs[i], len);
         sync_icache(code, len);
         saved[i].elr = USER_BASE;

@@ -8,13 +8,15 @@
    firmware loads kernel8.img) with its heap after it; user frames start at FRAME_BASE. */
 #define FRAME_BASE 0x04000000UL
 #define PAGE_SIZE 4096UL
-#define MAX_TASKS 4
-#define NFRAMES (4 * MAX_TASKS)
+#define MAX_TASKS 8
+#define FRAMES_PER_TASK 64
+#define NFRAMES (FRAMES_PER_TASK * MAX_TASKS)
 
-/* Every task sees its 512 user pages at the same virtual window (the same numbers
-   `userBase` and `userPages` in LeanOS/Kernel.lean). */
+/* Every task sees its 8192 user pages (32 MiB) at the same virtual window (the same
+   numbers `userBase` and `userPages` in LeanOS/Kernel.lean), through 16 level-3 tables. */
 #define USER_BASE 0x80000000UL
-#define USER_PAGES 512
+#define USER_PAGES 8192
+#define CODE_PAGES 16
 
 #define PERIPHERAL_BASE 0xFE000000UL
 #define UART0 (PERIPHERAL_BASE + 0x201000) /* PL011 */

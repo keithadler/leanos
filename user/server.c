@@ -20,14 +20,15 @@ __attribute__((section(".text.start"))) void _start(void) {
         if (r.x[5]) {
             u64 cap = r.x[5] - 1;
             struct res info = sys1(SYS_CAPINFO, cap);
-            put_s(&l, ", with a frame capability (");
+            put_s(&l, ", with a capability to ");
+            put_dec(&l, info.x[3]);
+            put_s(&l, info.x[3] == 1 ? " page (" : " pages (");
             put_rights(&l, info.x[1]);
             put_s(&l, ")");
-            flush(&l);
-            sys2(SYS_MAP, cap, 8);
-            put_s(&l, "; mapped at page 8, it says: ");
-            flush(&l);
-            sys2(SYS_WRITE, PAGE(8), r.x[2]);
+            struct res m = sys2(SYS_MAP, cap, 100);
+            put_s(&l, m.status == OK ? "; mapped at page 100, it says: " : "; could not map it");
+            const char *text = (const char *)PAGE(100);
+            for (u64 k = 0; m.status == OK && k < r.x[2] && l.n < sizeof l.b; k++) l.b[l.n++] = text[k];
         }
         put_s(&l, "\n");
         flush(&l);
