@@ -20,8 +20,10 @@ lean_object *leanos_fault(lean_object *s);
 lean_object *leanos_cur(lean_object *s);
 uint8_t leanos_alive(lean_object *s, lean_object *i);
 lean_object *leanos_ntasks(lean_object *s);
-lean_object *leanos_nmaps(lean_object *s, lean_object *i);
-lean_object *leanos_map(lean_object *s, lean_object *i, lean_object *k);
+lean_object *leanos_kernel_l1(lean_object *k);
+lean_object *leanos_l1(lean_object *l2, lean_object *k);
+lean_object *leanos_l2(lean_object *l3, lean_object *k);
+lean_object *leanos_l3(lean_object *s, lean_object *i, lean_object *k);
 lean_object *leanos_reply_status(lean_object *r);
 lean_object *leanos_reply_value(lean_object *r);
 lean_object *leanos_reply_out_va(lean_object *r);
@@ -115,32 +117,23 @@ void kpanic(const char *msg) {
 }
 
 /* ---- memory management unit ----
- * 4 KiB pages, 39-bit addresses, translation starts at level 1 (1 GiB per entry).
- *   L1[0]  0x0000_0000  the first GiB of RAM (kernel, heap, user frames), kernel only,
- *                       never executable from user mode
- *   L1[2]  0x8000_0000  the task's user window, built from its mappings in the Lean state
- *   L1[3]  0xC000_0000  peripherals (UART, GIC, mailbox), kernel only
- * Every task has its own tables and address-space number (ASID = task + 1); the kernel
- * entries are the same in all of them. */
-
-#define PTE_VALID (1UL << 0)
-#define PTE_TABLE (1UL << 1)
-#define PTE_PAGE (1UL << 1)
-#define PTE_ATTR(i) ((uint64_t)(i) << 2)
-#define PTE_AP_EL0_RW (1UL << 6)
-#define PTE_AP_EL0_RO (3UL << 6)
-#define PTE_SH_INNER (3UL << 8)
-#define PTE_AF (1UL << 10)
-#define PTE_NG (1UL << 11)
-#define PTE_PXN (1UL << 53)
-#define PTE_UXN (1UL << 54)
-#define ATTR_DEVICE 0
-#define ATTR_NORMAL 1
+ * The Lean kernel computes every translation-table word (`l1Word`, `l2Word`, `l3Word` in
+ * LeanOS/Kernel.lean); this layer only stores them. LeanOS/Tables.lean proves that, stored
+ * this way, the tables give user mode exactly the task's mappings (`walk_eq_view`),
+ * assuming the MMU is configured as LeanOS/Arm.lean describes, which `mmu_init` does:
+ * 4 KiB granule, 39-bit addresses (T0SZ = 25), TTBR0 only (EPD1 = 1), WXN off.
+ * Every task has its own tables and address-space number (ASID = task + 1). Kernel
+ * addresses are identity-mapped, so a table's address here is its physical address. */
 
 static uint64_t kl1[512] __attribute__((aligned(4096)));
 static uint64_t tl1[MAX_TASKS][512] __attribute__((aligned(4096)));
 static uint64_t tl2[MAX_TASKS][512] __attribute__((aligned(4096)));
 static uint64_t tl3[MAX_TASKS][512] __attribute__((aligned(4096)));
+
+static uint64_t word(lean_object *w) {
+    if (!lean_is_scalar(w)) kpanic("table word outside the small range");
+    return lean_unbox(w);
+}
 
 static void tlb_flush_all(void) {
     DSB(ishst);
@@ -150,57 +143,41 @@ static void tlb_flush_all(void) {
 }
 
 static void mmu_init(void) {
-    kl1[0] = 0x00000000UL | PTE_VALID | PTE_ATTR(ATTR_NORMAL) | PTE_SH_INNER | PTE_AF | PTE_UXN;
-    kl1[3] = 0xC0000000UL | PTE_VALID | PTE_ATTR(ATTR_DEVICE) | PTE_AF | PTE_PXN | PTE_UXN;
+    for (uint64_t k = 0; k < 512; k++) kl1[k] = word(leanos_kernel_l1(lean_box(k)));
 
-    SYSREG_WRITE(mair_el1, (0x04UL << (8 * ATTR_DEVICE)) | (0xffUL << (8 * ATTR_NORMAL)));
+    /* Memory attribute 0: device nGnRE. Attribute 1: normal, write-back. */
+    SYSREG_WRITE(mair_el1, (0x04UL << 0) | (0xffUL << 8));
     uint64_t tcr = 25                /* T0SZ: 39-bit addresses */
                  | (1UL << 8)        /* inner write-back walks */
                  | (1UL << 10)       /* outer write-back walks */
                  | (3UL << 12)       /* inner shareable */
                  | (0UL << 14)       /* 4 KiB granule */
-                 | (1UL << 23)       /* no TTBR1 walks: the kernel lives in the low half */
+                 | (1UL << 23)       /* EPD1: no TTBR1 walks, the kernel lives in the low half */
                  | (1UL << 32);      /* 36-bit physical addresses */
     SYSREG_WRITE(tcr_el1, tcr);
     SYSREG_WRITE(ttbr0_el1, (uint64_t)kl1);
     ISB();
     tlb_flush_all();
     uint64_t sctlr = SYSREG_READ(sctlr_el1);
+    sctlr &= ~(1UL << 19);                    /* WXN off, as the model assumes */
     sctlr |= (1 << 0) | (1 << 2) | (1 << 12); /* MMU, data cache, instruction cache */
     SYSREG_WRITE(sctlr_el1, sctlr);
     ISB();
 }
 
-/* Task i's top two levels never change: the kernel's two entries and a path to the
-   task's level-3 table. Set once at boot. */
+/* Task i's level-1 and level-2 tables never change. Set once at boot. */
 static void tables_init(uint64_t i) {
-    memset(tl1[i], 0, 4096);
-    memset(tl2[i], 0, 4096);
-    tl1[i][0] = kl1[0];
-    tl1[i][3] = kl1[3];
-    tl1[i][2] = (uint64_t)tl2[i] | PTE_VALID | PTE_TABLE;
-    tl2[i][0] = (uint64_t)tl3[i] | PTE_VALID | PTE_TABLE;
+    uint64_t l2 = (uint64_t)tl2[i], l3 = (uint64_t)tl3[i];
+    for (uint64_t k = 0; k < 512; k++) {
+        tl1[i][k] = word(leanos_l1(lean_box(l2), lean_box(k)));
+        tl2[i][k] = word(leanos_l2(lean_box(l3), lean_box(k)));
+    }
 }
 
-/* Rebuild task i's user pages from its mappings in the Lean state. The Lean kernel has
-   already decided every entry; this only encodes them. Only the level-3 table is
-   rewritten, so the kernel's own mappings stay valid even when i is the task whose
-   address space is live. */
+/* Rewrite task i's level-3 table from the Lean state. Only level 3 changes, so the
+   kernel's own entries stay valid even when i is the task whose address space is live. */
 static void build_user_pages(uint64_t i) {
-    uint64_t *l3 = tl3[i];
-    memset(l3, 0, 4096);
-    uint64_t n = nat(leanos_nmaps(K1, lean_box(i)));
-    for (uint64_t k = 0; k < n; k++) {
-        uint64_t m = nat(leanos_map(K1, lean_box(i), lean_box(k)));
-        uint64_t vpn = m & 0xffff, frame = (m >> 16) & 0xffff, bits = m >> 32;
-        if (vpn >= USER_PAGES || frame >= NFRAMES) kpanic("mapping out of range");
-        if (!(bits & 1)) continue; /* the MMU cannot express write or execute without read */
-        uint64_t pte = (FRAME_BASE + frame * PAGE_SIZE) | PTE_VALID | PTE_PAGE |
-                       PTE_ATTR(ATTR_NORMAL) | PTE_SH_INNER | PTE_AF | PTE_NG | PTE_PXN;
-        pte |= (bits & 2) ? PTE_AP_EL0_RW : PTE_AP_EL0_RO;
-        if (!(bits & 4)) pte |= PTE_UXN;
-        l3[vpn] = pte;
-    }
+    for (uint64_t k = 0; k < 512; k++) tl3[i][k] = word(leanos_l3(K1, lean_box(i), lean_box(k)));
     tlb_flush_all();
 }
 
@@ -361,16 +338,17 @@ void kmain(void) {
     kputs(el == 1 ? "EL1" : "EL?");
     kputs("\n");
 
-    mmu_init();
-    kputs("leanos: MMU on\n");
-
+    /* The Lean kernel comes up first: it computes the tables the MMU is turned on with. */
     lean_object *res = initialize_leanos_LeanOS_Kernel(1);
     if (!lean_io_result_is_ok(res)) kpanic("Lean module initialization failed");
     lean_dec(res);
 
+    mmu_init();
+    kputs("leanos: MMU on\n");
+
     ntasks = 3;
     K = leanos_init(lean_box(ntasks));
-    if (nat(leanos_ntasks(K1)) != ntasks) kpanic("kernel made the wrong number of tasks");
+    if (nat(leanos_ntasks(K1)) != ntasks || ntasks > MAX_TASKS) kpanic("kernel made the wrong number of tasks");
     kputs("leanos: Lean kernel initialized, ");
     kputdec(ntasks);
     kputs(" tasks\n");

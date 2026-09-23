@@ -10,3 +10,7 @@ open LeanOS
 #print axioms derive_never_amplifies
 #print axioms write_reads_only_readable
 #print axioms schedule_picks_alive
+#print axioms walk_eq_view
+#print axioms el0_only_frame_pool
+#print axioms el0_no_write_execute
+#print axioms el0_isolation

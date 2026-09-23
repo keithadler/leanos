@@ -115,7 +115,10 @@ def mkTasksFrom (i : Nat) : Nat → List Task
   | 0 => .nil
   | k + 1 => mkTask i :: mkTasksFrom (i + 1) k
 
-def init (n : Nat) : KState := ⟨mkTasksFrom 0 n, 0⟩
+/-- At most this many tasks: the frame pool holds four frames for each. -/
+def maxTasks : Nat := 4
+
+def init (n : Nat) : KState := ⟨mkTasksFrom 0 (if n ≤ maxTasks then n else maxTasks), 0⟩
 
 /-! ## Scheduling -/
 
@@ -260,13 +263,73 @@ def mapsOf (s : KState) (i : Nat) : List Mapping :=
   | some t => t.maps
   | none => .nil
 
-@[export leanos_nmaps] def exNMaps (s : KState) (i : Nat) : Nat := len (mapsOf s i)
-/-- Mapping `k` of task `i`, as vpn · frame · rights packed into one number:
-`vpn + 2^16 * (frame + 2^16 * rightsBits)`. -/
-@[export leanos_map] def exMap (s : KState) (i k : Nat) : Nat :=
-  match nth? (mapsOf s i) k with
-  | some m => m.vpn + 65536 * (m.frame + 65536 * m.rights.toBits)
+/-! ## Hardware translation tables
+
+The kernel computes every word of every translation table the MMU reads; the machine
+layer only stores them. The format is Armv8-A stage 1 with a 4 KiB granule and 39-bit
+virtual addresses, so a walk reads one word from each of three levels: level 1 (1 GiB
+per entry), level 2 (2 MiB) and level 3 (4 KiB pages). `LeanOS/Arm.lean` models how the
+MMU reads these words, and `LeanOS/Tables.lean` proves what user mode can then reach.
+
+Physical memory on the Pi 4: the first GiB of RAM holds the kernel, its heap and the
+frame pool; the peripherals sit in the fourth GiB. -/
+
+/-- Where the frame pool starts: frame `f` is at `framePA f`. -/
+def frameBase : Nat := 0x04000000
+def framePA (f : Nat) : Nat := frameBase + f * pageSize
+
+/-- Descriptor fields. Every descriptor is a sum of these, each in its own bits. -/
+def dValid : Nat := 1                   -- bit 0
+def dTableOrPage : Nat := 2             -- bit 1: a table (levels 1–2) or a page (level 3)
+def attrNormal : Nat := 1 * 4           -- AttrIndx = 1: normal write-back memory
+def attrDevice : Nat := 0 * 4           -- AttrIndx = 0: device memory
+def apUserRW : Nat := 1 * 64            -- AP = 01: user read-write
+def apUserRO : Nat := 3 * 64            -- AP = 11: user read-only
+def shInner : Nat := 3 * 256            -- inner shareable
+def accessFlag : Nat := 1024            -- AF
+def notGlobal : Nat := 2048             -- nG: the entry belongs to one address space
+def privNoExec : Nat := 9007199254740992   -- PXN, bit 53: the kernel never runs it
+def userNoExec : Nat := 18014398509481984  -- UXN, bit 54: user mode never runs it
+
+/-- The page descriptor for a mapping. A mapping without read rights is left unmapped:
+the MMU cannot give user mode write or execute access without read. -/
+def pageDesc (m : Mapping) : Nat :=
+  if m.rights.r then
+    framePA m.frame + dValid + dTableOrPage + attrNormal +
+      (if m.rights.w then apUserRW else apUserRO) + shInner + accessFlag + notGlobal +
+      privNoExec + (if m.rights.x then 0 else userNoExec)
+  else 0
+
+/-- The first mapping of virtual page `v`. -/
+def findVpn : List Mapping → Nat → Option Mapping
+  | .nil, _ => none
+  | m :: ms, v => if m.vpn == v then some m else findVpn ms v
+
+/-- Entry `k` of task `i`'s level-3 table: its user pages. -/
+def l3Word (s : KState) (i k : Nat) : Nat :=
+  match findVpn (mapsOf s i) k with
+  | some m => pageDesc m
   | none => 0
+
+/-- Entry `k` of a task's level-2 table: only entry 0, pointing at the level-3 table at
+physical address `l3`. -/
+def l2Word (l3 k : Nat) : Nat := if k = 0 then l3 + dValid + dTableOrPage else 0
+
+/-- The kernel's own level-1 entries, the same in every address space: the first GiB of
+RAM (kernel only, never run from user mode) and the peripherals (kernel only, never run). -/
+def kernelL1Word (k : Nat) : Nat :=
+  if k = 0 then 0 + dValid + attrNormal + shInner + accessFlag + userNoExec
+  else if k = 3 then 0xC0000000 + dValid + attrDevice + accessFlag + privNoExec + userNoExec
+  else 0
+
+/-- Entry `k` of a task's level-1 table: the kernel's entries, and entry 2 (virtual
+0x8000_0000, the user window) pointing at the level-2 table at physical address `l2`. -/
+def l1Word (l2 k : Nat) : Nat := if k = 2 then l2 + dValid + dTableOrPage else kernelL1Word k
+
+@[export leanos_kernel_l1] def exKernelL1 (k : Nat) : Nat := kernelL1Word k
+@[export leanos_l1] def exL1 (l2 k : Nat) : Nat := l1Word l2 k
+@[export leanos_l2] def exL2 (l3 k : Nat) : Nat := l2Word l3 k
+@[export leanos_l3] def exL3 (s : KState) (i k : Nat) : Nat := l3Word s i k
 
 @[export leanos_reply_status] def exRStatus (r : Reply) : Nat := r.status
 @[export leanos_reply_value] def exRValue (r : Reply) : Nat := r.value

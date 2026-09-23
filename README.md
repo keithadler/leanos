@@ -49,6 +49,11 @@ arguments:
 - **`write` reads only memory the task may read.**
 - **The scheduler never picks a stopped task** while a live one exists.
 
+And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
+MMU proves that user mode can reach exactly its own mappings, nothing of the kernel or the
+peripherals, and never a page another task can reach. `make mutants` breaks the kernel in
+nine ways and checks the proofs catch each one.
+
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
 Lean compiler, the runtime shim, the page-table encoding, the hardware).
 
@@ -79,6 +84,8 @@ streams its serial console to the page as it happens.
 |---|---|
 | `LeanOS/Kernel.lean` | The kernel's decisions: capabilities, mappings, system calls, scheduler. Compiled into the image. |
 | `LeanOS/Proofs.lean` | The theorems about `Kernel.lean`. |
+| `LeanOS/Arm.lean` | A model of the MMU's translation walk, as user mode sees it (trusted). |
+| `LeanOS/Tables.lean` | The proof that the page-table words give user mode exactly its mappings. |
 | `rt/runtime.c` | The bare-metal slice of Lean's runtime: allocator, reference counts, closures. |
 | `arch/boot.S` | Entry, exception vectors, entering and leaving user mode. |
 | `arch/kmain.c` | Boot, MMU, interrupt controller, timer; carries out what the Lean kernel returns. |

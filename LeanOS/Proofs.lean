@@ -285,10 +285,11 @@ theorem mkTask_caps {i : Nat} {c : Cap} (h : c ∈ (mkTask i).caps) :
   simp [mkTask] at h
   rcases h with h | h | h | h <;> subst h <;> simp <;> omega
 
-theorem inv_init (n : Nat) : Inv (init n) := by
-  have look : ∀ i t, nth? (init n).tasks i = some t → i < n ∧ t = mkTask i := by
+/-- The invariant holds for `N` fresh tasks, for any `N`. -/
+theorem inv_fresh (N : Nat) : Inv ⟨mkTasksFrom 0 N, 0⟩ := by
+  have look : ∀ i t, nth? (mkTasksFrom 0 N) i = some t → i < N ∧ t = mkTask i := by
     intro i t h
-    simp only [init, nth?_mkTasksFrom, Nat.zero_add] at h
+    simp only [nth?_mkTasksFrom, Nat.zero_add] at h
     split at h
     · simp at h; exact ⟨by assumption, h.symm⟩
     · simp at h
@@ -314,8 +315,10 @@ theorem inv_init (n : Nat) : Inv (init n) := by
   · intro i t ht c hc
     obtain ⟨hi, rfl⟩ := look i t ht
     have := mkTask_caps hc
-    simp only [init, len_mkTasksFrom]
+    simp only [len_mkTasksFrom]
     omega
+
+theorem inv_init (n : Nat) : Inv (init n) := inv_fresh _
 
 /-! ## Reachable states -/
 

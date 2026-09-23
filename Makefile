@@ -4,6 +4,7 @@
 #   make run      boot it in QEMU
 #   make test     boot it and check the transcript
 #   make proofs   check the proofs only
+#   make mutants  break the kernel on purpose and check the proofs notice
 
 TOOLCHAIN := $(shell cat lean-toolchain | sed 's|/|--|; s|:|---|')
 LEAN_HOME := $(HOME)/.elan/toolchains/$(TOOLCHAIN)
@@ -33,7 +34,7 @@ USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
 ARCH_O := build/boot.o build/kmain.o build/runtime.o build/libc.o build/Kernel.o
 
-.PHONY: all run test proofs clean
+.PHONY: all run test mutants proofs clean
 all: build/kernel8.img proofs
 
 proofs:
@@ -88,6 +89,10 @@ run: build/kernel8.img
 
 test: all
 	./test/boot.sh
+
+# Break the kernel in known ways and check the proofs catch every one (slow).
+mutants:
+	./test/mutants.sh
 
 clean:
 	rm -rf build .lake/build

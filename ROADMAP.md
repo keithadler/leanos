@@ -20,7 +20,7 @@ Capabilities, mappings, system calls and scheduling are Lean code in the kernel 
 Isolation, W^X, no amplification, backed mappings, a checked `write`, and a scheduler that
 picks live tasks are proved for every reachable state.
 
-## 2. The Pi, with proved hardware tables
+## 2. The Pi, with proved hardware tables — done
 
 Port to the Pi 4. The Lean kernel computes every translation-table word the MMU reads,
 not just the list of mappings. A model of the Armv8-A stage-1 walk (`LeanOS/Arm.lean`)

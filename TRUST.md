@@ -27,6 +27,21 @@ calls with any arguments, timer ticks and faults. They are all in `LeanOS/Proofs
 | `write_reads_only_readable` | When `write` asks the machine layer to print user memory, every byte is in a page the calling task has mapped readable. |
 | `schedule_picks_alive` | If any task is alive, the scheduler picks a live task. |
 
+And down to the hardware, in `LeanOS/Tables.lean`. The Lean kernel computes every
+translation-table word. If the machine layer stores those words (the `Installed`
+hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
+
+| Theorem | Statement |
+|---|---|
+| `walk_eq_view` | For every virtual address, what user mode may do there is exactly what the task's mappings say, and nothing outside the 2 MiB user window. |
+| `el0_only_frame_pool` | User mode can reach only the frame pool: never the kernel image, heap, tables or peripherals. |
+| `el0_no_write_execute` | No address user mode can reach is both writable and executable. |
+| `el0_isolation` | Two tasks never reach the same physical page. |
+
+`make mutants` breaks the kernel in nine specific ways (a `derive` that amplifies, a
+`write` that skips its check, a kernel entry missing its execute-never bit, and so on) and
+checks that the proofs reject every one.
+
 `make test` checks that each of these rests only on Lean's standard axioms (`propext`,
 `Classical.choice`, `Quot.sound`) and never on `sorry`.
 
@@ -54,10 +69,13 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   denies service but never breaks isolation.
 
 **`arch/boot.S` and `arch/kmain.c` (~530 lines)**
-- Page-table encoding: `build_user_pages` must turn the Lean kernel's mapping list into
-  descriptors faithfully. Read-only becomes `AP=11`, read-write `AP=01`, and anything
-  without execute gets `UXN`. Every user page is `PXN`, and a mapping without read rights
-  is left unmapped.
+- Storing the tables: `mmu_init`, `tables_init` and `build_user_pages` must store each
+  word Lean computes at its index, in the three page-aligned arrays whose addresses they
+  pass to Lean. This is exactly the `Installed` hypothesis. The kernel is identity-mapped,
+  so those addresses are physical. TTBR0 must point at the task's level-1 table, and the
+  TLB must be invalidated after every change (`tlb_flush_all`).
+- MMU configuration: TCR_EL1 and SCTLR_EL1 must be set as `LeanOS/Arm.lean` assumes (4 KiB
+  granule, T0SZ = 25, EPD1 = 1, WXN = 0). `mmu_init` sets each of these explicitly.
 - Trap entry and exit, the saved-register copy, and the switch between address spaces
   (TTBR0, with one ASID per task).
 - `do_syscall` reads the buffer for `write` while the calling task's address space is
@@ -68,13 +86,20 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   argued here, not proved.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.
 
+**`LeanOS/Arm.lean`**, the model of the MMU. It is about 90 lines, written to be checked
+against the Arm Architecture Reference Manual (DDI 0487, chapter D8). Where it simplifies,
+it claims more access for user mode than the hardware gives, never less, so the proved
+bounds still hold on the real MMU.
+
 **Hardware**: the MMU, GIC and timer behave as the Arm architecture says. So far that means
 QEMU's model of them, because leanos has only run under QEMU.
 
 ## Known gaps
 
-- The kernel maps all of RAM for itself, read-write and executable at EL1. User mode
-  cannot touch it, but a bug in the machine layer could.
+- The kernel maps the first GiB of RAM for itself, read-write and executable at EL1. User
+  mode cannot touch it (proved), but a bug in the machine layer could.
+- The kernel's own view of memory (EL1 permissions) is not yet modelled; only user
+  mode's is.
 - No protection against timing or cache side channels.
 - Only one scheduling property is proved (a live task is always picked). Fairness is not.
 - No devices are given to user tasks, so DMA isolation is not addressed yet.
