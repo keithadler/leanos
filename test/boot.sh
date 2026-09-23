@@ -13,8 +13,8 @@ echo "$axioms" | grep -v "depends on axioms: \[\(propext\|Classical.choice\|Quot
   | grep -q . && fail "unexpected axiom: $axioms"
 echo "ok: $(echo "$axioms" | wc -l | tr -d ' ') theorems rest only on Lean's standard axioms"
 
-out=$(perl -e 'alarm shift; exec @ARGV' 30 qemu-system-aarch64 -M virt -cpu cortex-a72 -m 256M \
-  -nographic -kernel build/leanos.elf 2>&1 | tr -d '\r')
+out=$(timeout 30 qemu-system-aarch64 -M raspi4b \
+  -nographic -semihosting -kernel build/kernel8.img 2>&1 | tr -d '\r')
 status=$?
 echo "$out" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "QEMU did not power off cleanly (status $status)"
@@ -39,7 +39,7 @@ check_order alice \
 check_order bob \
   "bob: I am task 1" \
   "bob: map capability 9 (not mine) at page 5 -> refused, no such capability" \
-  "bob: print 16 bytes of kernel memory at 0x40080000 -> refused, bad argument" \
+  "bob: print 16 bytes of kernel memory at 0x80000 -> refused, bad argument" \
   "bob: print from page 7, which I have not mapped -> refused, bad argument" \
   "bob: asked for rwx on my data frame, got capability 4 with rw-" \
   "bob: map my spare frame (capability 3) at page 2 -> ok" \

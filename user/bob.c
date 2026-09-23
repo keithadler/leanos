@@ -21,7 +21,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     flush(&l);
 
     report("map capability 9 (not mine) at page 5", sys(SYS_MAP, 9, 5));
-    report("print 16 bytes of kernel memory at 0x40080000", sys(SYS_WRITE, 0x40080000, 16));
+    report("print 16 bytes of kernel memory at 0x80000", sys(SYS_WRITE, 0x80000, 16));
     report("print from page 7, which I have not mapped", sys(SYS_WRITE, PAGE(7), 16));
 
     struct res d = sys(SYS_DERIVE, 1, R | W | X);

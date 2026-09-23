@@ -2,7 +2,7 @@
 """Watch leanos boot from a browser.
 
 Serves a console page on http://127.0.0.1:8796. Each press of "Boot" starts a real QEMU
-run of build/leanos.elf on this machine and streams its serial console to the page, line
+run of build/kernel8.img on this machine and streams its serial console to the page, line
 by line, as it happens. Nothing is emulated in the browser; it only shows the output.
 """
 import http.server
@@ -14,8 +14,8 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = 8796
-QEMU = ["qemu-system-aarch64", "-M", "virt", "-cpu", "cortex-a72", "-m", "256M",
-        "-nographic", "-kernel", os.path.join(ROOT, "build", "leanos.elf")]
+QEMU = ["qemu-system-aarch64", "-M", "raspi4b", "-nographic", "-semihosting",
+        "-kernel", os.path.join(ROOT, "build", "kernel8.img")]
 
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -49,7 +49,7 @@ pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8p
 </style></head>
 <body><main>
 <h1>leanos console</h1>
-<p class="sub">A real QEMU <code>virt</code> machine (Cortex-A72) running build/leanos.elf on this Mac,
+<p class="sub">QEMU's Raspberry Pi 4 (<code>raspi4b</code>) running build/kernel8.img on this Mac,
 streamed from its serial port. Times are since power-on.</p>
 <div class="bar"><button id="boot">Boot</button><span id="status">Ready</span></div>
 <pre id="out"></pre>

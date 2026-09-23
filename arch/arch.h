@@ -1,11 +1,12 @@
-/* Machine layer shared definitions (QEMU `virt`, AArch64). */
+/* Machine layer shared definitions: Raspberry Pi 4 Model B (BCM2711, Cortex-A72),
+   in the default "low peripheral" address map. */
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
 
-/* Physical memory: RAM starts at 0x4000_0000. The kernel image sits at 0x4008_0000 with
-   its heap after it; user frames start at FRAME_BASE. */
-#define FRAME_BASE 0x44000000UL
+/* Physical memory: RAM starts at 0. The kernel image sits at 0x8_0000 (where the Pi
+   firmware loads kernel8.img) with its heap after it; user frames start at FRAME_BASE. */
+#define FRAME_BASE 0x04000000UL
 #define PAGE_SIZE 4096UL
 #define MAX_TASKS 4
 #define NFRAMES (4 * MAX_TASKS)
@@ -15,9 +16,10 @@
 #define USER_BASE 0x80000000UL
 #define USER_PAGES 512
 
-#define UART0 0x09000000UL
-#define GICD 0x08000000UL
-#define GICC 0x08010000UL
+#define PERIPHERAL_BASE 0xFE000000UL
+#define UART0 (PERIPHERAL_BASE + 0x201000) /* PL011 */
+#define GICD 0xFF841000UL                    /* GIC-400 distributor */
+#define GICC 0xFF842000UL                    /* GIC-400 CPU interface */
 #define TIMER_IRQ 30 /* EL1 physical timer, a private peripheral interrupt */
 
 /* The registers a trap saves: x0-x30, the user stack pointer, return address, and state.

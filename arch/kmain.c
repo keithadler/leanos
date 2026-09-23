@@ -58,6 +58,17 @@ static int alive(uint64_t i) { return leanos_alive(K1, lean_box(i)); }
 
 /* ---- console ---- */
 
+/* PL011 at 115200 8N1. The Pi 4 feeds the UART a 48 MHz clock: 48e6 / (16 * 115200)
+   = 26.0417, so the divisor is 26 + 3/64. */
+static void uart_init(void) {
+    mmio_w32(UART0 + 0x30, 0);          /* CR: off while configuring */
+    mmio_w32(UART0 + 0x44, 0x7ff);      /* ICR: clear pending interrupts */
+    mmio_w32(UART0 + 0x24, 26);         /* IBRD */
+    mmio_w32(UART0 + 0x28, 3);          /* FBRD */
+    mmio_w32(UART0 + 0x2c, 0x70);       /* LCRH: 8 bits, FIFOs on */
+    mmio_w32(UART0 + 0x30, 0x301);      /* CR: UART, transmit, receive on */
+}
+
 void kputc(char c) {
     while (mmio_r32(UART0 + 0x18) & (1 << 5)) {}
     mmio_w8(UART0, (uint8_t)c);
@@ -85,9 +96,14 @@ void kputdec(uint64_t v) {
 }
 
 void poweroff(void) {
-    /* PSCI SYSTEM_OFF through the hypervisor call QEMU's virt board provides. */
-    register uint64_t x0 __asm__("x0") = 0x84000008;
-    __asm__ volatile("hvc #0" : "+r"(x0));
+#ifdef LEANOS_QEMU
+    /* Semihosting SYS_EXIT, so a test run under QEMU ends with a status. */
+    static const uint64_t block[2] = {0x20026 /* ADP_Stopped_ApplicationExit */, 0};
+    register uint64_t x0 __asm__("x0") = 0x18;
+    register const uint64_t *x1 __asm__("x1") = block;
+    __asm__ volatile("hlt #0xf000" :: "r"(x0), "r"(x1) : "memory");
+#endif
+    /* A Pi has no power switch the kernel can reach; stop here. */
     for (;;) __asm__ volatile("wfi");
 }
 
@@ -100,9 +116,10 @@ void kpanic(const char *msg) {
 
 /* ---- memory management unit ----
  * 4 KiB pages, 39-bit addresses, translation starts at level 1 (1 GiB per entry).
- *   L1[0]  0x0000_0000  devices (UART, GIC), kernel only
- *   L1[1]  0x4000_0000  all RAM, kernel only, never executable from user mode
+ *   L1[0]  0x0000_0000  the first GiB of RAM (kernel, heap, user frames), kernel only,
+ *                       never executable from user mode
  *   L1[2]  0x8000_0000  the task's user window, built from its mappings in the Lean state
+ *   L1[3]  0xC000_0000  peripherals (UART, GIC, mailbox), kernel only
  * Every task has its own tables and address-space number (ASID = task + 1); the kernel
  * entries are the same in all of them. */
 
@@ -133,8 +150,8 @@ static void tlb_flush_all(void) {
 }
 
 static void mmu_init(void) {
-    kl1[0] = 0x00000000UL | PTE_VALID | PTE_ATTR(ATTR_DEVICE) | PTE_AF | PTE_PXN | PTE_UXN;
-    kl1[1] = 0x40000000UL | PTE_VALID | PTE_ATTR(ATTR_NORMAL) | PTE_SH_INNER | PTE_AF | PTE_UXN;
+    kl1[0] = 0x00000000UL | PTE_VALID | PTE_ATTR(ATTR_NORMAL) | PTE_SH_INNER | PTE_AF | PTE_UXN;
+    kl1[3] = 0xC0000000UL | PTE_VALID | PTE_ATTR(ATTR_DEVICE) | PTE_AF | PTE_PXN | PTE_UXN;
 
     SYSREG_WRITE(mair_el1, (0x04UL << (8 * ATTR_DEVICE)) | (0xffUL << (8 * ATTR_NORMAL)));
     uint64_t tcr = 25                /* T0SZ: 39-bit addresses */
@@ -160,7 +177,7 @@ static void tables_init(uint64_t i) {
     memset(tl1[i], 0, 4096);
     memset(tl2[i], 0, 4096);
     tl1[i][0] = kl1[0];
-    tl1[i][1] = kl1[1];
+    tl1[i][3] = kl1[3];
     tl1[i][2] = (uint64_t)tl2[i] | PTE_VALID | PTE_TABLE;
     tl2[i][0] = (uint64_t)tl3[i] | PTE_VALID | PTE_TABLE;
 }
@@ -207,7 +224,9 @@ static void irq_init(void) {
     mmio_w32(GICD + 0x100, 1u << TIMER_IRQ);            /* enable the timer interrupt */
     mmio_w32(GICC + 0x004, 0xff);                       /* accept every priority */
     mmio_w32(GICC + 0x000, 1);                          /* CPU interface on */
-    timer_interval = SYSREG_READ(cntfrq_el0) / 100;     /* 10 ms time slice */
+    uint64_t freq = SYSREG_READ(cntfrq_el0);
+    if (freq == 0) freq = 54000000;                     /* the Pi 4's crystal, if firmware left it unset */
+    timer_interval = freq / 100;                        /* 10 ms time slice */
     timer_rearm();
 }
 
@@ -336,7 +355,8 @@ void trap(struct frame *f, uint64_t kind) {
 }
 
 void kmain(void) {
-    kputs("leanos: booting on ");
+    uart_init();
+    kputs("leanos: Raspberry Pi 4, booting on ");
     uint64_t el = SYSREG_READ(CurrentEL) >> 2;
     kputs(el == 1 ? "EL1" : "EL?");
     kputs("\n");

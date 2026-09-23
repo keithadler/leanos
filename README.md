@@ -1,7 +1,8 @@
 # leanos
 
-A small AArch64 kernel whose decisions are written in Lean 4, compiled into the kernel,
-and proved correct.
+A kernel for the Raspberry Pi 4 whose decisions are written in Lean 4, compiled into the
+kernel, and proved correct. It is on its way to being a full operating system with a
+graphical interface; [ROADMAP.md](ROADMAP.md) has the plan.
 
 The part that decides who may touch what is Lean code: capabilities, address spaces,
 system calls and the scheduler. It is compiled to C and linked into the kernel image. The
@@ -9,18 +10,18 @@ theorems in `LeanOS/Proofs.lean` are about that same code, so there is no separa
 specification that could drift from what runs. Underneath, about 1,000 lines of C and
 assembly boot the board, write page tables and switch tasks, but make no access decisions.
 
-It runs on QEMU's `virt` machine: three user tasks, preempted by the timer, each in its own
-address space.
+Today it boots the Pi 4 (tested on QEMU's `raspi4b` machine) and runs three user tasks,
+preempted by the timer, each in its own address space.
 
 ```
-leanos: booting on EL1
+leanos: Raspberry Pi 4, booting on EL1
 leanos: MMU on
 leanos: Lean kernel initialized, 3 tasks
 alice: wrote secret 0x5ec12e7 to my data page
 alice: still working, round 1
 bob: I am task 1
 bob: map capability 9 (not mine) at page 5 -> refused, no such capability
-bob: print 16 bytes of kernel memory at 0x40080000 -> refused, bad argument
+bob: print 16 bytes of kernel memory at 0x80000 -> refused, bad argument
 bob: print from page 7, which I have not mapped -> refused, bad argument
 bob: asked for rwx on my data frame, got capability 4 with rw-
 bob: map my spare frame (capability 3) at page 2 -> ok
@@ -57,11 +58,11 @@ You need Lean via `elan` (the version in `lean-toolchain` is picked up automatic
 Homebrew's `llvm` and `lld` for the cross compiler and linker, and `qemu`.
 
 ```bash
-make          # build build/leanos.elf and check every proof
+make          # build build/kernel8.img and check every proof
 ```
 
 ```bash
-make run      # boot it (Ctrl-A X quits QEMU)
+make run      # boot it on QEMU's Pi 4 (Ctrl-A X quits)
 ```
 
 ```bash

@@ -18,6 +18,11 @@ _start:
     b.ne    1f
     mov     x0, #(1 << 31)          // EL1 runs AArch64
     msr     hcr_el2, x0
+    mov     x0, #3                  // EL1 may use the physical timer and counter
+    msr     cnthctl_el2, x0
+    msr     cntvoff_el2, xzr
+    ldr     x0, =0x30d00800         // SCTLR_EL1: reserved-one bits, MMU and caches off
+    msr     sctlr_el1, x0
     mov     x0, #0x3c5              // EL1h, interrupts masked
     msr     spsr_el2, x0
     adr     x0, 1f

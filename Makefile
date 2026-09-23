@@ -1,4 +1,4 @@
-# leanos: a kernel whose decisions are written and proved in Lean 4, for AArch64.
+# leanos: a kernel whose decisions are written and proved in Lean 4, for the Raspberry Pi 4.
 #
 #   make          build build/leanos.elf (and check every proof)
 #   make run      boot it in QEMU
@@ -16,7 +16,7 @@ QEMU      := qemu-system-aarch64
 
 TARGET  := --target=aarch64-none-elf
 CFLAGS  := $(TARGET) -ffreestanding -fno-stack-protector -mstrict-align -O2 -g \
-           -DNDEBUG -Irt/include -I$(LEAN_HOME)/include -ffunction-sections -fdata-sections
+           -DNDEBUG -DLEANOS_QEMU -Irt/include -I$(LEAN_HOME)/include -ffunction-sections -fdata-sections
 UCFLAGS := $(TARGET) -ffreestanding -fno-stack-protector -mgeneral-regs-only -O2 -fno-pic \
            -Wall -Werror
 # Lean's generated C trips warnings that are not ours to fix.
@@ -34,7 +34,7 @@ USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 ARCH_O := build/boot.o build/kmain.o build/runtime.o build/libc.o build/Kernel.o
 
 .PHONY: all run test proofs clean
-all: build/leanos.elf proofs
+all: build/kernel8.img proofs
 
 proofs:
 	lake build
@@ -77,9 +77,13 @@ build/leanos.elf: $(ARCH_O) $(INIT_O) arch/kernel.ld
 	$(LD) -T arch/kernel.ld --gc-sections $(ARCH_O) $(INIT_O) -o $@
 	@$(LLVM)/llvm-size $@
 
-QEMU_ARGS := -M virt -cpu cortex-a72 -m 256M -nographic -kernel build/leanos.elf
+# The raw image the Pi firmware (and QEMU's raspi4b) loads at 0x80000.
+build/kernel8.img: build/leanos.elf
+	$(OBJCOPY) -O binary $< $@
 
-run: build/leanos.elf
+QEMU_ARGS := -M raspi4b -nographic -semihosting -kernel build/kernel8.img
+
+run: build/kernel8.img
 	$(QEMU) $(QEMU_ARGS)
 
 test: all
