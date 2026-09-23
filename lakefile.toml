@@ -1,0 +1,5 @@
+name = "leanos"
+defaultTargets = ["LeanOS"]
+
+[[lean_lib]]
+name = "LeanOS"

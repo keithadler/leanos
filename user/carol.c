@@ -1,0 +1,22 @@
+/* carol tries to run code she wrote. No capability can be both writable and executable,
+   so the page she writes to can never run. */
+#include "lib.h"
+
+__attribute__((section(".text.start"))) void _start(void) {
+    struct line l = {.n = 0};
+    struct res d = sys(SYS_DERIVE, 1, W | X);
+    put_s(&l, "carol: asked for write+execute on my data frame, got ");
+    put_rights(&l, sys(SYS_CAPINFO, d.value, 0).value);
+    put_s(&l, "\n");
+    flush(&l);
+
+    volatile unsigned *code = (unsigned *)PAGE(1);
+    code[0] = 0xd65f03c0; /* ret */
+    spin(1000000);
+    put_s(&l, "carol: jumping into the instruction I wrote in my data page\n");
+    flush(&l);
+    ((void (*)(void))PAGE(1))();
+    put_s(&l, "carol: SHOULD NOT GET HERE\n");
+    flush(&l);
+    exit_task();
+}
