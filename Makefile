@@ -176,6 +176,7 @@ run: build/kernel8.img $(SD_IMAGE)
 test: all
 	./test/boot.sh
 	./test/apps.sh
+	./test/power.sh
 	./test/tamper.sh
 
 # Break the kernel in known ways and check the proofs catch every one (slow).

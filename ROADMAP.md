@@ -150,6 +150,12 @@ And time: the kernel counts timer ticks, and `sleep(ms)` puts a task to sleep un
 tick comes (`tick_wakes_only_sleepers`). `clock`, on the card, keeps time with it, and asks
 the display server for events without blocking (`POLL`) so its close button still works.
 
+And power: the leanos menu (the logo in the menu bar) restarts the machine, through the
+watchdog, or switches it off, with a power capability only the display server holds
+(`only_display_powers`). Making that test pass found an input bug: after a restart a
+leftover byte could sit in the UART with its interrupt already cleared, and block every
+key and click after it; the input driver now drains the UART before it waits.
+
 Next: a journal (so a power cut cannot lose a change halfway), more open slots and a way to give a program more authority on
 purpose (a file server endpoint, say) with the user's consent, the SD card on real Pi 4
 hardware (EMMC2), multiple cores, and the Pi 5.

@@ -31,15 +31,19 @@ __attribute__((section(".text.start"))) void _start(void) {
         exit_task();
     }
     uart = (volatile unsigned *)PAGE(UART_PAGE);
-    ICR = 0x7ff;
     IMSC = (1 << 4) | (1 << 6); /* receive and receive-timeout interrupts */
     put_s(&l, "input: listening on the UART\n");
     flush(&l);
 
     int state = 0;      /* 0 plain, 1 after ESC, 2 after ESC m, 3.. digits */
     u64 kind = 0, x = 0, y = 0;
+    /* Each round: clear the UART's interrupt status, take every byte already waiting
+       (bytes can be waiting before the first round: the tail of a mouse report sent while
+       the machine restarted, say, whose interrupt nobody will see again), then let the
+       line fire again and wait. A byte that arrives after the drain raises a fresh
+       interrupt, which the kernel keeps pending until the wait. */
     for (;;) {
-        sys1(SYS_IRQWAIT, UART_IRQ);
+        ICR = 0x7ff;
         while (!(FR & (1 << 4))) {        /* receive FIFO not empty */
             unsigned char c = (unsigned char)DR;
             if (state == 0) {
@@ -61,7 +65,7 @@ __attribute__((section(".text.start"))) void _start(void) {
                 }
             }
         }
-        ICR = 0x7ff;
         sys1(SYS_IRQACK, UART_IRQ);
+        sys1(SYS_IRQWAIT, UART_IRQ);
     }
 }

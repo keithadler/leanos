@@ -22,6 +22,11 @@ PY
   then
     echo "BROKEN: $name (its target is no longer in Kernel.lean)"; survived=1; return
   fi
+  # A mutant must be a working kernel: if it does not even compile, a failing build
+  # says nothing about the proofs.
+  if ! lake build LeanOS.Kernel >/dev/null 2>&1; then
+    echo "BROKEN: $name (the mutated kernel does not compile)"; survived=1; return
+  fi
   if lake build >/dev/null 2>&1; then
     echo "SURVIVED: $name"; survived=1
   else
@@ -93,7 +98,7 @@ mutant "tasks start ready, unchecked" \
   "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .unverified, .nil, .nil, .nil⟩" "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil, .nil, .nil⟩"
 mutant "a stopped task may make system calls" \
   "    | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
+    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
 mutant "user pages always executable" \
   "privNoExec + (if m.rights.x then 0 else userNoExec)" "privNoExec + 0"
 mutant "read-only pages writable" \
@@ -161,6 +166,15 @@ mutant "an open slot's program may use the file server" \
   "  | 10 => snoc (frameCaps 10) (epCap 0 false true true 10)" "  | 10 => snoc (snoc (frameCaps 10) (epCap 0 false true true 10)) (epCap 1 false true true 10)"
 mutant "a tick wakes sleepers early" \
   "  | .sleeping u => if Nat.ble u now then" "  | .sleeping u => if true then"
+mutant "manifest gives Terminal the power capability" \
+  "  | 5 => snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5)) (epCap 1 false true true 5))
+           (launchCap 10)) (launchCap 11)" "  | 5 => snoc (snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5)) (epCap 1 false true true 5))
+           (launchCap 10)) (launchCap 11)) powerCap"
+mutant "grant the power capability" \
+  "      | .frames _ _ => some (some g)
+      | _ => none" "      | .frames _ _ => some (some g)
+      | .power => some (some g)
+      | _ => none"
 
 cp "$backup" LeanOS/Kernel.lean
 lake build >/dev/null 2>&1 || { echo "FAIL: the unmutated kernel no longer builds"; exit 1; }

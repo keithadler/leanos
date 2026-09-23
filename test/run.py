@@ -71,9 +71,9 @@ def mouse(kind, x, y):
     return f"\x1bm{kind}{x:03d}{y:03d}".encode()
 
 
-def wait_for(prefix):
-    """A step that types nothing: it waits until a serial line starts with `prefix`."""
-    return ("wait", prefix)
+def wait_for(prefix, times=1):
+    """A step that types nothing: it waits until `times` serial lines start with `prefix`."""
+    return ("wait", prefix, times)
 
 
 TEST_CARD = os.path.join(ROOT, "build", "sd-test.img")
@@ -145,12 +145,12 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                 capture()
                 status = 0
                 break
-            if line.startswith("leanos: idle") and steps:
+            if line.startswith("leanos: idle") and steps and waiting_for is None:
                 def type_steps():
                     for chunk in steps:
                         if isinstance(chunk, tuple):
                             with cond:
-                                cond.wait_for(lambda: any(l.startswith(chunk[1]) for l in seen),
+                                cond.wait_for(lambda: sum(l.startswith(chunk[1]) for l in seen) >= chunk[2],
                                               timeout=max(0, deadline - time.monotonic()))
                             time.sleep(0.2)
                             continue
@@ -160,7 +160,7 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                 threading.Thread(target=type_steps, daemon=True).start()
                 waiting_for = until or "\0"
                 continue
-            if line.startswith("leanos: idle"):
+            if line.startswith("leanos: idle") and waiting_for is None:
                 ppm = os.path.join(ROOT, "build", "screen.ppm")
                 qmp.cmd("screendump", filename=ppm)
                 png = os.path.join(ROOT, "build", "screen.png")

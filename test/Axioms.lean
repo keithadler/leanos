@@ -43,3 +43,4 @@ open LeanOS
 #print axioms block_io_confined
 #print axioms exec_reads_only_readable
 #print axioms tick_wakes_only_sleepers
+#print axioms only_display_powers

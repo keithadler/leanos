@@ -44,6 +44,7 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `verify_refuses_mismatch` | A task in a manifest slot whose measurement differs from the manifest is stopped for good. |
 | `exec_reads_only_readable` | When a program image is loaded, the slot is an open slot, the image is at most 64 KiB, and every byte comes from a page the loader has mapped readable (in its address space as it is after the start). |
 | `irqs_fixed` | Interrupt capabilities never move: a task holds one only if it held it at boot. |
+| `only_display_powers` | When a call asks the machine layer to switch off or restart, the caller is the display server. |
 | `tick_wakes_only_sleepers` | If a timer tick changes a task's status, the task was asleep until at most that tick, and is now ready. |
 | `irq_wakes_holder` | An interrupt wakes only a task given that interrupt's capability at boot. |
 | `uart_confined`, `uart_irq_only_input` | Only the input driver can ever hold the UART's registers or its interrupt. |
@@ -68,7 +69,7 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 59 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 61 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a `start` that forgets to take back
@@ -130,6 +131,10 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - Assets: `load_program` copies each task's asset blob (fonts and icons, built by
   `tools/mkassets.py`) into the start of that task's own spare run, next to its code. The
   blob is data the task reads; it grants nothing.
+- Power: switching off is the same halt as before (semihosting exit under QEMU; a Pi has
+  no power switch the kernel can reach, so it stops). Restarting writes the power-management
+  block's watchdog for a full reset (`restart()`); both only when a Reply says so, and
+  `only_display_powers` says only the display server's calls can.
 - Programs from the SD card: for an open slot the machine layer copies the image from the
   starting task's memory (the Reply's `outVa` and `loadLen`, which
   `exec_reads_only_readable` bounds) into the slot's code frames, after rebuilding the

@@ -48,6 +48,8 @@ enum { BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, 
        BADGE_SECURITY = 7, BADGE_FILES = 9 };
 enum { SET_BACKGROUND = 1 };
 #define LAUNCH_FIRST 6  /* launch capabilities: Notes, Terminal, Settings, Security */
+#define POWER 11        /* the power capability: switch off, restart */
+enum { POWER_OFF = 0, POWER_RESTART = 1 };
 enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
 
 /* The dock. */
@@ -112,6 +114,7 @@ struct state {
     /* how long drawing takes, for the log: the first full redraw (when the first window
        opens), the first click on a window, and the frames of each drag */
     int full_reported, click_reported;
+    int menu;                   /* the leanos menu is open */
     u64 drag_frames, drag_us;
 };
 _Static_assert(sizeof(struct state) <= 8 * 4096, "the server's state must fit in its 8 data pages");
@@ -368,6 +371,28 @@ static void background(struct state *st) {
     }
 }
 
+/* The leanos menu, under the logo: Restart and Shut down. */
+#define MENU_X 6
+#define MENU_Y (BAR_H + 4)
+#define MENU_W 190
+#define MENU_ITEM 28
+#define MENU_H (2 * MENU_ITEM + 12)
+static const char *const menu_items[2] = {"Restart", "Shut down"};
+
+static void menu(struct state *st) {
+    struct surface *s = &st->screen;
+    shadow(s, MENU_X, MENU_Y, MENU_W, MENU_H, 10, 0);
+    round_rect(s, MENU_X, MENU_Y, MENU_W, MENU_H, 10, rgb(248, 248, 250), 255);
+    for (int i = 0; i < 2; i++)
+        font_text(s, &st->ui, MENU_X + 16, MENU_Y + 6 + i * MENU_ITEM + 19, menu_items[i], rgb(30, 30, 36));
+}
+
+/* Which menu item (0, 1) is at (x, y), or -1. */
+static int menu_at(int x, int y) {
+    if (x < MENU_X || x >= MENU_X + MENU_W || y < MENU_Y + 6 || y >= MENU_Y + 6 + 2 * MENU_ITEM) return -1;
+    return (y - MENU_Y - 6) / MENU_ITEM;
+}
+
 /* Redraw one rectangle of the screen: background, bar, windows bottom to top, dock, pointer. */
 static void composite(struct state *st, int x, int y, int w, int h) {
     struct surface *s = &st->screen;
@@ -381,6 +406,7 @@ static void composite(struct state *st, int x, int y, int w, int h) {
             draw_window(st, st->z[i]);
     }
     if (s->cy1 > DOCK_Y - 40) dock(st);
+    if (st->menu && s->cx0 < MENU_X + MENU_W + 12 && s->cy0 < MENU_Y + MENU_H + 12) menu(st);
     pointer(s, st->px, st->py);
     clip_all(s);
 }
@@ -572,6 +598,21 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     int ox = st->px, oy = st->py;
     st->px = a < W ? (int)a : W - 1;
     st->py = b < H ? (int)b : H - 1;
+    if (kind == EV_DOWN && (st->menu || (st->py < BAR_H && st->px < 100))) {
+        int item = st->menu ? menu_at(st->px, st->py) : -1;
+        st->menu = !st->menu && item < 0;
+        composite(st, 0, 0, MENU_X + MENU_W + 12, MENU_Y + MENU_H + 12);
+        if (item >= 0) {
+            int restart = item == 0;          /* the items: Restart, Shut down */
+            put_s(l, restart ? "display: restarting, as the user asked"
+                             : "display: switching off, as the user asked");
+            say(l);
+            sys(SYS_POWER, POWER, restart ? POWER_RESTART : POWER_OFF, 0, 0, 0);
+        }
+        composite(st, ox, oy, 12, 19);
+        composite(st, st->px, st->py, 12, 19);
+        return;
+    }
     if (kind == EV_DOWN) {
         int d = dock_at(st->px, st->py);
         if (d) launch(st, l, d - 1);
@@ -771,6 +812,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->screen = surface_of((unsigned *)PAGE(FB_PAGE), W, H);
     st->theme = 0;
     st->full_reported = st->click_reported = 0;
+    st->menu = 0;
     st->drag_frames = st->drag_us = 0;
     make_background(st);
     st->px = W / 2;

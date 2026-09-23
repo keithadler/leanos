@@ -24,7 +24,8 @@ is back when Notes starts again. An app is loaded and checked against the manife
 time it starts; closing its window stops it, and starting it again first takes back
 everything its last run shared. The file server keeps files on the SD card, so they are
 still there after a restart, and holds a client's memory only while it answers that
-client's request.
+client's request. The leanos menu (click the logo) restarts the machine or switches it
+off.
 
 ![The leanos boot screen](docs/logo.png)
 
@@ -40,10 +41,10 @@ leanos: MMU on
 leanos: SD card ready
 leanos: Lean kernel initialized, 12 tasks
 leanos: alice verified, sha256 0xc1670aec...
-leanos: display verified, sha256 0xc681e23d...
+leanos: display verified, sha256 0xdcb59035...
 leanos: mallory verified, sha256 0x2dbdf014...
 leanos: carol verified, sha256 0x1c54ae17...
-leanos: input verified, sha256 0x7b5792ff...
+leanos: input verified, sha256 0x8a93a54e...
 leanos: fs verified, sha256 0xb50707da...
 alice: wrote secret 0x5ec12e7 to my data page
 mallory: I am task 2
@@ -65,20 +66,20 @@ alice: no saved note yet
 display: boot checks shown: 6 verified, 0 refused
 display: boot logo drawn
 display: desktop drawn on the 1024x600 framebuffer
-display: a full redraw took 12.5 ms
+display: a full redraw took 6.3 ms
 display: alice opened a 300x200 window from a read-only capability to 59 pages
 display: mallory asked for a window but sent no pixels; ignored
 mallory: ask the display for a window without pixels -> ok
 mallory: writing to the screen's physical address 0x3c100000 directly
 leanos: mallory stopped: data access not allowed at 0x3c100000
 alice: opened a 300x200 window, read-only, 59 pages -> ok
-leanos: idle, 4 tasks waiting (127 system calls, 155 timer ticks, 0 device interrupts, kernel heap 155408 bytes live, 182032 peak, stack 67008 bytes peak)
+leanos: idle, 4 tasks waiting (128 system calls, 149 timer ticks, 0 device interrupts, kernel heap 155504 bytes live, 182128 peak, stack 67008 bytes peak)
 display: key 'H' to alice
 display: key 'i' to alice
 display: key '!' to alice
-display: a click on a window redrew in 3.5 ms
+display: a click on a window redrew in 2.1 ms
 display: moved alice's window to (276, 208)
-display: the drag drew 2 frames, 2.8 ms each
+display: the drag drew 2 frames, 1.7 ms each
 ```
 
 And `make test` using the apps: typing into Notes, closing it and starting it again (the
@@ -183,6 +184,8 @@ can reach, under any sequence of system calls with any arguments:
   and only the apps. Before an app's slot is loaded again, no other task keeps a
   capability to its frames, a mapping of them, a waiting message that would grant one, or
   a reply meant for the old run.
+- **Only the display server can switch the machine off or restart it**: the power
+  capability is the manifest's, never moves, and only the display server holds it.
 - **Devices and interrupts stay with their owners**: only the display server can reach the
   screen, only the input driver the UART and its interrupt, and an interrupt wakes only a
   holder of its capability.
@@ -190,7 +193,7 @@ can reach, under any sequence of system calls with any arguments:
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
 MMU proves that user mode reaches exactly its own mappings, only the frame pool and the
 framebuffer (never the kernel or the peripherals), and shares a physical page with another
-task only along a grant path. `make mutants` breaks the kernel in 59 ways and checks the
+task only along a grant path. `make mutants` breaks the kernel in 61 ways and checks the
 proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
@@ -267,6 +270,7 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 | 18 | `blockwrite(cap, index, va)` | writes 512 bytes of the task's own readable memory to one block |
 | 19 | `exec(cap, va, len)` | starts an open slot with the program image at `va` (up to 64 KiB of the caller's readable memory) |
 | 20 | `sleep(ms)` | sleeps at least that long (whole 10 ms timer ticks), letting other tasks run |
+| 21 | `power(cap, action)` | switches the machine off (0) or restarts it (1), through the power capability |
 
 Capabilities come in four kinds. Frame capabilities name a run of physical frames and carry read, write and execute rights.
 Each task starts with 256 frames (16 code, 8 data, 4 stack and 228 spare pages) and a 32 MiB

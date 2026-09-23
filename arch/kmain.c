@@ -37,6 +37,7 @@ uint8_t leanos_reply_remap(lean_object *r);
 lean_object *leanos_reply_load(lean_object *r);
 lean_object *leanos_reply_io(lean_object *r);
 lean_object *leanos_reply_load_len(lean_object *r);
+lean_object *leanos_reply_power(lean_object *r);
 uint8_t leanos_open_slot(lean_object *i);
 lean_object *leanos_reply_io_block(lean_object *r);
 lean_object *leanos_io_failed(lean_object *s);
@@ -127,6 +128,18 @@ void poweroff(void) {
     __asm__ volatile("hlt #0xf000" :: "r"(x0), "r"(x1) : "memory");
 #endif
     /* A Pi has no power switch the kernel can reach; stop here. */
+    for (;;) __asm__ volatile("wfi");
+}
+
+/* Restart the whole machine through the power-management block's watchdog: a full reset
+   in a few ticks. The same on a Pi 4 and on QEMU's model of it. */
+#define PM_BASE (PERIPHERAL_BASE + 0x100000)
+#define PM_RSTC (PM_BASE + 0x1c)
+#define PM_WDOG (PM_BASE + 0x24)
+#define PM_PASSWORD 0x5a000000u
+static void restart(void) {
+    mmio_w32(PM_WDOG, PM_PASSWORD | 10);
+    mmio_w32(PM_RSTC, PM_PASSWORD | (mmio_r32(PM_RSTC) & ~0x30u) | 0x20u);
     for (;;) __asm__ volatile("wfi");
 }
 
@@ -421,6 +434,7 @@ static void do_syscall(uint64_t cur) {
     uint64_t unmask = nat(leanos_reply_unmask((lean_inc(r), r)));
     uint64_t load = nat(leanos_reply_load((lean_inc(r), r)));
     uint64_t load_len = nat(leanos_reply_load_len((lean_inc(r), r)));
+    uint64_t power = nat(leanos_reply_power((lean_inc(r), r)));
     uint64_t io = nat(leanos_reply_io((lean_inc(r), r)));
     uint64_t io_block = nat(leanos_reply_io_block((lean_inc(r), r)));
     K = leanos_reply_state(r);
@@ -437,6 +451,15 @@ static void do_syscall(uint64_t cur) {
     if (io) {
         int ok = io == 1 ? sd_read(io_block, (void *)out_va) : sd_write(io_block, (const void *)out_va);
         if (!ok) K = leanos_io_failed(K);
+    }
+    /* The display server asked (only it can: `only_display_powers`). Every file is already
+       on the card: the file server writes each change through before it answers. */
+    if (power == 1) {
+        kputs("leanos: switching off, as the display server asked\n");
+        poweroff();
+    } else if (power == 2) {
+        kputs("leanos: restarting, as the display server asked\n");
+        restart();
     }
     if (load) {
         /* `start`: the Lean kernel has already taken back every capability and mapping that
