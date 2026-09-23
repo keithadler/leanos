@@ -8,7 +8,7 @@
    firmware loads kernel8.img) with its heap after it; user frames start at FRAME_BASE. */
 #define FRAME_BASE 0x04000000UL
 #define PAGE_SIZE 4096UL
-#define MAX_TASKS 8
+#define MAX_TASKS 16
 #define FRAMES_PER_TASK 256
 #define SPARE_FIRST 28     /* the spare run starts 28 frames into a task's frames */
 #define SPARE_PAGES 228

@@ -33,7 +33,11 @@ check_order() {
 
 check_order alice \
   "alice: wrote secret 0x5ec12e7 to my data page" \
+  "alice: no saved note yet" \
   "alice: opened a 300x200 window, read-only, 59 pages -> ok"
+
+check_order fs \
+  "fs: ready, 1 file"
 
 check_order mallory \
   "mallory: I am task 2" \
@@ -59,7 +63,7 @@ check_order input \
 # The display: logo, desktop, the two window requests in either order, then the keys and
 # the drag, in order.
 display=$(echo "$out" | grep -E "^display: ")
-expected_head=$(printf '%s\n' "display: boot checks shown: 5 verified, 0 refused" "display: boot logo drawn" \
+expected_head=$(printf '%s\n' "display: boot checks shown: 6 verified, 0 refused" "display: boot logo drawn" \
   "display: desktop drawn on the 1024x600 framebuffer")
 [ "$(echo "$display" | head -3)" = "$expected_head" ] || fail "display did not show the boot checks, logo and desktop"
 for line in \
@@ -71,12 +75,12 @@ expected_tail=$(printf '%s\n' "display: key 'H' to alice" "display: key 'i' to a
   "display: moved alice's window to (276, 208)")
 [ "$(echo "$display" | tail -4)" = "$expected_tail" ] || fail "keys or drag not handled"
 [ "$(echo "$display" | wc -l | tr -d ' ')" = 9 ] || fail "display printed unexpected lines"
-for who in alice display mallory carol input; do
+for who in alice display mallory carol input fs; do
   echo "$out" | grep -q "^leanos: $who verified, sha256 " || fail "$who was not verified at boot"
 done
 
 echo "$out" | grep -q "^leanos: framebuffer 1024x600 at 0x3c100000$" || fail "no framebuffer"
-echo "$out" | grep -q "^leanos: idle, 3 tasks waiting" || fail "did not settle with three tasks waiting"
+echo "$out" | grep -q "^leanos: idle, 4 tasks waiting" || fail "did not settle with four tasks waiting"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 echo "$out" | grep -qE "SHOULD NOT|CHANGED" && fail "a protection failed"
 echo "ok: boot transcript matches"
@@ -97,8 +101,8 @@ assert logo(512, 434)[1] > 150, ("progress bar, full", logo(512, 434))
 assert sum(1 for x in range(440, 590) if max(logo(x, 575)) > 80) > 20, "copyright line"
 assert sum(1 for x in range(430, 600) if min(logo(x, 340)) > 200) > 20, "the wordmark"
 green = lambda r, g, b: g > 150 and r < 120
-for k in range(5):               # a green check beside every program on the boot screen
-    y0 = 462 + k * 18
+for k in range(6):               # a green check beside every program on the boot screen
+    y0 = 462 + k * 16
     assert sum(1 for y in range(y0, y0 + 14) for x in range(382, 396) if green(*logo(x, y))) > 30, ("check", k)
 
 at = load("build/screen.ppm")

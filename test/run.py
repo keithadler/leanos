@@ -76,7 +76,8 @@ def wait_for(prefix):
     return ("wait", prefix)
 
 
-def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None, image=None):
+def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None, image=None,
+         settle=0.3):
     """steps: bytes to type once the system is idle, each followed by a short pause, or
     wait_for(prefix) steps, which wait for a serial line.
     until: after the steps, wait for a serial line starting with this before the capture.
@@ -118,7 +119,7 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                     qmp.cmd("screendump", filename=ppm)
                     ppm_to_png(ppm, os.path.join(ROOT, "build", name + ".png"))
             if waiting_for and line.startswith(waiting_for):
-                time.sleep(0.3)
+                time.sleep(settle)   # let the display finish drawing
                 capture()
                 status = 0
                 break
@@ -164,20 +165,32 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
 DEMO_STEPS = [b"H", b"i", b"!", mouse("v", 120, 88), mouse("d", 120, 88), mouse("v", 200, 150),
               mouse("v", 300, 220), mouse("u", 300, 220)]
 
-# The apps: start Terminal from the dock and ask it things, pick a background in Settings,
-# close Terminal with its red button and start it again, then open Security.
+# The apps: type into Notes, close it and start it again (the note is back, from the file
+# server); start Terminal from the dock, ask it things and write a file; pick a background in
+# Settings; close Terminal with its red button and start it again; open Files and show the
+# new file; then open Security.
 def keys(s):
     return [c.encode() for c in s]
 
 
-APP_STEPS = [mouse("d", 512, 548), mouse("u", 512, 548), wait_for("terminal: opened"),
+def click(x, y):
+    return [mouse("d", x, y), mouse("u", x, y)]
+
+
+APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
+             *click(376, 548), wait_for("alice: opened"),
+             *click(512, 548), wait_for("terminal: opened"),
              *keys("caps\r"), wait_for("terminal: caps"), *keys("boot\r"), wait_for("terminal: boot"),
-             mouse("d", 580, 548), mouse("u", 580, 548), wait_for("settings: opened"),
-             mouse("d", 356, 268), mouse("u", 356, 268), wait_for("settings: background"),
-             mouse("d", 154, 127), mouse("u", 154, 127), wait_for("terminal: window closed"),
-             mouse("v", 300, 300), mouse("d", 512, 548), mouse("u", 512, 548), wait_for("terminal: opened"),
+             *keys("write hello.txt Hello from Terminal\r"), wait_for("terminal: write"),
+             *keys("ls\r"), wait_for("terminal: ls"),
+             *click(580, 548), wait_for("settings: opened"),
+             *click(362, 268), wait_for("settings: background"),
+             *click(154, 127), wait_for("terminal: window closed"),
+             mouse("v", 300, 300), *click(512, 548), wait_for("terminal: opened"),
              *keys("caps\r"), wait_for("terminal: caps"),
-             mouse("d", 648, 548), mouse("u", 648, 548), wait_for("security: 8")]
+             *click(444, 548), wait_for("files: opened"),
+             *click(306, 311), wait_for("files: showing hello.txt"),
+             *click(648, 548), wait_for("security: 10")]
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -185,6 +198,6 @@ if __name__ == "__main__":
     apps = "--apps" in sys.argv
     image = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--image=")), None)
     steps = DEMO_STEPS if demo else APP_STEPS if apps else ()
-    until = "display: moved" if demo else "security: 8" if apps else None
+    until = "display: moved" if demo else "security: 10" if apps else None
     sys.exit(boot(float(args[0]) if args else 30, steps=steps, until=until,
-                  snaps={"display: boot logo drawn": "logo"}, image=image))
+                  snaps={"display: boot logo drawn": "logo"}, image=image, settle=2 if apps else 0.3))

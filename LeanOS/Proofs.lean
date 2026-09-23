@@ -740,18 +740,18 @@ theorem len_mkTasksFrom : ∀ (k n : Nat), len (mkTasksFrom k n) = n
   | _, 0 => rfl
   | k, n + 1 => by simp [mkTasksFrom, len, len_mkTasksFrom (k + 1) n]
 
-theorem cases8 {j : Nat} (h : j < numTasks) :
-    j = 0 ∨ j = 1 ∨ j = 2 ∨ j = 3 ∨ j = 4 ∨ j = 5 ∨ j = 6 ∨ j = 7 := by
+theorem cases10 {j : Nat} (h : j < numTasks) :
+    j = 0 ∨ j = 1 ∨ j = 2 ∨ j = 3 ∨ j = 4 ∨ j = 5 ∨ j = 6 ∨ j = 7 ∨ j = 8 ∨ j = 9 := by
   simp [numTasks] at h; omega
 
 /-- At boot, every frame a task holds is its own (`owner`), read-execute or read-write. -/
 theorem initCaps_frame {j f : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps j)
     (hf : Covers c f) : owner f = j ∧ f < devBase + devPages ∧ ¬ WX c.rights := by
   obtain ⟨b, n, ho, h1, h2⟩ := hf
-  rcases cases8 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+  rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hc <;>
-    rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> obtain ⟨rfl, rfl⟩ := ho <;>
-    by_cases hfp : f < 2048 <;> by_cases hfd : f < 2648 <;>
+    rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> obtain ⟨rfl, rfl⟩ := ho <;>
+    by_cases hfp : f < 4096 <;> by_cases hfd : f < 4696 <;>
     simp [WX, Rights.rx, Rights.rw, owner, poolFrames, framesPerTask, maxTasks, fbPages,
       displayTask, inputTask, devBase, devPages, hfp, hfd] at h1 h2 ⊢ <;> omega
 
@@ -768,9 +768,9 @@ theorem initCaps_run {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCap
   intro f f' hf hf'
   have ⟨b, n, ho, _, _⟩ := hf
   apply runOK_of ho _ f f' hf hf'
-  rcases cases8 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+  rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hc <;>
-    rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;>
+    rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;>
     obtain ⟨rfl, rfl⟩ := ho <;> simp [poolFrames, framesPerTask, maxTasks, devBase, fbPages]
 
 theorem initCap_ok {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps j) : CapOK j c where
@@ -787,11 +787,11 @@ theorem mkTask_ok {fb : Bool} {j : Nat} (hj : j < numTasks) : TaskOK fb j (mkTas
   · intro m hm
     simp only [mkTask, initMaps] at hm
     have hcode : runCap (256 * j) 16 Rights.rx ∈ initCaps j := by
-      rcases cases8 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
+      rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
     have hdata : runCap (256 * j + 16) 8 Rights.rw ∈ initCaps j := by
-      rcases cases8 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
+      rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
     have hstack : runCap (256 * j + 24) 4 Rights.rw ∈ initCaps j := by
-      rcases cases8 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
+      rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
     rcases mem_app.1 hm with hm | hm
     · obtain ⟨k, hk, -, hf, hr⟩ := mem_runMaps hm
       exact ⟨_, hcode, ⟨_, _, rfl, by omega, by omega⟩, hr.symm⟩
@@ -810,7 +810,7 @@ theorem mkTask_ok {fb : Bool} {j : Nat} (hj : j < numTasks) : TaskOK fb j (mkTas
   · intro m hm
     left
     simp only [mkTask, initMaps] at hm
-    have : j < 8 := by simpa [numTasks] using hj
+    have : j < 10 := by simpa [numTasks] using hj
     rcases mem_app.1 hm with hm | hm
     · obtain ⟨k, hk, -, hf, -⟩ := mem_runMaps hm; simp [poolFrames, framesPerTask, maxTasks]; omega
     · rcases mem_app.1 hm with hm | hm
@@ -950,6 +950,65 @@ theorem inv_sysStart {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
     exact inv_setTask h1 ((h1.tasks _ _ ht1).result _)
   · exact inv_ret hs ht _
 
+/-! ### Dropping a capability -/
+
+theorem mem_removeNth {α : Type} : ∀ {l : List α} {i : Nat} {a : α}, a ∈ removeNth l i → a ∈ l
+  | [], _, _, h => by simp [removeNth] at h
+  | x :: l, 0, a, h => List.mem_cons_of_mem _ h
+  | x :: l, n + 1, a, h => by
+    simp only [removeNth, List.mem_cons] at h
+    rcases h with h | h
+    · exact h ▸ List.mem_cons_self ..
+    · exact List.mem_cons_of_mem _ (mem_removeNth h)
+
+theorem coversB_spec {c : Cap} {f : Nat} (h : coversB c f = true) : Covers c f := by
+  unfold coversB at h
+  split at h
+  · rename_i b n ho
+    simp only [Bool.and_eq_true, Nat.ble_eq] at h
+    exact ⟨b, n, ho, h.1, by omega⟩
+  · simp at h
+
+theorem sameRights_spec {a b : Rights} (h : sameRights a b = true) : a = b := by
+  cases a; cases b
+  simp only [sameRights, Bool.and_eq_true, beq_iff_eq] at h
+  obtain ⟨⟨h1, h2⟩, h3⟩ := h
+  subst h1; subst h2; subst h3; rfl
+
+theorem backedBy_spec : ∀ {cs : List Cap} {m : Mapping}, backedBy cs m = true →
+    ∃ c ∈ cs, Covers c m.frame ∧ c.rights = m.rights
+  | [], m, h => by simp [backedBy] at h
+  | c :: cs, m, h => by
+    simp only [backedBy, Bool.or_eq_true, Bool.and_eq_true] at h
+    rcases h with ⟨h1, h2⟩ | h
+    · exact ⟨c, List.mem_cons_self .., coversB_spec h1, sameRights_spec h2⟩
+    · obtain ⟨c', hc', h'⟩ := backedBy_spec h
+      exact ⟨c', List.mem_cons_of_mem _ hc', h'⟩
+
+theorem mem_keepBacked {cs : List Cap} : ∀ {ms : List Mapping} {m : Mapping},
+    m ∈ keepBacked cs ms → m ∈ ms ∧ backedBy cs m = true
+  | [], m, h => by simp [keepBacked] at h
+  | x :: ms, m, h => by
+    unfold keepBacked at h
+    split at h
+    · rename_i hx
+      rcases List.mem_cons.1 h with h | h
+      · subst h; exact ⟨List.mem_cons_self .., hx⟩
+      · have := mem_keepBacked h; exact ⟨List.mem_cons_of_mem _ this.1, this.2⟩
+    · have := mem_keepBacked h; exact ⟨List.mem_cons_of_mem _ this.1, this.2⟩
+
+theorem inv_sysDrop {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
+    (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysDrop s t ci).state := by
+  unfold sysDrop
+  split
+  · exact inv_ret hs ht _
+  · apply inv_setTask hs
+    refine ⟨?_, ?_, ?_, ht.status, ?_, ht.measured⟩
+    · intro m hm; exact backedBy_spec (mem_keepBacked hm).2
+    · intro m hm; exact ht.vpnOk m (mem_keepBacked hm).1
+    · intro c hc; exact ht.caps c (mem_removeNth hc)
+    · intro m hm; exact ht.fbMaps m (mem_keepBacked hm).1
+
 theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
     Inv (syscall s num a0 a1 a2 a3 a4).state := by
   unfold syscall
@@ -978,6 +1037,7 @@ theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
       · exact inv_sysIrqAck hs hto
       · exact inv_sysBootInfo hs hto
       · exact inv_sysStart hs hto
+      · exact inv_sysDrop hs hto
       · exact inv_ret hs hto _
     · exact hs
 
@@ -1183,84 +1243,112 @@ theorem reply_wakes_only_caller {s : KState} {t : Task} (ht : nth? s.tasks s.cur
 
 /-! ## The demo manifest: who can reach whom -/
 
-/-- The apps that may open windows: alice's Notes (0), Terminal (5), Settings (6) and
-Security (7). -/
-def App (A : Nat) : Prop := A = 0 ∨ A = 5 ∨ A = 6 ∨ A = 7
+/-- The apps that may open windows: alice's Notes (0), Terminal (5), Settings (6),
+Security (7) and Files (9). -/
+def App (A : Nat) : Prop := A = 0 ∨ A = 5 ∨ A = 6 ∨ A = 7 ∨ A = 9
 
-/-- The only grant edges in the manifest: from each app to the display server (1). -/
-theorem edge_iff {A B : Nat} : Edge A B ↔ App A ∧ B = 1 := by
+/-- The apps that may use the file server: Notes (0), Terminal (5) and Files (9). -/
+def FsClient (A : Nat) : Prop := A = 0 ∨ A = 5 ∨ A = 9
+
+/-- The only grant edges in the manifest: from each app to the display server (1), and
+from the file server's clients to the file server (8). -/
+theorem edge_iff {A B : Nat} : Edge A B ↔ (App A ∧ B = 1) ∨ (FsClient A ∧ B = 8) := by
   constructor
   · rintro ⟨hA, hB, e, ⟨c, hc, hco, hw, hx⟩, ⟨d, hd, hdo, hr⟩⟩
-    rcases cases8 hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    rcases cases10 hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
       simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hc <;>
-      rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+      rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
       simp at hco hw hx <;> subst hco <;>
-      rcases cases8 hB with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+      rcases cases10 hB with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
       simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hd <;>
-      rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-      simp at hdo hr <;> simp [App]
-  · rintro ⟨hA, rfl⟩
-    have hd : epCap 0 true false false 0 ∈ initCaps 1 := by
+      rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+      simp at hdo hr <;> simp [App, FsClient]
+  · have hd0 : epCap 0 true false false 0 ∈ initCaps 1 := by
       simp [initCaps, frameCaps, snoc, runCap, launchCap]
-    rcases hA with rfl | rfl | rfl | rfl
-    · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 1,
-        by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd, rfl, rfl⟩⟩
-    · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 5,
-        by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd, rfl, rfl⟩⟩
-    · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 6,
-        by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd, rfl, rfl⟩⟩
-    · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 7,
-        by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd, rfl, rfl⟩⟩
+    have hd1 : epCap 1 true false false 0 ∈ initCaps 8 := by
+      simp [initCaps, frameCaps, snoc, runCap]
+    rintro (⟨hA, rfl⟩ | ⟨hA, rfl⟩)
+    · rcases hA with rfl | rfl | rfl | rfl | rfl
+      · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 1,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 5,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 6,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 7,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 9,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+    · rcases hA with rfl | rfl | rfl
+      · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 1,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 5,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 9,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
 
-theorem reach_iff {A B : Nat} (h : Reach A B) : A = B ∨ (App A ∧ B = 1) := by
+/-- Memory moves at most one step: from an app to the display server, or from a client to
+the file server. Neither server can pass anything on. -/
+theorem reach_iff {A B : Nat} (h : Reach A B) :
+    A = B ∨ (App A ∧ B = 1) ∨ (FsClient A ∧ B = 8) := by
   induction h with
   | refl => exact Or.inl rfl
   | step _ he ih =>
-    obtain ⟨hB, hC⟩ := edge_iff.1 he
-    subst hC
-    rcases ih with h | ⟨_, h⟩
-    · subst h; exact Or.inr ⟨hB, rfl⟩
-    · subst h; simp [App] at hB
+    rcases edge_iff.1 he with ⟨hB, rfl⟩ | ⟨hB, rfl⟩
+    · rcases ih with rfl | ⟨_, rfl⟩ | ⟨_, rfl⟩
+      · exact Or.inr (Or.inl ⟨hB, rfl⟩)
+      · simp [App] at hB
+      · simp [App] at hB
+    · rcases ih with rfl | ⟨_, rfl⟩ | ⟨_, rfl⟩
+      · exact Or.inr (Or.inr ⟨hB, rfl⟩)
+      · simp [FsClient] at hB
+      · simp [FsClient] at hB
 
-/-- **Every task but the display server is confined.** Whatever happens, a task other than
-the server holds capabilities only to its own frames, so it can never map, read or write
-anyone else's memory. -/
-theorem confined {s : KState} (h : Reachable s) {j : Nat} (hj : j ≠ displayTask) {t : Task}
+/-- **Every task but the two servers is confined.** Whatever happens, a task other than the
+display server and the file server holds capabilities only to its own frames, so it can
+never map, read or write anyone else's memory. -/
+theorem confined {s : KState} (h : Reachable s) {j : Nat} (hj : j ≠ displayTask)
+    (hj8 : j ≠ fileServer) {t : Task}
     (ht : nth? s.tasks j = some t) {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) :
     owner f = j := by
-  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩
+  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩ | ⟨_, h⟩
   · exact h
   · exact absurd h hj
+  · exact absurd h hj8
+
+/-- The file server holds only its own frames and frames its clients granted it. -/
+theorem file_server_frames {s : KState} (h : Reachable s) {t : Task}
+    (ht : nth? s.tasks fileServer = some t) {c : Cap} (hc : c ∈ t.caps) {f : Nat}
+    (hf : Covers c f) : owner f = fileServer ∨ FsClient (owner f) := by
+  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩ | ⟨h, _⟩
+  · exact Or.inl h
+  · simp [fileServer] at h
+  · exact Or.inr h
 
 /-- **mallory is confined.** Whatever happens, task 2 holds capabilities only to its own
 frames (512 to 767), so it can never map, read or write anyone else's memory. -/
 theorem mallory_confined {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 2 = some t)
     {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : owner f = 2 := by
-  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩
-  · exact h
-  · cases h
+  exact confined h (by decide) (by decide) ht hc hf
 
 /-- carol (task 3) holds capabilities only to her own frames (768 to 1023). -/
 theorem carol_confined {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 3 = some t)
     {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : owner f = 3 := by
-  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩
-  · exact h
-  · cases h
+  exact confined h (by decide) (by decide) ht hc hf
 
 /-- alice (task 0) is never given anyone's memory: she only ever holds her own frames. -/
 theorem alice_confined {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 0 = some t)
     {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : owner f = 0 := by
-  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩
-  · exact h
-  · cases h
+  exact confined h (by decide) (by decide) ht hc hf
 
 /-- The display server (task 1) holds only its own frames, the framebuffer, and frames the
 apps granted it. -/
 theorem server_frames {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 1 = some t)
     {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : owner f = 1 ∨ App (owner f) := by
-  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨h, _⟩
+  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨h, _⟩ | ⟨_, h⟩
   · exact Or.inl h
   · exact Or.inr h
+  · simp at h
 
 /-! ## Only verified code runs -/
 
@@ -1293,6 +1381,26 @@ theorem verify_refuses_mismatch (s : KState) (i : Nat) (hm : List Nat) (hne : hm
     · exact absurd (eqList_spec h) hne
   refine ⟨{ t with status := .dead, hash := hm }, ?_, rfl⟩
   simp [verify, ht, hu, hneq, setTask, nth?_setNth]
+
+/-! ## Dropping a capability -/
+
+/-- **Dropping only takes away.** After `drop`, every task holds a subset of the
+capabilities and mappings it held before; the caller loses the capability and every page
+it could see only through it. -/
+theorem drop_only_shrinks {s : KState} {t : Task} (ht : nth? s.tasks s.cur = some t) (ci j : Nat)
+    {u u' : Task} (hu : nth? s.tasks j = some u) (hu' : nth? (sysDrop s t ci).state.tasks j = some u') :
+    (∀ c ∈ u'.caps, c ∈ u.caps) ∧ (∀ m ∈ u'.maps, m ∈ u.maps) := by
+  unfold sysDrop at hu'
+  split at hu'
+  · simp only [ret, setTask, nth?_setNth] at hu'
+    by_cases hj : s.cur = j
+    · subst hj; rw [ht] at hu; cases hu; simp [ht] at hu'; subst hu'; exact ⟨fun _ h => h, fun _ h => h⟩
+    · simp [hj, hu] at hu'; subst hu'; exact ⟨fun _ h => h, fun _ h => h⟩
+  · simp only [setTask, nth?_setNth] at hu'
+    by_cases hj : s.cur = j
+    · subst hj; rw [ht] at hu; cases hu; simp [ht] at hu'; subst hu'
+      exact ⟨fun _ h => mem_removeNth h, fun _ h => (mem_keepBacked h).1⟩
+    · simp [hj, hu] at hu'; subst hu'; exact ⟨fun _ h => h, fun _ h => h⟩
 
 /-! ## Starting programs -/
 
@@ -1409,9 +1517,9 @@ theorem only_display_launches {s : KState} (h : Reachable s) {j : Nat} {t : Task
     j = displayTask ∧ App k := by
   obtain ⟨c0, hc0, ho⟩ := launch_fixed h ht hc hk
   have hj := (reachable_inv h).lt ht
-  rcases cases8 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+  rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hc0 <;>
-    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp at ho <;> subst ho <;> simp [App, displayTask]
 
 /-! ## Interrupts and devices -/
@@ -1455,9 +1563,9 @@ theorem uart_irq_only_input {s : KState} (h : Reachable s) {j : Nat} {t : Task}
     j = inputTask := by
   obtain ⟨c0, hc0, ho⟩ := irqs_fixed h ht hc hn
   have hj := (reachable_inv h).lt ht
-  rcases cases8 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+  rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hc0 <;>
-    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> rfl
+    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> rfl
 
 /-- **The UART belongs to the input driver.** No other task can ever hold a capability to
 the UART's registers. -/
@@ -1467,9 +1575,10 @@ theorem uart_confined {s : KState} (h : Reachable s) {j : Nat} {t : Task}
   have hr := (frame_flow h ht hc hf).1
   have : owner devBase = inputTask := by decide
   rw [this] at hr
-  rcases reach_iff hr with h1 | ⟨h0, _⟩
+  rcases reach_iff hr with h1 | ⟨h0, _⟩ | ⟨h0, _⟩
   · exact h1.symm
   · simp [App, inputTask] at h0
+  · simp [FsClient, inputTask] at h0
 
 /-! ## `write` reads only what the task may read -/
 
@@ -1541,6 +1650,9 @@ theorem outLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
          all_goals simp at h
          done)
       | (unfold sysStart at h; repeat' (first | split at h | dsimp only at h)
+         all_goals simp at h
+         done)
+      | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
          all_goals simp at h
          done)
 

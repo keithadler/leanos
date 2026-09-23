@@ -12,11 +12,16 @@
    A click inside a window goes to its client (EV_DOWN, window coordinates); a click on the
    red button asks the client to close (EV_CLOSE), and the window goes at once.
 
-   It holds a launch capability for each app (capabilities 6 to 9: Notes, Terminal,
-   Settings, Security). Clicking an app in the dock starts it if it is not running; the
+   It holds a launch capability for each app (capabilities 6 to 10: Notes, Terminal,
+   Settings, Security, Files). Clicking an app in the dock starts it if it is not running; the
    kernel first takes back everything the app's last run shared, including its window, so
    the server drops that window before it asks. SET (w0 = 3) changes the desktop, and only
    Settings (badge 6) may ask.
+
+   It keeps a copy of its own capability list's layout (which app granted each capability,
+   and for which window), so it can drop a window's capability when the window goes, drop
+   at once any grant it did not ask for, and know which capabilities the kernel takes back
+   when it starts an app again. Its capability list never grows without bound.
 
    Its fonts and icons were loaded at boot into the start of its spare run (capability 3),
    which it maps read-only. The desktop's background is a pattern it computes itself. */
@@ -29,7 +34,7 @@
 #define WIN_PAGE 2048   /* window k's pixels are mapped at WIN_PAGE + WIN_MAX_PAGES k */
 #define WIN_MAX_PAGES 160
 #define ASSET_PAGE 4096
-#define MAX_WIN 4
+#define MAX_WIN 6
 #define TITLE_H 30
 #define BAR_H 30
 #define W 1024
@@ -39,7 +44,7 @@
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3 };
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5 };
 enum { BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
-       BADGE_SECURITY = 7 };
+       BADGE_SECURITY = 7, BADGE_FILES = 9 };
 enum { SET_BACKGROUND = 1 };
 #define LAUNCH_FIRST 6  /* launch capabilities: Notes, Terminal, Settings, Security */
 enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
@@ -54,8 +59,9 @@ enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
 #define DOCK_X ((W - DOCK_W) / 2)
 #define DOCK_Y (H - DOCK_H - 10)
 static const char *const dock_names[DOCK_N] = {"Notes", "Files", "Terminal", "Settings", "Security"};
-static const int dock_slot[DOCK_N] = {0, -1, 5, 6, 7};    /* -1: not installed */
-static const int dock_launch[DOCK_N] = {LAUNCH_FIRST, -1, LAUNCH_FIRST + 1, LAUNCH_FIRST + 2, LAUNCH_FIRST + 3};
+static const int dock_slot[DOCK_N] = {0, 9, 5, 6, 7};
+static const int dock_launch[DOCK_N] = {LAUNCH_FIRST, LAUNCH_FIRST + 4, LAUNCH_FIRST + 1, LAUNCH_FIRST + 2,
+                                        LAUNCH_FIRST + 3};
 
 /* The backgrounds Settings offers: top and bottom of the gradient, and the glow's color. */
 #define NTHEME 3
@@ -93,6 +99,11 @@ struct state {
     int hover;                  /* dock icon under the pointer + 1, or 0 */
     int verified;               /* how many programs the boot checks passed */
     int theme;
+    /* the capability list, as the kernel holds it: who granted each one (0: the server's
+       own) and which window it shows (window + 1, or 0) */
+    int ncaps;
+    u64 cap_badge[64];
+    int cap_win[64];
 };
 
 static void say(struct line *l) { put_s(l, "\n"); flush(l); }
@@ -100,13 +111,14 @@ static void say(struct line *l) { put_s(l, "\n"); flush(l); }
 static const char *name_of(u64 badge) {
     return badge == BADGE_ALICE ? "alice" : badge == BADGE_MALLORY ? "mallory"
          : badge == BADGE_TERMINAL ? "Terminal" : badge == BADGE_SETTINGS ? "Settings"
-         : badge == BADGE_SECURITY ? "Security" : "unknown";
+         : badge == BADGE_SECURITY ? "Security" : badge == BADGE_FILES ? "Files" : "unknown";
 }
 
 /* The program slot a badge belongs to: the manifest gives each app its slot's number as its
    badge, except Notes (slot 0, badge 1). */
 static int slot_of(u64 badge) {
-    return badge == BADGE_ALICE ? 0 : badge >= BADGE_TERMINAL && badge <= BADGE_SECURITY ? (int)badge : -1;
+    return badge == BADGE_ALICE ? 0
+         : (badge >= BADGE_TERMINAL && badge <= BADGE_SECURITY) || badge == BADGE_FILES ? (int)badge : -1;
 }
 
 /* 0 not started, 1 running, 2 stopped, as the kernel sees slot k now. */
@@ -158,8 +170,11 @@ static void splash_bar(struct state *st, int done /* 0..1000 */) {
 }
 
 /* The boot checks: what the kernel decided about each task's code, from bootinfo. */
-#define NPROG 5
-static const char *const prog_names[NPROG] = {"Notes", "Display server", "Test: mallory", "Test: carol", "Input driver"};
+/* The programs checked at boot, and their slots; the apps are checked when they start. */
+#define NPROG 6
+static const char *const prog_names[NPROG] = {"Notes", "Display server", "Test: mallory", "Test: carol",
+                                               "Input driver", "File server"};
+static const int prog_slot[NPROG] = {0, 1, 2, 3, 4, 8};
 
 static void hex8(char *out, u64 v) {
     for (int i = 0; i < 8; i++) out[i] = "0123456789abcdef"[(v >> (28 - 4 * i)) & 15];
@@ -178,7 +193,7 @@ static void check_mark(struct surface *s, int x, int y, int ok) {
 }
 
 #define CHECK_Y 462
-#define CHECK_LINE 18
+#define CHECK_LINE 16
 
 static void boot_check_line(struct state *st, int k, u64 verdict_code, u64 word) {
     struct surface *s = &st->screen;
@@ -207,7 +222,7 @@ static void splash(struct state *st) {
        walks through its verdicts, one program per step, eased. */
     u64 code[NPROG], word[NPROG];
     for (int k = 0; k < NPROG; k++) {
-        struct res r = sys1(SYS_BOOTINFO, (u64)k);
+        struct res r = sys1(SYS_BOOTINFO, (u64)prog_slot[k]);
         code[k] = r.x[0] == OK ? r.x[1] : 0;
         word[k] = r.x[2];
     }
@@ -387,6 +402,20 @@ static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
 
 static void redraw_all(struct state *st) { composite(st, 0, 0, W, H); }
 
+/* The kernel removed capability i: everything after it moves down one place. */
+static void cap_forget(struct state *st, int i) {
+    for (int j = i; j < st->ncaps - 1; j++) {
+        st->cap_badge[j] = st->cap_badge[j + 1];
+        st->cap_win[j] = st->cap_win[j + 1];
+    }
+    st->ncaps--;
+}
+
+static void cap_drop(struct state *st, int i) {
+    sys1(SYS_DROP, (u64)i);
+    cap_forget(st, i);
+}
+
 /* Take window k off the screen and stop mapping its pixels. */
 static void hide(struct state *st, int k) {
     int at = -1;
@@ -403,6 +432,8 @@ static void hide(struct state *st, int k) {
 static void release(struct state *st, int k) {
     struct win *w = &st->win[k];
     hide(st, k);
+    for (int i = st->ncaps - 1; i >= 0; i--)
+        if (st->cap_win[i] == k + 1) cap_drop(st, i);
     if (w->slot) sys(SYS_REPLY, w->slot - 1, EV_CLOSE, 0, 0, 0);
     w->slot = 0;
     w->used = 0;
@@ -461,6 +492,10 @@ static void launch(struct state *st, struct line *l, int i) {
     for (int k = 0; k < MAX_WIN; k++)
         if (st->win[k].used && slot_of(st->win[k].badge) == slot) release(st, k);
     struct res r = sys1(SYS_START, (u64)dock_launch[i]);
+    /* The kernel took back every capability to the app's frames: those it granted. */
+    if (r.status == OK)
+        for (int j = st->ncaps - 1; j >= 0; j--)
+            if (st->cap_badge[j] && slot_of(st->cap_badge[j]) == slot) cap_forget(st, j);
     put_s(l, "display: start ");
     put_s(l, dock_names[i]);
     put_s(l, outcome(r.status));
@@ -578,6 +613,7 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     if (wn->y + (int)h + TITLE_H > DOCK_Y - 8) wn->y = DOCK_Y - 8 - (int)h - TITLE_H;
     wn->slot = 0;
     wn->closing = 0;
+    st->cap_win[cap - 1] = k + 1;
     wn->qhead = wn->qlen = 0;
     st->z[st->nz++] = k;
     redraw_all(st);
@@ -651,6 +687,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     /* The assets: a read-only view of the start of the spare run. */
     struct res ro = sys(SYS_DERIVE, 3, R, 0, 200, 0);
     sys2(SYS_MAP, ro.x[1], ASSET_PAGE);
+    st->ncaps = (int)ro.x[1] + 1;
+    for (int i = 0; i < st->ncaps; i++) { st->cap_badge[i] = 0; st->cap_win[i] = 0; }
     const unsigned char *assets = (const unsigned char *)PAGE(ASSET_PAGE);
     st->ui = font_of(assets, F_UI);
     st->ui_bold = font_of(assets, F_UI_BOLD);
@@ -681,7 +719,13 @@ __attribute__((section(".text.start"))) void _start(void) {
 
     for (;;) {
         struct res r = sys1(SYS_RECV, ENDPOINT);
-        u64 badge = r.x[1], op = r.x[2], slot = r.x[6];
+        u64 badge = r.x[1], op = r.x[2], slot = r.x[6], grant = r.x[5];
+        if (grant) {
+            /* a granted capability lands at the end of the list */
+            st->ncaps = (int)grant;
+            st->cap_badge[grant - 1] = badge;
+            st->cap_win[grant - 1] = 0;
+        }
         if (badge == BADGE_INPUT && !slot) {
             on_input(st, &l, op, r.x[3], r.x[4]);
         } else if (slot && op == OP_OPEN && r.x[5]) {
@@ -697,6 +741,8 @@ __attribute__((section(".text.start"))) void _start(void) {
             say(&l);
             if (slot) sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
         }
+        /* A grant that did not become a window is not kept. */
+        if (grant && st->cap_win[grant - 1] == 0) cap_drop(st, (int)grant - 1);
         forget_stopped(st, &l);
     }
 }

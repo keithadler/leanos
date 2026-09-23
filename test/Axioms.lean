@@ -36,3 +36,5 @@ open LeanOS
 #print axioms start_revokes
 #print axioms launch_fixed
 #print axioms only_display_launches
+#print axioms file_server_frames
+#print axioms drop_only_shrinks

@@ -3,7 +3,7 @@
 #include "app.h"
 
 #define XW 460
-#define XH 322
+#define XH 350
 enum { F_UI = 1, F_BOLD = 2, F_SMALL = 3 };
 
 static const char *const proved[] = {
@@ -46,10 +46,10 @@ static void draw(struct security *st, int n[3]) {
     n[0] = n[1] = n[2] = 0;
     fill(s, 0, 0, XW, XH, rgb(246, 246, 248));
     font_text(s, &st->bold, 20, 30, "Verified boot", rgb(30, 30, 36));
-    for (u64 k = 0; k < 8; k++) {
+    for (u64 k = 0; k < NSLOTS; k++) {
         struct res r = sys1(SYS_BOOTINFO, k);
         int kind = r.status == OK ? (int)r.x[1] : 0;
-        int y = 44 + (int)k * 20;
+        int y = 42 + (int)k * 18;
         mark(s, 20, y, kind);
         font_text(s, &st->ui, 44, y + 13, slot_name(k), rgb(40, 40, 48));
         char h[9];
@@ -60,10 +60,10 @@ static void draw(struct security *st, int n[3]) {
         font_text(s, &st->small, XW - 20 - font_width(&st->small, run), y + 12, run, rgb(120, 120, 130));
         n[kind == 1 ? 0 : kind == 2 ? 1 : 2]++;
     }
-    fill(s, 20, 210, XW - 40, 1, rgb(224, 224, 230));
-    font_text(s, &st->bold, 20, 234, "Proved in Lean", rgb(30, 30, 36));
+    fill(s, 20, 230, XW - 40, 1, rgb(224, 224, 230));
+    font_text(s, &st->bold, 20, 254, "Proved in Lean", rgb(30, 30, 36));
     for (u64 i = 0; i < NPROVED; i++) {
-        int y = 254 + (int)i * 16;
+        int y = 274 + (int)i * 15;
         font_text(s, &st->small, 22, y, "\xe2\x80\xa2", rgb(58, 110, 230));
         font_text(s, &st->small, 34, y, proved[i], rgb(60, 60, 70));
     }

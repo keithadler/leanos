@@ -30,13 +30,13 @@ INIT_C := $(patsubst %,build/c/Init_%.c,$(INIT_MODULES))
 INIT_O := $(INIT_C:.c=.o)
 
 KERNEL_LEAN_C := .lake/build/ir/LeanOS/Kernel.c
-USER_PROGS := alice display mallory carol input terminal settings security
+USER_PROGS := alice display mallory carol input terminal settings security fs files
 USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
 ARCH_O := build/boot.o build/kmain.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
 
 .PHONY: all run test mutants proofs clean
-ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security)
+ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files)
 
 all: $(ASSET_BLOBS) build/kernel8.img proofs
 
@@ -50,7 +50,8 @@ proofs: LeanOS/Manifest.lean
 MANIFEST_INPUTS := build/user/alice.bin+build/assets/alice.bin build/user/display.bin+build/assets/display.bin \
   build/user/mallory.bin build/user/carol.bin build/user/input.bin \
   build/user/terminal.bin+build/assets/terminal.bin build/user/settings.bin+build/assets/settings.bin \
-  build/user/security.bin+build/assets/security.bin
+  build/user/security.bin+build/assets/security.bin build/user/fs.bin \
+  build/user/files.bin+build/assets/files.bin
 LeanOS/Manifest.lean: tools/mkmanifest.py $(USER_BINS) $(ASSET_BLOBS)
 	python3 tools/mkmanifest.py $@ $(MANIFEST_INPUTS)
 
@@ -102,6 +103,7 @@ TERMINAL_ASSETS := font:1:$(FONTS)/JetBrainsMono-Regular.ttf:14
 SETTINGS_ASSETS := font:1:$(FONTS)/Inter-Regular.ttf:14 font:2:$(FONTS)/Inter-SemiBold.ttf:16 \
   font:3:$(FONTS)/Inter-Regular.ttf:12
 SECURITY_ASSETS := $(SETTINGS_ASSETS)
+FILES_ASSETS := $(SETTINGS_ASSETS) font:4:$(FONTS)/JetBrainsMono-Regular.ttf:12
 
 build/assets/alice.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
 	@mkdir -p build/assets
@@ -119,6 +121,10 @@ build/assets/security.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
 	@mkdir -p build/assets
 	python3 tools/mkassets.py $@ $(SECURITY_ASSETS)
 
+build/assets/files.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
+	@mkdir -p build/assets
+	python3 tools/mkassets.py $@ $(FILES_ASSETS)
+
 build/boot.o: arch/boot.S $(USER_BINS) $(ASSET_BLOBS)
 	@mkdir -p build
 	$(CC) $(TARGET) -c $< -o $@
@@ -127,7 +133,7 @@ build/user/font.h: user/font5x7.txt tools/mkfont.py
 	@mkdir -p build/user
 	python3 tools/mkfont.py $< $@
 
-build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/user.ld build/user/font.h
+build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/fs.h user/user.ld build/user/font.h
 	@mkdir -p build/user
 	$(CC) $(UCFLAGS) -Ibuild/user -c $< -o build/user/$*.o
 	$(LD) -T user/user.ld --gc-sections build/user/$*.o -o $@

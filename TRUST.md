@@ -26,9 +26,10 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 |---|---|
 | `frame_flow` | A task holds a frame only if a chain of grant edges leads to it from the frame's owner at boot, and never with more rights than the owner had. |
 | `endpoints_fixed` | Endpoint capabilities never gain rights and keep their badge, so no task can forge who it is. |
-| `edge_iff` | In the manifest the only grant edges are from the apps (Notes, Terminal, Settings, Security) to the display server. |
-| `confined` | Every task but the display server only ever holds its own 256 frames. (`mallory_confined`, `carol_confined`, `alice_confined` are the same for those three.) |
-| `server_frames` | The display server holds only its own frames, the framebuffer, and frames the apps granted it. |
+| `edge_iff`, `reach_iff` | In the manifest the only grant edges are from the apps (Notes, Terminal, Settings, Security, Files) to the display server, and from Notes, Terminal and Files to the file server. Memory moves at most one step: neither server can pass on what it was given. |
+| `confined` | Every task but the two servers only ever holds its own 256 frames. (`mallory_confined`, `carol_confined`, `alice_confined` are the same for those three.) |
+| `server_frames`, `file_server_frames` | The display server holds only its own frames, the framebuffer, and frames the apps granted it; the file server, only its own frames and frames its clients granted it. |
+| `drop_only_shrinks` | After `drop`, every task holds a subset of the capabilities and mappings it held before. |
 | `maps_backed` | Every page a task can see comes from one of its own capabilities, with that capability's rights. |
 | `no_write_execute` | No page is ever both writable and executable. |
 | `maps_in_range` | Every mapping is inside the 8192-page user window and the frame pool. |
@@ -63,7 +64,7 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 42 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 46 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a `start` that forgets to take back
@@ -183,6 +184,14 @@ QEMU's model of them, because leanos has only run under QEMU.
   owner's slot is started again; a running app cannot take back one grant on its own yet.
 - Which task *runs* is proved only up to the scheduler: nothing proves that a started app
   eventually gets to run, or that the display server starts what the user clicked.
+- The file server is trusted with what its clients store: it can read and change any
+  file, and it sees each client's buffer while it answers that client. The proofs bound
+  what it can *hold* (its own frames, and a client's buffer only as that client granted
+  it), not what it does with the bytes. Files live in its memory and are lost when the Pi
+  restarts.
+- Capability lists are bounded (64 per task) but a server that is sent grants it does not
+  want must drop them; the display server and the file server do. A client that floods a
+  server with grants between the server's drops is not stopped by the kernel.
 - Confinement is about capabilities. A task that holds a frame can still copy its bytes
   into a message it sends, so the proofs bound what each task can *hold*, and a task on a
   grant path (the server, here) is trusted with what passes through it.

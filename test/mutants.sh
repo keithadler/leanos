@@ -119,7 +119,17 @@ mutant "manifest lets mallory start programs" \
 mutant "manifest lets the display restart the input driver" \
   "(launchCap 0)) (launchCap 5)" "(launchCap 4)) (launchCap 5)"
 mutant "manifest lets Terminal receive on the display's endpoint" \
-  "| 5 => snoc (frameCaps 5) (epCap 0 false true true 5)" "| 5 => snoc (frameCaps 5) (epCap 0 true true true 5)"
+  "| 5 => snoc (snoc (frameCaps 5) (epCap 0 false true true 5))" "| 5 => snoc (snoc (frameCaps 5) (epCap 0 true true true 5))"
+mutant "drop keeps the pages it can no longer back" \
+  "⟨setTask s s.cur { t with caps := cs, maps := keepBacked cs t.maps, result := 0 :: .nil }," "⟨setTask s s.cur { t with caps := cs, maps := t.maps, result := 0 :: .nil },"
+mutant "drop lets a task keep the capability and gain another" \
+  "    let cs := removeNth t.caps ci" "    let cs := snoc t.caps ⟨.frames 0 1, Rights.rw, 0⟩"
+mutant "manifest lets mallory grant to the file server" \
+  "| 2 => snoc (frameCaps 2) (epCap 0 false true false 2)" "| 2 => snoc (snoc (frameCaps 2) (epCap 0 false true false 2)) (epCap 1 false true true 2)"
+mutant "manifest lets the file server grant to the display" \
+  "| 8 => snoc (frameCaps 8) (epCap 1 true false false 0)" "| 8 => snoc (snoc (frameCaps 8) (epCap 1 true false false 0)) (epCap 0 false true true 8)"
+mutant "manifest lets Settings receive the file server's mail" \
+  "| 6 => snoc (frameCaps 6) (epCap 0 false true true 6)" "| 6 => snoc (snoc (frameCaps 6) (epCap 0 false true true 6)) (epCap 1 true false false 6)"
 
 cp "$backup" LeanOS/Kernel.lean
 lake build >/dev/null 2>&1 || { echo "FAIL: the unmutated kernel no longer builds"; exit 1; }

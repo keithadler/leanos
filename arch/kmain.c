@@ -341,7 +341,7 @@ static void load_program(uint64_t i) {
 }
 
 static const char *const names[] = {"alice", "display", "mallory", "carol", "input",
-                                    "terminal", "settings", "security"};
+                                    "terminal", "settings", "security", "fs", "files"};
 
 /* SHA-256 of "abc", from FIPS 180-4: the hash must be right before anything relies on it. */
 static void sha256_self_test(void) {

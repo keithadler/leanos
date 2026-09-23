@@ -177,8 +177,8 @@ without bound by deriving or being granted capabilities. -/
 def maxCaps : Nat := 64
 
 /-- The number of program slots in the manifest, and the most the frame pool has room for. -/
-def numTasks : Nat := 8
-def maxTasks : Nat := 8
+def numTasks : Nat := 10
+def maxTasks : Nat := 16
 
 /-- Each task owns 256 frames (1 MiB) of the pool: task `i` owns frames `256i` to `256i+255`. -/
 def framesPerTask : Nat := 256
@@ -206,6 +206,8 @@ def uartIrq : Nat := 153
 
 /-- The task that owns the UART at boot: the input driver. -/
 def inputTask : Nat := 4
+/-- The file server: it receives on endpoint 1. -/
+def fileServer : Nat := 8
 
 /-- Who owns frame `f` at boot: pool frames belong to task `f / 64`, framebuffer frames to
 the display server, device pages to the input driver. -/
@@ -225,27 +227,34 @@ def frameCaps (i : Nat) : List Cap :=
 
 /-- Endpoint 0 is the display server's inbox. Task 0 (alice's Notes) may send to it and
 grant frames, with badge 1. Task 1 (the display server) receives from it, holds the
-framebuffer as capability 5, and may start Notes and the three apps (capabilities 6 to 9).
+framebuffer as capability 5, and may start Notes and the four apps (capabilities 6 to 10).
 Task 2 (mallory) may send to it, without grant, with badge 2. Task 3 (carol) holds no
 endpoint. Task 4 (the input driver) may send to it with badge 3, and holds the UART's
 registers (capability 5) and its interrupt (capability 6). Tasks 5 (Terminal), 6
-(Settings) and 7 (Security) may send and grant with badges 5, 6 and 7. Each endpoint
-capability is capability 4 of its task. -/
+(Settings), 7 (Security) and 9 (Files) may send and grant with badges 5, 6, 7 and 9.
+Each of these endpoint capabilities is capability 4 of its task.
+
+Endpoint 1 is the file server's inbox. Task 8 (the file server) receives from it, and
+Notes, Terminal and Files may send to it and grant (a buffer, for one request), with
+badges 1, 5 and 9, as their capability 5. -/
 def initCaps : Nat → List Cap
-  | 0 => snoc (frameCaps 0) (epCap 0 false true true 1)
-  | 1 => snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 1) (epCap 0 true false false 0))
-           (runCap poolFrames fbPages Rights.rw)) (launchCap 0)) (launchCap 5)) (launchCap 6)) (launchCap 7)
+  | 0 => snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)
+  | 1 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 1) (epCap 0 true false false 0))
+           (runCap poolFrames fbPages Rights.rw)) (launchCap 0)) (launchCap 5)) (launchCap 6)) (launchCap 7))
+           (launchCap 9)
   | 2 => snoc (frameCaps 2) (epCap 0 false true false 2)
   | 4 => snoc (snoc (snoc (frameCaps 4) (epCap 0 false true false 3)) (runCap devBase devPages Rights.rw))
            (irqCap uartIrq)
-  | 5 => snoc (frameCaps 5) (epCap 0 false true true 5)
+  | 5 => snoc (snoc (frameCaps 5) (epCap 0 false true true 5)) (epCap 1 false true true 5)
   | 6 => snoc (frameCaps 6) (epCap 0 false true true 6)
   | 7 => snoc (frameCaps 7) (epCap 0 false true true 7)
+  | 8 => snoc (frameCaps 8) (epCap 1 true false false 0)
+  | 9 => snoc (snoc (frameCaps 9) (epCap 0 false true true 9)) (epCap 1 false true true 9)
   | i => frameCaps i
 
 /-- The programs the machine layer loads and checks at boot. The apps in slots 5 (Terminal),
-6 (Settings) and 7 (Security) wait until the display server launches them. -/
-def autostart (i : Nat) : Bool := i < 5
+6 (Settings), 7 (Security) and 9 (Files) wait until the display server launches them. -/
+def autostart (i : Nat) : Bool := i < 5 || i == 8
 
 /-- Code at pages 0–15, data at 16–23, the stack in the last four pages of the window. -/
 def initMaps (i : Nat) : List Mapping :=
@@ -611,6 +620,40 @@ def sysIrqAck (s : KState) (t : Task) (ci : Nat) : Reply :=
     | .irq n => { ret s t (0 :: .nil) with unmask := n + 1 }
     | _ => ret s t (eBadArg :: .nil)
 
+/-! ## Dropping a capability -/
+
+def removeNth {α : Type} : List α → Nat → List α
+  | .nil, _ => .nil
+  | _ :: xs, 0 => xs
+  | x :: xs, n + 1 => x :: removeNth xs n
+
+/-- Capability `c` covers frame `f`. -/
+def coversB (c : Cap) (f : Nat) : Bool :=
+  match c.obj with
+  | .frames b n => Nat.ble b f && Nat.ble (f + 1) (b + n)
+  | _ => false
+
+def sameRights (a b : Rights) : Bool := a.r == b.r && a.w == b.w && a.x == b.x
+
+/-- Some capability in `cs` covers the mapping's frame with exactly its rights. -/
+def backedBy : List Cap → Mapping → Bool
+  | .nil, _ => false
+  | c :: cs, m => (coversB c m.frame && sameRights c.rights m.rights) || backedBy cs m
+
+def keepBacked (cs : List Cap) : List Mapping → List Mapping
+  | .nil => .nil
+  | m :: ms => if backedBy cs m then m :: keepBacked cs ms else keepBacked cs ms
+
+/-- Let go of capability `ci`. Every page the task could see only through it goes too; the
+task's other capabilities move down one place. -/
+def sysDrop (s : KState) (t : Task) (ci : Nat) : Reply :=
+  match nth? t.caps ci with
+  | none => ret s t (eNoCap :: .nil)
+  | some _ =>
+    let cs := removeNth t.caps ci
+    ⟨setTask s s.cur { t with caps := cs, maps := keepBacked cs t.maps, result := 0 :: .nil },
+      0, 0, true, 0, 0⟩
+
 /-! ## Starting programs, and taking back what they shared -/
 
 /-- A slot whose program may be (re)started: never started, or stopped. -/
@@ -745,6 +788,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 13 => sysIrqAck s t a0
   | 14 => sysBootInfo s t a0
   | 15 => sysStart s t a0
+  | 16 => sysDrop s t a0
   | _ => ret s t (eNoCall :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
@@ -752,7 +796,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   4 derive(cap, rights, offset, count) · 5 exit · 6 capinfo(cap) · 7 whoami
   8 send(cap, w0, w1, w2, grant) · 9 recv(cap) · 10 call(cap, w0, w1, w2, grant)
   11 reply(slot, w0, w1, w2) · 12 irqwait(cap) · 13 irqack(cap) · 14 bootinfo(task)
-  15 start(cap)
+  15 start(cap) · 16 drop(cap)
 Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with

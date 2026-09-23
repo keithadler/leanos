@@ -1,10 +1,12 @@
 /* alice's Notes. She draws a window in her own memory, hands the display server a
    read-only capability to exactly those pages, and then asks it, over and over, for her
-   next event. Keys she is given go into the note. She also keeps a secret in her data
-   pages and checks that nobody changes it. */
+   next event. Keys she is given go into the note, and the note is saved to the file server
+   as notes.txt after every change, so it is back when Notes starts again. She also keeps a
+   secret in her data pages and checks that nobody changes it. */
 #include "lib.h"
 #include "gfx.h"
 #include "assets.h"
+#include "fs.h"
 
 #define WIN_W 300
 #define WIN_H 200
@@ -13,7 +15,7 @@
 #define SPARE_PAGE 64     /* the spare run: assets first, then the window's pixels */
 #define WIN_OFFSET 16     /* pages into the spare run */
 enum { OP_OPEN = 1, OP_WAIT = 2 };
-enum { EV_KEY = 1 };
+enum { EV_KEY = 1, EV_CLOSE = 5 };
 enum { F_HEAD = 5, F_TEXT = 6, F_SMALL = 3 };
 
 struct notes {
@@ -21,6 +23,7 @@ struct notes {
     char text[400];
     int len;
     struct font head, body, small;
+    struct fs_client fs;
 };
 
 static void draw(struct surface *win, struct notes *n) {
@@ -56,6 +59,18 @@ __attribute__((section(".text.start"))) void _start(void) {
 
     sys2(SYS_MAP, SPARE, SPARE_PAGE);
     const unsigned char *assets = (const unsigned char *)PAGE(SPARE_PAGE);
+    fs_init(&n->fs, SPARE_PAGE);
+    long saved = fs_read(&n->fs, "notes.txt");
+    if (saved >= 0) {
+        const char *d = fs_data(&n->fs);
+        for (long i = 0; i < saved && i < 399; i++) n->text[n->len++] = d[i];
+        put_s(&l, "alice: loaded notes.txt, ");
+        put_dec(&l, (u64)n->len);
+        put_s(&l, " bytes\n");
+    } else {
+        put_s(&l, "alice: no saved note yet\n");
+    }
+    flush(&l);
     n->head = font_of(assets, F_HEAD);
     n->body = font_of(assets, F_TEXT);
     n->small = font_of(assets, F_SMALL);
@@ -87,6 +102,11 @@ __attribute__((section(".text.start"))) void _start(void) {
             put_s(&l, "alice: SECRET CHANGED\n");
             flush(&l);
         }
+        if (e.status == OK && e.x[1] == EV_CLOSE) {
+            put_s(&l, "alice: window closed, exiting\n");
+            flush(&l);
+            exit_task();
+        }
         if (e.status != OK || e.x[1] != EV_KEY) continue;
         char c = (char)e.x[2];
         if ((c == 8 || c == 127) && n->len > 0) n->len--;
@@ -95,5 +115,9 @@ __attribute__((section(".text.start"))) void _start(void) {
         else continue;
         draw(&win, n);
         dirty = 1;
+        if (fs_write(&n->fs, "notes.txt", n->text, (u64)n->len) != FS_OK) {
+            put_s(&l, "alice: could not save notes.txt\n");
+            flush(&l);
+        }
     }
 }

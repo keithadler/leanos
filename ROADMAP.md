@@ -100,7 +100,16 @@ instead of corrupting it; stage 6 found this the hard way, when revocation walke
 display server's 900 mappings and overran the old 64 KiB stack. The fix that belongs here
 is to prove a bound, or make the walks iterative.
 
-## 9. A system people can use
+## 9. A system people can use — files in memory, done; the rest, next
 
-A shell and file manager in the GUI, a RAM file system then the SD card, a loader for ELF
-programs, multiple cores, and the Pi 5.
+Done: a file server in user space, with its own endpoint, keeps up to 48 files of up to
+16 KiB in its own memory. Clients (Notes, Terminal, Files) grant it their 4-page buffer
+with every request, and it maps, uses, unmaps and drops the buffer before it answers, so
+it never holds anyone's memory between requests (`drop`, a new system call, is proved to
+only take authority away). The manifest's grant edges now form two stars (apps to the
+display server, clients to the file server) and the proofs show memory moves at most one
+step. Notes keeps its note across restarts, Terminal has `ls`, `cat`, `write` and `rm`,
+and the Files app browses and deletes.
+
+Next: the SD card (so files survive a restart), a loader for ELF programs, multiple cores,
+and the Pi 5.
