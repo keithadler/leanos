@@ -36,32 +36,37 @@ check_order terminal \
   "terminal: caps -> 9 capabilities" \
   "terminal: boot -> 7 verified" \
   "terminal: write hello.txt -> ok" \
-  "terminal: ls -> 4 files" \
+  "terminal: ls -> 5 files" \
   "terminal: window closed, exiting" \
   "terminal: opened a window -> ok" \
   "terminal: caps -> 9 capabilities" \
   "terminal: write fast.txt -> ok" \
   "terminal: cat fast.txt -> 36 bytes" \
   "terminal: run welcome.txt -> not an ELF file" \
-  "terminal: run hello -> slot 10"
+  "terminal: run hello -> slot 10" \
+  "terminal: run clock -> slot 11"
 
 check_order hello \
   "hello: opened a window -> ok"
+
+check_order clock \
+  "clock: opened a window -> ok" \
+  "clock: ticked 3 times"
 
 check_order settings \
   "settings: opened a window -> ok" \
   "settings: background set to Graphite -> ok"
 
 check_order files \
-  "files: listed 5 files" \
+  "files: listed 6 files" \
   "files: showing welcome.txt (169 bytes)" \
   "files: opened a window -> ok" \
-  "files: listed 5 files" \
+  "files: listed 6 files" \
   "files: showing hello.txt (19 bytes)"
 
 check_order security \
   "security: opened a window -> ok" \
-  "security: 11 verified, 0 refused, 1 not loaded"
+  "security: 12 verified, 0 refused, 0 not loaded"
 
 # The kernel loads and checks an app each time it is started, and only then.
 [ "$(echo "$out" | grep -c "^leanos: terminal started$")" = 2 ] || fail "Terminal was not started twice"
@@ -97,16 +102,16 @@ at = lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
 r, g, b = at(1000, 300)
 assert b - r < 20 and max(r, g, b) < 90, ("graphite background", (r, g, b))
 # Security's report: a green check beside each of the ten manifest programs, a blue one
-# beside hello (slot 10, from the SD card), a gray dot for the empty slot 11
+# beside hello and clock (slots 10 and 11, from the SD card)
 green = lambda r, g, b: g > 150 and r < 120 and b < 140
 blue = lambda r, g, b: b > 180 and r < 100
 def count(k, pred):
     y0 = 154 + 40 + 16 * k
-    return sum(1 for y in range(y0, y0 + 16) for x in range(316, 332) if pred(*at(x, y)))
+    return sum(1 for y in range(y0, y0 + 16) for x in range(356, 372) if pred(*at(x, y)))
 for k in range(10):
     assert count(k, green) > 60, ("check", k)
-assert count(10, blue) > 60 and count(10, green) == 0, ("slot 10", count(10, blue))
-assert count(11, green) == 0 and count(11, blue) == 0, "slot 11"
+for k in (10, 11):
+    assert count(k, blue) > 60 and count(k, green) == 0, ("open slot", k, count(k, blue))
 # the note came back after Notes started again: dark text where "Hi" is
 assert sum(1 for y in range(160, 180) for x in range(114, 132) if max(at(x, y)) < 100) > 20, "the saved note"
 # Terminal's dark window, below Security's
@@ -118,7 +123,7 @@ PY
 again=$(python3 test/run.py 40 --keep-sd)
 [ $? -eq 0 ] || fail "the second boot did not reach idle"
 echo "$again" | grep -E "^(fs|alice): " | sed 's/^/  | /'
-echo "$again" | grep -qx "fs: ready, 5 files on the SD card" || fail "the files did not survive a restart"
+echo "$again" | grep -qx "fs: ready, 6 files on the SD card" || fail "the files did not survive a restart"
 echo "$again" | grep -qx "alice: loaded notes.txt, 2 bytes" || fail "Notes did not get its note back after a restart"
 
 # And with no card at all, the system still comes up, with files in memory only.

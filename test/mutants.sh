@@ -159,6 +159,8 @@ mutant "manifest lets Notes start programs from the SD card" \
   "  | 0 => snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)" "  | 0 => snoc (snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)) (launchCap 10)"
 mutant "an open slot's program may use the file server" \
   "  | 10 => snoc (frameCaps 10) (epCap 0 false true true 10)" "  | 10 => snoc (snoc (frameCaps 10) (epCap 0 false true true 10)) (epCap 1 false true true 10)"
+mutant "a tick wakes sleepers early" \
+  "  | .sleeping u => if Nat.ble u now then" "  | .sleeping u => if true then"
 
 cp "$backup" LeanOS/Kernel.lean
 lake build >/dev/null 2>&1 || { echo "FAIL: the unmutated kernel no longer builds"; exit 1; }

@@ -9,7 +9,7 @@ struct res { u64 x[7]; };
 
 enum { SYS_WRITE, SYS_YIELD, SYS_MAP, SYS_UNMAP, SYS_DERIVE, SYS_EXIT, SYS_CAPINFO, SYS_WHOAMI,
        SYS_SEND, SYS_RECV, SYS_CALL, SYS_REPLY, SYS_IRQWAIT, SYS_IRQACK, SYS_BOOTINFO, SYS_START, SYS_DROP,
-       SYS_BLOCKREAD, SYS_BLOCKWRITE, SYS_EXEC };
+       SYS_BLOCKREAD, SYS_BLOCKWRITE, SYS_EXEC, SYS_SLEEP };
 enum { OK = 0, NO_CAP = 1, BAD_ARG = 2, NO_CALL = 3, FULL = 4 };
 /* Frame rights: read, write, execute. Endpoint rights use the same bits for receive,
    send, grant. */
@@ -88,6 +88,8 @@ static inline u64 ticks(void) { u64 v; __asm__ volatile("isb; mrs %0, cntvct_el0
 static inline u64 tick_rate(void) { u64 v; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(v)); return v ? v : 54000000; }
 static inline u64 millis(void) { return ticks() * 1000 / tick_rate(); }
 static inline u64 micros(void) { return ticks() * 1000000 / tick_rate(); }
+/* Sleep at least `ms` milliseconds (whole 10 ms timer ticks), letting other tasks run. */
+static inline void sleep_ms(u64 ms) { sys1(SYS_SLEEP, ms); }
 
 /* The compiler may call these for struct copies and zeroing. */
 void *memset(void *d, int c, unsigned long n) {

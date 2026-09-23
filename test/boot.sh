@@ -37,7 +37,7 @@ check_order alice \
   "alice: opened a 300x200 window, read-only, 59 pages -> ok"
 
 check_order fs \
-  "fs: ready, 2 files on the SD card"
+  "fs: ready, 3 files on the SD card"
 
 check_order mallory \
   "mallory: I am task 2" \

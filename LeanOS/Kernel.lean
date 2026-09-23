@@ -90,6 +90,8 @@ inductive Status where
   | receiving (e : Nat)
   /-- blocked after a call, until task `server` replies -/
   | awaiting (server : Nat)
+  /-- asleep until the timer has ticked `wake` times since boot -/
+  | sleeping (wake : Nat)
   /-- blocked until interrupt line `n` fires -/
   | waitingIrq (n : Nat)
   | dead
@@ -116,6 +118,8 @@ structure KState where
   fbBase : Nat
   /-- Interrupt lines that fired while no task was waiting for them. -/
   pending : List Nat
+  /-- Timer ticks since boot (one every `tickMs` milliseconds). -/
+  now : Nat
 
 /-! ## List helpers
 
@@ -290,7 +294,7 @@ def mkTasksFrom (i : Nat) : Nat → List Task
   | 0 => .nil
   | k + 1 => mkTask i :: mkTasksFrom (i + 1) k
 
-def init (fbBase : Nat) : KState := ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil⟩
+def init (fbBase : Nat) : KState := ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil, 0⟩
 
 def setTask (s : KState) (j : Nat) (t : Task) : KState := { s with tasks := setNth s.tasks j t }
 
@@ -337,6 +341,26 @@ def schedule (s : KState) : KState :=
   | some j => { s with cur := j }
   | none => s
 
+
+/-! ## Time -/
+
+/-- The timer ticks every 10 ms (the machine layer programs it so). -/
+def tickMs : Nat := 10
+
+/-- Wake every task whose sleep ends at or before tick `now`. -/
+def wakeTask (now : Nat) (t : Task) : Task :=
+  match t.status with
+  | .sleeping u => if Nat.ble u now then { t with status := .ready, result := 0 :: .nil } else t
+  | _ => t
+
+def wakeSleepers (now : Nat) : List Task → List Task
+  | .nil => .nil
+  | t :: ts => wakeTask now t :: wakeSleepers now ts
+
+/-- A timer tick: the clock advances, sleepers whose time has come wake, and the scheduler
+picks the next task. -/
+def tick (s : KState) : KState :=
+  schedule { s with now := s.now + 1, tasks := wakeSleepers (s.now + 1) s.tasks }
 
 /-- Stop the current task (it exited or faulted) and move on. -/
 def killCurrent (s : KState) : KState :=
@@ -703,6 +727,16 @@ def ioFailed (s : KState) : KState :=
   | some t => setTask s s.cur { t with result := eIO :: .nil }
   | none => s
 
+/-! ## Sleeping -/
+
+/-- Sleep for at least `ms` milliseconds (rounded up to whole ticks), letting other tasks
+run; 0 just lets the next ready task run. -/
+def sysSleep (s : KState) (t : Task) (ms : Nat) : Reply :=
+  let ticks := (ms + tickMs - 1) / tickMs
+  if ticks = 0 then ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0⟩
+  else ⟨schedule (setTask s s.cur { t with status := .sleeping (s.now + ticks), result := .nil }),
+        0, 0, false, 0, 0, 0, 0, 0⟩
+
 /-! ## Dropping a capability -/
 
 def removeNth {α : Type} : List α → Nat → List α
@@ -886,6 +920,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 17 => sysBlock s t a0 a1 a2 false
   | 18 => sysBlock s t a0 a1 a2 true
   | 19 => sysStart s t a0 a1 a2
+  | 20 => sysSleep s t a0
   | _ => ret s t (eNoCall :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
@@ -894,7 +929,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   8 send(cap, w0, w1, w2, grant) · 9 recv(cap) · 10 call(cap, w0, w1, w2, grant)
   11 reply(slot, w0, w1, w2) · 12 irqwait(cap) · 13 irqack(cap) · 14 bootinfo(task)
   15 start(cap) · 16 drop(cap) · 17 blockread(cap, index, va) · 18 blockwrite(cap, index, va)
-  19 exec(cap, va, len): start an open slot with the program at va
+  19 exec(cap, va, len): start an open slot with the program at va · 20 sleep(ms)
 Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with
@@ -919,7 +954,7 @@ before passing it in. -/
 @[export leanos_init] def exInit (fbBase : Nat) : KState := init fbBase
 @[export leanos_syscall] def exSyscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   syscall s num a0 a1 a2 a3 a4
-@[export leanos_tick] def exTick (s : KState) : KState := schedule s
+@[export leanos_tick] def exTick (s : KState) : KState := tick s
 @[export leanos_fault] def exFault (s : KState) : KState := killCurrent s
 @[export leanos_clear_result] def exClearResult (s : KState) (j : Nat) : KState := clearResult s j
 @[export leanos_verify] def exVerify (s : KState) (i w0 w1 w2 w3 w4 w5 w6 w7 : Nat) : KState :=

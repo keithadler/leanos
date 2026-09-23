@@ -34,7 +34,7 @@
 #define WIN_PAGE 2048   /* window k's pixels are mapped at WIN_PAGE + WIN_MAX_PAGES k */
 #define WIN_MAX_PAGES 160
 #define ASSET_PAGE 4096
-#define MAX_WIN 6
+#define MAX_WIN 8
 #define QUEUE 128        /* a pasted line, or fast typing into a busy app, must not be lost */
 #define TITLE_H 30
 #define BAR_H 30
@@ -42,7 +42,7 @@
 #define H 600
 #define RADIUS 12
 
-enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3 };
+enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4 };
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5 };
 enum { BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
        BADGE_SECURITY = 7, BADGE_FILES = 9 };
@@ -697,7 +697,9 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
 }
 
-static void on_wait(struct state *st, struct res *r) {
+/* WAIT (and POLL, which answers at once, with no event if there is none, for a client
+   that keeps time itself and must not block). */
+static void on_wait(struct state *st, struct res *r, int poll) {
     u64 badge = r->x[1], dirty = r->x[3], slot = r->x[6];
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
@@ -714,6 +716,8 @@ static void on_wait(struct state *st, struct res *r) {
             sys(SYS_REPLY, slot - 1, e[0], e[1], e[2], 0);
             w->qhead = (w->qhead + 1) % QUEUE;
             w->qlen--;
+        } else if (poll) {
+            sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
         } else {
             w->slot = slot;
         }
@@ -799,8 +803,8 @@ __attribute__((section(".text.start"))) void _start(void) {
             on_input(st, &l, op, r.x[3], r.x[4]);
         } else if (slot && op == OP_OPEN && r.x[5]) {
             on_open(st, &l, &r);
-        } else if (slot && op == OP_WAIT) {
-            on_wait(st, &r);
+        } else if (slot && (op == OP_WAIT || op == OP_POLL)) {
+            on_wait(st, &r, op == OP_POLL);
         } else if (slot && op == OP_SET) {
             on_set(st, &l, &r);
         } else {

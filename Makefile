@@ -139,7 +139,7 @@ build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/f
 	$(LD) -T user/user.ld --gc-sections build/user/$*.o -o $@
 
 # Programs that live on the SD card, not in the kernel image: stripped ELF files.
-DISK_PROGS := hello
+DISK_PROGS := hello clock
 DISK_ELFS := $(patsubst %,build/progs/%.elf,$(DISK_PROGS))
 build/progs/%.elf: user/progs/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/user.ld build/user/font.h
 	@mkdir -p build/progs

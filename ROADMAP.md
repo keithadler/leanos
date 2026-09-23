@@ -146,7 +146,10 @@ two open slots. The manifest fixes what an open slot may hold (its own memory, a
 not what code it runs, so a program nobody vetted is still confined by every theorem; the
 kernel proves the image comes only from memory the loader can read. `ps` lists the slots.
 
-Next: a journal (so a power cut cannot lose a change halfway), a timer call so programs can
-sleep (a clock, animations), more open slots and a way to give a program more authority on
+And time: the kernel counts timer ticks, and `sleep(ms)` puts a task to sleep until its
+tick comes (`tick_wakes_only_sleepers`). `clock`, on the card, keeps time with it, and asks
+the display server for events without blocking (`POLL`) so its close button still works.
+
+Next: a journal (so a power cut cannot lose a change halfway), more open slots and a way to give a program more authority on
 purpose (a file server endpoint, say) with the user's consent, the SD card on real Pi 4
 hardware (EMMC2), multiple cores, and the Pi 5.

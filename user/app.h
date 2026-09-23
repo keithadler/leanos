@@ -9,7 +9,7 @@
 #include "gfx.h"
 #include "assets.h"
 
-enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3 };
+enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4 };
 enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5 };
 enum { SET_BACKGROUND = 1 };
 
@@ -45,6 +45,14 @@ static inline u64 app_open(int w, int h, const char *title) {
 /* Wait for the next event. `dirty`: the app redrew its pixels since it last asked. */
 static inline struct event app_wait(int dirty) {
     struct res e = sys(SYS_CALL, ENDPOINT, OP_WAIT, (u64)dirty, 0, 0);
+    struct event ev = {e.status == OK ? e.x[1] : EV_NONE, e.x[2], e.x[3]};
+    return ev;
+}
+
+/* The next event if there is one, EV_NONE if not: never blocks. For a program that keeps
+   time itself (with sleep) and must still hear the close button. */
+static inline struct event app_poll(int dirty) {
+    struct res e = sys(SYS_CALL, ENDPOINT, OP_POLL, (u64)dirty, 0, 0);
     struct event ev = {e.status == OK ? e.x[1] : EV_NONE, e.x[2], e.x[3]};
     return ev;
 }

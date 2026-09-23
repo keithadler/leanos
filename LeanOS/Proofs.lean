@@ -1034,6 +1034,49 @@ theorem inv_ioFailed {s : KState} (hs : Inv s) : Inv (ioFailed s) := by
   · rename_i t ht; exact inv_setTask hs ((hs.tasks _ t ht).result _)
   · exact hs
 
+/-! ### Time -/
+
+theorem TaskOK.wake {fb : Bool} {j : Nat} {t : Task} (h : TaskOK fb j t) (now : Nat) :
+    TaskOK fb j (wakeTask now t) := by
+  unfold wakeTask
+  split
+  · rename_i u hst
+    split
+    · exact h.setStatus .ready trivial (fun _ => h.measured (by rw [hst]; trivial)) _
+    · exact h
+  · exact h
+
+theorem nth?_wakeSleepers (now : Nat) : ∀ (ts : List Task) (j : Nat),
+    nth? (wakeSleepers now ts) j = (nth? ts j).map (wakeTask now)
+  | [], j => by simp [wakeSleepers, nth?]
+  | t :: ts, 0 => by simp [wakeSleepers, nth?]
+  | t :: ts, j + 1 => by simp [wakeSleepers, nth?, nth?_wakeSleepers now ts j]
+
+theorem len_wakeSleepers (now : Nat) : ∀ (ts : List Task), len (wakeSleepers now ts) = len ts
+  | [] => rfl
+  | t :: ts => by simp [wakeSleepers, len, len_wakeSleepers now ts]
+
+theorem inv_tick {s : KState} (hs : Inv s) : Inv (tick s) := by
+  unfold tick
+  apply inv_schedule
+  constructor
+  · simp [len_wakeSleepers, hs.len]
+  · intro j u hu
+    dsimp only at hu
+    rw [nth?_wakeSleepers] at hu
+    cases h : nth? s.tasks j with
+    | none => simp [h] at hu
+    | some t => simp [h] at hu; subst hu; exact (hs.tasks j t h).wake _
+
+theorem inv_sysSleep {s : KState} {t : Task} {ms : Nat} (hs : Inv s)
+    (ht : TaskOK (fbSane s.fbBase) s.cur t) (hmt : openSlot s.cur = false → t.hash = expectedHash s.cur) :
+    Inv (sysSleep s t ms).state := by
+  unfold sysSleep
+  dsimp only
+  split
+  · exact inv_schedule (inv_setTask hs (ht.result _))
+  · exact inv_schedule (inv_setTask hs (ht.setStatus (.sleeping _) trivial (fun _ => hmt) _))
+
 theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
     Inv (syscall s num a0 a1 a2 a3 a4).state := by
   unfold syscall
@@ -1066,6 +1109,7 @@ theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
       · exact inv_sysBlock hs hto
       · exact inv_sysBlock hs hto
       · exact inv_sysStart hs hto
+      · exact inv_sysSleep hs hto hmt
       · exact inv_ret hs hto _
     · exact hs
 
@@ -1105,7 +1149,7 @@ inductive Reachable : KState → Prop
   | init (fb : Nat) : Reachable (init fb)
   | syscall {s} (num a0 a1 a2 a3 a4 : Nat) : Reachable s →
       Reachable (syscall s num a0 a1 a2 a3 a4).state
-  | tick {s} : Reachable s → Reachable (schedule s)
+  | tick {s} : Reachable s → Reachable (tick s)
   | fault {s} : Reachable s → Reachable (killCurrent s)
   | clear {s} (j : Nat) : Reachable s → Reachable (clearResult s j)
   | irq {s} (n : Nat) : Reachable s → Reachable (irqFired s n)
@@ -1116,7 +1160,7 @@ theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   induction h with
   | init fb => exact inv_init fb
   | syscall num a0 a1 a2 a3 a4 _ ih => exact inv_syscall ih num a0 a1 a2 a3 a4
-  | tick _ ih => exact inv_schedule ih
+  | tick _ ih => exact inv_tick ih
   | fault _ ih => exact inv_killCurrent ih
   | clear j _ ih => exact inv_clearResult ih j
   | irq n _ ih => exact inv_irqFired ih n
@@ -1694,6 +1738,9 @@ theorem outLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
       | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
          all_goals simp at h
          done)
+      | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
+         all_goals simp at h
+         done)
 
 /-- When a system call asks the machine layer to print user memory, every byte of it is in
 the user window, in a page the calling task has mapped with read rights. -/
@@ -1811,6 +1858,9 @@ theorem io_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
         | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
+        | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
 
 /-- What a `blockread` or `blockwrite` that asks for I/O checked. -/
 theorem sysBlock_io {s : KState} {t : Task} {ci idx va : Nat} {w : Bool}
@@ -1868,6 +1918,31 @@ theorem block_io_confined (s : KState) (num a0 a1 a2 a3 a4 : Nat)
       exact ⟨m, hm, by rw [hsame, hv], fun _ => hw, fun h => by simp [ioCode] at h⟩
     · obtain ⟨m, hm, hv, hr'⟩ := readableAt_spec (by simpa [pageRightFor] using hpg)
       exact ⟨m, hm, by rw [hsame, hv], fun h => by simp [ioCode] at h, fun _ => hr'⟩
+
+/-! ## Time -/
+
+theorem schedule_tasks (s : KState) : (schedule s).tasks = s.tasks := by
+  unfold schedule; split <;> rfl
+
+/-- **A tick wakes only sleepers whose time has come.** If a timer tick changes a task's
+status, the task was asleep until at most the new tick, and it is now ready. -/
+theorem tick_wakes_only_sleepers (s : KState) (j : Nat) {u u' : Task}
+    (hu : nth? s.tasks j = some u) (hu' : nth? (tick s).tasks j = some u')
+    (hch : u'.status ≠ u.status) : ∃ w, u.status = .sleeping w ∧ w ≤ s.now + 1 ∧ u'.status = .ready := by
+  unfold tick at hu'
+  rw [schedule_tasks] at hu'
+  dsimp only at hu'
+  rw [nth?_wakeSleepers, hu] at hu'
+  simp only [Option.map_some, Option.some.injEq] at hu'
+  subst hu'
+  unfold wakeTask at hch ⊢
+  split at hch
+  · rename_i w hst
+    split at hch
+    · rename_i hle
+      exact ⟨w, hst, by simpa using hle, by simp [hst, hle]⟩
+    · exact absurd rfl hch
+  · exact absurd rfl hch
 
 /-! ## Programs from the SD card -/
 
@@ -1968,6 +2043,9 @@ theorem loadLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
            all_goals simp at h
            done)
         | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
 

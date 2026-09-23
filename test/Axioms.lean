@@ -42,3 +42,4 @@ open LeanOS
 #print axioms disk_only_file_server
 #print axioms block_io_confined
 #print axioms exec_reads_only_readable
+#print axioms tick_wakes_only_sleepers
