@@ -1,6 +1,6 @@
 /* The display server. It owns the framebuffer (capability 5) and nothing else can reach it.
 
-   Clients call it. OPEN: w0 = 1, w1 = width << 16 | height, w2 = up to 8 bytes of title,
+   Clients call it. RAISE (7): w1 w2 = a card file's name, bring its window forward. OPEN: w0 = 1, w1 = width << 16 | height, w2 = up to 8 bytes of title,
    with a read-only capability to the window's pixels; the reply is 0 on success. WAIT:
    w0 = 2, w1 = 1 if the client redrew its pixels; the reply comes when there is an event
    for the client (w0 = kind, w1, w2). The server never blocks on a client: it holds each
@@ -32,9 +32,14 @@
 #define FRAMEBUFFER 5
 #define FB_PAGE 1024
 #define WIN_PAGE 2048   /* window k's pixels are mapped at WIN_PAGE + WIN_MAX_PAGES k */
-#define WIN_MAX_PAGES 160
-#define ASSET_PAGE 4096
-#define MAX_WIN 8
+#define WIN_MAX_PAGES 184
+#define ASSET_PAGE 4800   /* after the windows: WIN_PAGE + WIN_MAX_PAGES * MAX_WIN = 4256 */
+#define MAX_WIN 12
+#define WIN_TABLE_PAGE 5100   /* the window table: the spare run's last 28 pages, read-write */
+#define ICON_PAGE 4300        /* window k's icon, lent by its program: pages 4300 + 4 k */
+#define MINI 40               /* a running program's icon in the dock */
+#define MINI_GAP 8
+#define DOCK_AREA_X 0         /* the part of the screen the dock and its labels can cover */
 #define QUEUE 128        /* a pasted line, or fast typing into a busy app, must not be lost */
 #define TITLE_H 30
 #define BAR_H 30
@@ -42,18 +47,19 @@
 #define H 600
 #define RADIUS 12
 
-enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4 };
+enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7 };
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5 };
 enum { BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
        BADGE_SECURITY = 7, BADGE_FILES = 9 };
 enum { SET_BACKGROUND = 1 };
 #define LAUNCH_FIRST 6  /* launch capabilities: Notes, Terminal, Settings, Security */
 #define POWER 11        /* the power capability: switch off, restart */
+#define APPS_LAUNCH 12  /* the launch capability for Apps (slot 16) */
 enum { POWER_OFF = 0, POWER_RESTART = 1 };
 enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
 
 /* The dock. */
-#define DOCK_N 5
+#define DOCK_N 6
 #define ICON 52
 #define ICON_GAP 16
 #define DOCK_PAD 14
@@ -61,10 +67,10 @@ enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
 #define DOCK_H (ICON + 2 * DOCK_PAD - 4)
 #define DOCK_X ((W - DOCK_W) / 2)
 #define DOCK_Y (H - DOCK_H - 10)
-static const char *const dock_names[DOCK_N] = {"Notes", "Files", "Terminal", "Settings", "Security"};
-static const int dock_slot[DOCK_N] = {0, 9, 5, 6, 7};
+static const char *const dock_names[DOCK_N] = {"Notes", "Files", "Terminal", "Settings", "Security", "Apps"};
+static const int dock_slot[DOCK_N] = {0, 9, 5, 6, 7, 16};
 static const int dock_launch[DOCK_N] = {LAUNCH_FIRST, LAUNCH_FIRST + 4, LAUNCH_FIRST + 1, LAUNCH_FIRST + 2,
-                                        LAUNCH_FIRST + 3};
+                                        LAUNCH_FIRST + 3, APPS_LAUNCH};
 
 /* The backgrounds Settings offers: top and bottom of the gradient, and the glow's color. */
 #define NTHEME 3
@@ -79,6 +85,8 @@ struct win {
     struct surface content;
     char title[9];
     int closing;                /* closed on screen; the client hears EV_CLOSE when it next waits */
+    struct picture icon;        /* the icon a program from the card lent (OP_ICON), or none */
+    char prog[16];              /* and the card file it came from, or "" */
     u64 slot;                   /* reply slot + 1 while the client waits, else 0 */
     unsigned queue[QUEUE][3];    /* events waiting for the client (kind, a, b), oldest at qhead */
     int qhead, qlen;
@@ -87,6 +95,7 @@ struct win {
 /* Everything the server remembers lives in its data pages: user programs have no writable
    globals. */
 struct state {
+    unsigned char ignored[32];   /* requests not understood, per badge, so a flood logs once */
     struct surface screen;
     struct font ui, ui_bold, small, huge, medium;
     struct picture icons[DOCK_N];
@@ -98,7 +107,7 @@ struct state {
     unsigned glow_rb[W], glow_g[W];
     unsigned char bg_tile[32 * 32];
     unsigned char bg_dot_row[32];   /* does this row of the tile have any dot */
-    struct win win[MAX_WIN];
+    struct win *win;            /* MAX_WIN of them, in the spare run (WIN_TABLE_PAGE) */
     int z[MAX_WIN];             /* window indices, bottom to top */
     int nz;
     int px, py;                 /* pointer */
@@ -125,7 +134,7 @@ static const char *name_of(u64 badge) {
     return badge == BADGE_ALICE ? "alice" : badge == BADGE_MALLORY ? "mallory"
          : badge == BADGE_TERMINAL ? "Terminal" : badge == BADGE_SETTINGS ? "Settings"
          : badge == BADGE_SECURITY ? "Security" : badge == BADGE_FILES ? "Files"
-         : badge >= 10 && badge <= 15 ? "a program from the SD card" : "unknown";
+         : badge >= 10 && badge <= 15 ? "a program from the SD card" : badge == 16 ? "Apps" : "unknown";
 }
 
 /* The program slot a badge belongs to: the manifest gives each app its slot's number as its
@@ -133,7 +142,7 @@ static const char *name_of(u64 badge) {
 static int slot_of(u64 badge) {
     return badge == BADGE_ALICE ? 0
          : (badge >= BADGE_TERMINAL && badge <= BADGE_SECURITY) || badge == BADGE_FILES ||
-           (badge >= 10 && badge <= 15) ? (int)badge : -1;
+           (badge >= 10 && badge <= 16) ? (int)badge : -1;
 }
 
 /* 0 not started, 1 running, 2 stopped, as the kernel sees slot k now. */
@@ -272,6 +281,15 @@ static void traffic_lights(struct surface *s, int x, int y, int focus) {
     }
 }
 
+/* The icon for window k: the one its program lent, or the dock's for a built-in app. */
+static const struct picture *win_icon(struct state *st, int k) {
+    struct win *w = &st->win[k];
+    if (w->icon.px) return &w->icon;
+    for (int i = 0; i < DOCK_N; i++)
+        if (dock_slot[i] >= 0 && slot_of(w->badge) == dock_slot[i]) return &st->icons[i];
+    return 0;
+}
+
 static void draw_window(struct state *st, int k) {
     struct surface *s = &st->screen;
     struct win *w = &st->win[k];
@@ -283,7 +301,10 @@ static void draw_window(struct state *st, int k) {
     fill(s, x, y + TITLE_H - 1, ow, 1, rgb(214, 214, 220));
     traffic_lights(s, x + 12, y + 9, focus);
     int tw = font_width(&st->ui_bold, w->title);
-    font_text(s, &st->ui_bold, x + ow / 2 - tw / 2, y + 20, w->title, focus ? rgb(40, 40, 46) : rgb(150, 150, 158));
+    const struct picture *ic = win_icon(st, k);
+    int tx = x + ow / 2 - tw / 2 + (ic ? 11 : 0);
+    if (ic) icon_scaled(s, tx - 24, y + 5, 20, ic);
+    font_text(s, &st->ui_bold, tx, y + 20, w->title, focus ? rgb(40, 40, 46) : rgb(150, 150, 158));
     blit_rounded(s, x, y + TITLE_H, &w->content, x, y, ow, oh, RADIUS);
 }
 
@@ -306,18 +327,52 @@ static int running(struct state *st, int i) {
     return run_state(dock_slot[i]) == 1;
 }
 
+/* Windows of programs from the card, in the order they appear in the dock (after the
+   built-in apps, so those never move). */
+static int dock_extras(struct state *st, int *which) {
+    int n = 0;
+    for (int k = 0; k < MAX_WIN; k++) {
+        struct win *w = &st->win[k];
+        if (w->used && !w->closing && w->badge >= 10 && w->badge <= 15) which[n++] = k;
+    }
+    return n;
+}
+
+static int extra_x(int i) { return DOCK_X + DOCK_W - DOCK_PAD + 14 + i * (MINI + MINI_GAP); }
+
 static void dock(struct state *st) {
     struct surface *s = &st->screen;
-    round_rect(s, DOCK_X, DOCK_Y, DOCK_W, DOCK_H, 18, rgb(20, 22, 32), 110);
+    int which[MAX_WIN], n = dock_extras(st, which);
+    int width = DOCK_W + (n ? 14 + n * (MINI + MINI_GAP) - MINI_GAP + 4 : 0);
+    round_rect(s, DOCK_X, DOCK_Y, width, DOCK_H, 18, rgb(20, 22, 32), 110);
+    if (n) fill_alpha(s, DOCK_X + DOCK_W - DOCK_PAD + 6, DOCK_Y + 14, 1, DOCK_H - 28, rgb(255, 255, 255), 60);
+    for (int i = 0; i < n; i++) {
+        struct win *w = &st->win[which[i]];
+        int x = extra_x(i), y = DOCK_Y + (DOCK_H - MINI) / 2 - 4 - (st->hover == 101 + which[i] ? 4 : 0);
+        const struct picture *ic = win_icon(st, which[i]);
+        if (ic) icon_scaled(s, x, y, MINI, ic);
+        else {
+            round_rect(s, x + 2, y + 2, MINI - 4, MINI - 4, 10, rgb(58, 110, 230), 255);
+            char ch[2] = {w->title[0], 0};
+            font_text(s, &st->ui_bold, x + MINI / 2 - font_width(&st->ui_bold, ch) / 2, y + MINI / 2 + 6, ch,
+                      rgb(255, 255, 255));
+        }
+        round_rect(s, x + MINI / 2 - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, rgb(230, 232, 240), 255);
+    }
     for (int i = 0; i < DOCK_N; i++) {
         int lift = st->hover == i + 1 ? 4 : 0;
         icon(s, dock_icon_x(i), DOCK_Y + (DOCK_H - ICON) / 2 - 4 - lift, &st->icons[i]);
         if (running(st, i)) round_rect(s, dock_icon_x(i) + ICON / 2 - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, rgb(230, 232, 240), 255);
     }
     if (st->hover) {
-        const char *label = dock_names[st->hover - 1];
+        int extra = st->hover > 100;
+        const char *label = extra ? st->win[st->hover - 101].title : dock_names[st->hover - 1];
+        int cx = 0;
+        if (extra) {
+            for (int i = 0; i < n; i++) if (which[i] == st->hover - 101) cx = extra_x(i) + MINI / 2;
+        } else cx = dock_icon_x(st->hover - 1) + ICON / 2;
         int lw = font_width(&st->ui, label) + 20;
-        int lx = dock_icon_x(st->hover - 1) + ICON / 2 - lw / 2, ly = DOCK_Y - 34;
+        int lx = cx - lw / 2, ly = DOCK_Y - 34;
         round_rect(s, lx, ly, lw, 24, 8, rgb(24, 26, 36), 220);
         font_text(s, &st->ui, lx + 10, ly + 17, label, rgb(240, 242, 248));
     }
@@ -443,10 +498,15 @@ static int window_at(struct state *st, int x, int y) {
     return -1;
 }
 
-static int dock_at(int x, int y) {
+/* What in the dock is at (x, y): a built-in app (1 + its index), a running program's
+   window (101 + the window), or nothing (0). */
+static int dock_at(struct state *st, int x, int y) {
     if (y < DOCK_Y || y >= DOCK_Y + DOCK_H) return 0;
     for (int i = 0; i < DOCK_N; i++)
         if (x >= dock_icon_x(i) && x < dock_icon_x(i) + ICON) return i + 1;
+    int which[MAX_WIN], n = dock_extras(st, which);
+    for (int i = 0; i < n; i++)
+        if (x >= extra_x(i) && x < extra_x(i) + MINI) return 101 + which[i];
     return 0;
 }
 
@@ -568,7 +628,7 @@ static void launch(struct state *st, struct line *l, int i) {
         put_s(l, " was refused: it does not match the boot manifest");
         say(l);
     }
-    composite(st, DOCK_X - 60, DOCK_Y - 44, DOCK_W + 120, DOCK_H + 44);
+    composite(st, DOCK_AREA_X, DOCK_Y - 44, W, DOCK_H + 44);
 }
 
 /* x.y ms, from microseconds */
@@ -622,8 +682,9 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
         return;
     }
     if (kind == EV_DOWN) {
-        int d = dock_at(st->px, st->py);
-        if (d) launch(st, l, d - 1);
+        int d = dock_at(st, st->px, st->py);
+        if (d > 100) bring_to_front(st, d - 101);
+        else if (d) launch(st, l, d - 1);
         int k = d ? -1 : window_at(st, st->px, st->py);
         if (k >= 0) {
             struct win *w = &st->win[k];
@@ -663,10 +724,10 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
         st->drag_us += micros() - t0;
         st->drag_frames++;
     } else if (kind == EV_MOVE) {
-        int hv = dock_at(st->px, st->py);
+        int hv = dock_at(st, st->px, st->py);
         if (hv != st->hover) {
             st->hover = hv;
-            composite(st, DOCK_X - 60, DOCK_Y - 44, DOCK_W + 120, DOCK_H + 44);
+            composite(st, DOCK_AREA_X, DOCK_Y - 44, W, DOCK_H + 44);
         }
     } else if (kind == EV_UP && st->drag) {
         struct win *w = &st->win[st->drag - 1];
@@ -722,6 +783,8 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     if (wn->y + (int)h + TITLE_H > DOCK_Y - 8) wn->y = DOCK_Y - 8 - (int)h - TITLE_H;
     wn->slot = 0;
     wn->closing = 0;
+    wn->icon.px = 0;
+    wn->prog[0] = 0;
     st->cap_win[cap - 1] = k + 1;
     wn->qhead = wn->qlen = 0;
     st->z[st->nz++] = k;
@@ -775,14 +838,89 @@ static void on_wait(struct state *st, struct res *r, int poll) {
     sys(SYS_REPLY, slot - 1, 0, 0, 0, 0); /* no window: nothing to wait for */
 }
 
+/* ICON: a program lends the icon its loader gave it (read-only, 4 pages: a marker, the size,
+   then the icon asset). It is shown in the program's title bar and in the dock. */
+static void on_icon(struct state *st, struct res *r) {
+    u64 badge = r->x[1], cap = r->x[5], slot = r->x[6];
+    u64 ok = 1;
+    for (int k = 0; k < MAX_WIN && cap; k++) {
+        struct win *w = &st->win[k];
+        if (!w->used || w->closing || w->badge != badge || w->icon.px) continue;
+        struct res info = sys1(SYS_CAPINFO, cap - 1);
+        if (info.x[2] != 0 || info.x[3] < 4 || sys2(SYS_MAP, cap - 1, ICON_PAGE + 4 * (u64)k).status != OK) break;
+        const unsigned *m = (const unsigned *)PAGE(ICON_PAGE + 4 * (u64)k);
+        unsigned wd = m[2], ht = m[3];
+        if (m[0] != 0x43494e4cu) break;
+        /* the name the loader wrote at the end: printable, or none */
+        const unsigned char *name = (const unsigned char *)m + 4 * 4096 - 16;
+        int n = 0;
+        while (n < 15 && name[n] > 32 && name[n] < 127) n++;
+        for (int i = 0; i < 16; i++) w->prog[i] = i < n && !name[n] ? (char)name[i] : 0;
+        if (m[1] && wd > 0 && ht > 0 && wd <= 64 && ht <= 64 && 16 + wd * ht * 4 <= 4 * 4096 - 16) {
+            w->icon.w = (int)wd;
+            w->icon.h = (int)ht;
+            w->icon.px = m + 4;
+        }
+        if (w->icon.px || w->prog[0]) {
+            st->cap_win[cap - 1] = k + 1;          /* dropped with the window */
+            ok = 0;
+            composite_window(st, k);
+            composite(st, DOCK_AREA_X, DOCK_Y - 44, W, DOCK_H + 44);
+        }
+        break;
+    }
+    sys(SYS_REPLY, slot - 1, ok, 0, 0, 0);
+}
+
+/* START: Apps asks for one of the built-in apps (w1 = its place in the dock), as if its
+   dock icon were clicked. Only Apps may ask. */
+/* RAISE: bring forward the window of the program from card file w1 w2 (up to 15 bytes), if
+   one is open. Answers 0 if it did, 1 if there is none. Anyone may ask: it only moves a
+   window up, and the name is what the loader wrote into the image, not the program's say. */
+static void on_raise(struct state *st, struct line *l, struct res *r) {
+    char want[17];
+    for (int i = 0; i < 16; i++) want[i] = (char)(r->x[3 + i / 8] >> (8 * (i % 8)));
+    want[15] = want[16] = 0;
+    u64 found = 1;
+    for (int k = 0; k < MAX_WIN && want[0]; k++) {
+        struct win *w = &st->win[k];
+        if (!w->used || w->closing || !w->prog[0]) continue;
+        int i = 0;
+        while (i < 16 && w->prog[i] == want[i] && want[i]) i++;
+        if (i < 16 && w->prog[i] == want[i]) {
+            bring_to_front(st, k);
+            put_s(l, "display: ");
+            put_s(l, want);
+            put_s(l, " is already open; brought it to the front");
+            say(l);
+            found = 0;
+            break;
+        }
+    }
+    sys(SYS_REPLY, r->x[6] - 1, found, 0, 0, 0);
+}
+
+static void on_start(struct state *st, struct line *l, struct res *r) {
+    u64 badge = r->x[1], which = r->x[3], slot = r->x[6];
+    if (badge != 16 || which >= DOCK_N) {
+        sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
+        return;
+    }
+    sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
+    launch(st, l, (int)which);
+}
+
 /* SET: only Settings may change the desktop. */
 static void on_set(struct state *st, struct line *l, struct res *r) {
     u64 badge = r->x[1], what = r->x[3], value = r->x[4], slot = r->x[6];
     if (badge != BADGE_SETTINGS || what != SET_BACKGROUND || value >= NTHEME) {
-        put_s(l, "display: ");
-        put_s(l, name_of(badge));
-        put_s(l, " may not change the desktop; refused");
-        say(l);
+        if (st->ignored[badge & 31] < 3) {
+            st->ignored[badge & 31]++;
+            put_s(l, "display: ");
+            put_s(l, name_of(badge));
+            put_s(l, " may not change the desktop; refused");
+            say(l);
+        }
         sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
         return;
     }
@@ -807,7 +945,13 @@ __attribute__((section(".text.start"))) void _start(void) {
     /* The assets: a read-only view of the start of the spare run. */
     struct res ro = sys(SYS_DERIVE, 3, R, 0, 200, 0);
     sys2(SYS_MAP, ro.x[1], ASSET_PAGE);
-    st->ncaps = (int)ro.x[1] + 1;
+    /* The window table is too big for the data pages: it lives in the spare run's tail,
+       past the assets, which is this server's own memory. */
+    struct res rw = sys(SYS_DERIVE, 3, R | 2 /* write: W is the screen's width here */, 200, 28, 0);
+    sys2(SYS_MAP, rw.x[1], WIN_TABLE_PAGE);
+    st->win = (struct win *)PAGE(WIN_TABLE_PAGE);
+    _Static_assert(sizeof(struct win) * MAX_WIN <= 28 * 4096, "the window table must fit in 28 pages");
+    st->ncaps = (int)rw.x[1] + 1;
     for (int i = 0; i < st->ncaps; i++) { st->cap_badge[i] = 0; st->cap_win[i] = 0; }
     const unsigned char *assets = (const unsigned char *)PAGE(ASSET_PAGE);
     st->ui = font_of(assets, F_UI);
@@ -857,11 +1001,24 @@ __attribute__((section(".text.start"))) void _start(void) {
             on_wait(st, &r, op == OP_POLL);
         } else if (slot && op == OP_SET) {
             on_set(st, &l, &r);
+        } else if (slot && op == OP_ICON && grant) {
+            on_icon(st, &r);
+        } else if (slot && op == OP_START) {
+            on_start(st, &l, &r);
+        } else if (slot && op == OP_RAISE) {
+            on_raise(st, &l, &r);
         } else {
-            put_s(&l, "display: ");
-            put_s(&l, name_of(badge));
-            put_s(&l, " asked for a window but sent no pixels; ignored");
-            say(&l);
+            /* A request the display does not understand, from anyone: it answers no, and
+               says so the first few times, so a program that floods it cannot flood the log. */
+            unsigned char *n = &st->ignored[badge & 31];
+            if (*n < 3) {
+                put_s(&l, "display: ");
+                put_s(&l, name_of(badge));
+                put_s(&l, *n == 2 ? " keeps sending requests it cannot make; ignoring them quietly"
+                                  : " sent a request it cannot make; ignored");
+                say(&l);
+                (*n)++;
+            }
             if (slot) sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
         }
         /* A grant that did not become a window is not kept. */

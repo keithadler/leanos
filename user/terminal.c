@@ -247,6 +247,11 @@ static void cmd_ps(struct term *t, struct line *l) {
 static void cmd_run(struct term *t, struct line *l, const char *args) {
     char name[FS_NAME_MAX + 1];
     word_of(args, name, FS_NAME_MAX);
+    if (name[0] && app_raise(name)) {
+        say(t, "already open: brought it to the front");
+        fs_log(l, "run", name, "already open");
+        return;
+    }
     long n = fs_read(&t->fs, name);
     if (n < 0) { say(t, "no such file"); fs_log(l, "run", name, "no such file"); return; }
     unsigned char *image = (unsigned char *)PAGE(SPARE_PAGE + IMAGE_OFFSET);
@@ -260,6 +265,15 @@ static void cmd_run(struct term *t, struct line *l, const char *args) {
         fs_log(l, "run", name, why);
         return;
     }
+    /* its icon, if the card has NAME.icon, rides along in the image */
+    char iconname[FS_NAME_MAX + 6];
+    int m = 0;
+    for (; name[m] && m < FS_NAME_MAX; m++) iconname[m] = name[m];
+    const char *ext = ".icon";
+    for (int x = 0; ext[x]; x++) iconname[m++] = ext[x];
+    iconname[m] = 0;
+    long isize = fs_read(&t->fs, iconname);
+    image_add_icon(image, &len, (const unsigned char *)fs_data(&t->fs), isize > 0 ? (u64)isize : 0, name);
     for (int i = 0; i < OPEN_SLOTS; i++) {
         if (sys1(SYS_BOOTINFO, OPEN_FIRST + (u64)i).x[4] == 1) continue;   /* in use */
         struct res r = sys(SYS_EXEC, LAUNCH_OPEN + (u64)i, (u64)image, len, 0, 0);

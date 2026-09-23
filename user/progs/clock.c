@@ -1,12 +1,13 @@
 /* clock: a program from the SD card that keeps time. It sleeps a second at a time (the
    kernel's sleep call) and redraws how long the Pi has been up, asking the display server
    for events without blocking so the close button still works. */
-#include "../app.h"
+#include "../ui.h"
 
 #define CW 260
 #define CH 120
 
 struct clock {
+    struct ui ui;
     struct surface win;
     u64 shown;               /* the second on screen */
 };
@@ -26,16 +27,16 @@ static void draw(struct clock *c, u64 secs) {
     put_s(&l, ":");
     two(&l, secs % 60);
     l.b[l.n] = 0;
-    int w = text_width(l.b, 5);
-    text(s, CW / 2 - w / 2, 28, l.b, rgb(126, 214, 255), 5);
+    int w = font_width(&c->ui.huge, l.b);
+    font_text(s, &c->ui.huge, CW / 2 - w / 2, 70, l.b, rgb(126, 214, 255));
     const char *up = "up since the Pi started";
-    text(s, CW / 2 - text_width(up, 1) / 2, 92, up, rgb(130, 136, 160), 1);
+    font_text(s, &c->ui.small, CW / 2 - font_width(&c->ui.small, up) / 2, 100, up, rgb(130, 136, 160));
 }
 
 __attribute__((section(".text.start"))) void _start(void) {
     struct clock *c = (struct clock *)DATA;
     struct line l = {.n = 0};
-    app_assets();
+    ui_load(&c->ui, app_assets());
     c->win = app_surface(CW, CH);
     c->shown = millis() / 1000;
     draw(c, c->shown);

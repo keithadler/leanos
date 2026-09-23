@@ -36,7 +36,7 @@ check_order terminal \
   "terminal: caps -> 13 capabilities" \
   "terminal: boot -> 7 verified" \
   "terminal: write hello.txt -> ok" \
-  "terminal: ls -> 11 files" \
+  "terminal: ls -> 20 files" \
   "terminal: window closed, exiting" \
   "terminal: opened a window -> ok" \
   "terminal: caps -> 13 capabilities" \
@@ -57,18 +57,14 @@ check_order settings \
   "settings: opened a window -> ok" \
   "settings: background set to Graphite -> ok"
 
-# Files: the list, then the down arrow through every file (sizes of the programs vary)
-files=$(echo "$out" | grep -E "^files: " | sed -E 's/^(files: showing [^ ]+) \([0-9]+ bytes\)$/\1/')
-expected=$(printf '%s\n' "files: listed 12 files" "files: showing welcome.txt" "files: opened a window -> ok" \
-  "files: showing hello" "files: showing clock" "files: showing tour" "files: showing calc" \
-  "files: showing snake" "files: showing life" "files: showing tiles" "files: showing guide.txt" \
-  "files: showing notes.txt" "files: showing hello.txt")
-[ "$files" = "$expected" ] || { echo "got:"; echo "$files"; fail "files"; }
-echo "$out" | grep -qx "files: showing hello.txt (19 bytes)" || fail "files did not show hello.txt"
+# Files: the list, then the down arrow through every file, past the 12 rows it shows at once
+echo "$out" | grep -qx "files: listed 21 files" || fail "files did not list the card"
+[ "$(echo "$out" | grep -c "^files: showing ")" = 20 ] || fail "the down arrow did not walk the list"
+echo "$out" | grep -E "^files: showing " | tail -1 | grep -qx "files: showing hello.txt (19 bytes)" || fail "files did not reach hello.txt"
 
 check_order security \
   "security: opened a window -> ok" \
-  "security: 12 verified, 0 refused, 4 not loaded"
+  "security: 12 verified, 0 refused, 5 not loaded"
 
 # The kernel loads and checks an app each time it is started, and only then.
 [ "$(echo "$out" | grep -c "^leanos: terminal started$")" = 2 ] || fail "Terminal was not started twice"
@@ -108,7 +104,7 @@ assert b - r < 20 and max(r, g, b) < 90, ("graphite background", (r, g, b))
 green = lambda r, g, b: g > 150 and r < 120 and b < 140
 blue = lambda r, g, b: b > 180 and r < 100
 def count(k, pred):
-    y0 = 130 + 40 + 14 * k
+    y0 = 116 + 40 + 14 * k
     return sum(1 for y in range(y0 + 2, y0 + 14) for x in range(356, 372) if pred(*at(x, y)))
 for k in range(10):
     assert count(k, green) > 60, ("check", k)
@@ -127,7 +123,7 @@ PY
 again=$(python3 test/run.py 40 --keep-sd)
 [ $? -eq 0 ] || fail "the second boot did not reach idle"
 echo "$again" | grep -E "^(fs|alice): " | sed 's/^/  | /'
-echo "$again" | grep -qx "fs: ready, 12 files on the SD card" || fail "the files did not survive a restart"
+echo "$again" | grep -qx "fs: ready, 21 files on the SD card" || fail "the files did not survive a restart"
 echo "$again" | grep -qx "alice: loaded notes.txt, 2 bytes" || fail "Notes did not get its note back after a restart"
 
 # And with no card at all, the system still comes up, with files in memory only.

@@ -1,6 +1,6 @@
 /* tiles: 2048. The arrow keys slide every tile; two equal tiles that meet merge into
    their sum. Reach 2048. Space starts a new game. */
-#include "../app.h"
+#include "../ui.h"
 
 #define N 4
 #define TILE 64
@@ -9,6 +9,7 @@
 #define TH (TW + 32)
 
 struct tiles {
+    struct ui ui;
     struct surface win;
     unsigned g[N][N];
     u64 score;
@@ -93,7 +94,7 @@ static void draw(struct tiles *t) {
     put_s(&l, "score ");
     put_dec(&l, t->score);
     l.b[l.n] = 0;
-    text(w, GAP, 10, l.b, rgb(119, 110, 101), 2);
+    font_text(w, &t->ui.bold, GAP, 22, l.b, rgb(119, 110, 101));
     round_rect(w, 0, 32, TW, TW, 8, rgb(187, 173, 160), 255);
     for (int y = 0; y < N; y++)
         for (int x = 0; x < N; x++) {
@@ -104,21 +105,23 @@ static void draw(struct tiles *t) {
             struct line n = {.n = 0};
             put_dec(&n, v);
             n.b[n.n] = 0;
-            int scale = v < 100 ? 3 : v < 1000 ? 2 : 2;
-            text(w, px + TILE / 2 - text_width(n.b, scale) / 2, py + TILE / 2 - 7 * scale / 2, n.b,
-                 v <= 4 ? rgb(119, 110, 101) : rgb(249, 246, 242), scale);
+            const struct font *f = v < 1000 ? &t->ui.title : &t->ui.bold;
+            font_text(w, f, px + TILE / 2 - font_width(f, n.b) / 2, py + TILE / 2 + 9, n.b,
+                      v <= 4 ? rgb(119, 110, 101) : rgb(249, 246, 242));
         }
     if (t->over) {
         fill_alpha(w, 0, 32, TW, TW, rgb(250, 248, 239), 160);
-        text(w, TW / 2 - text_width("no moves left", 2) / 2, 32 + TW / 2 - 14, "no moves left", rgb(119, 110, 101), 2);
-        text(w, TW / 2 - text_width("space: again", 2) / 2, 32 + TW / 2 + 6, "space: again", rgb(119, 110, 101), 2);
+        font_text(w, &t->ui.title, TW / 2 - font_width(&t->ui.title, "No moves left") / 2, 32 + TW / 2, "No moves left",
+                  rgb(119, 110, 101));
+        font_text(w, &t->ui.body, TW / 2 - font_width(&t->ui.body, "Space: again") / 2, 32 + TW / 2 + 26, "Space: again",
+                  rgb(119, 110, 101));
     }
 }
 
 __attribute__((section(".text.start"))) void _start(void) {
     struct tiles *t = (struct tiles *)DATA;
     struct line l = {.n = 0};
-    app_assets();
+    ui_load(&t->ui, app_assets());
     t->win = app_surface(TW, TH);
     t->rng = (unsigned)micros();
     start(t);

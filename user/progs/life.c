@@ -1,6 +1,6 @@
 /* life: Conway's Game of Life on a 64 x 40 torus, a generation every tenth of a second.
    It starts from a glider gun. Space pauses, a click toggles a cell, r reseeds at random. */
-#include "../app.h"
+#include "../ui.h"
 
 #define CELL 6
 #define GW 64
@@ -9,6 +9,7 @@
 #define LH (GH * CELL + 20)
 
 struct life {
+    struct ui ui;
     struct surface win;
     unsigned char a[GH][GW], b[GH][GW];
     u64 gen;
@@ -64,13 +65,13 @@ static void draw(struct life *L) {
     put_dec(&l, (u64)alive);
     put_s(&l, L->paused ? "   paused" : "");
     l.b[l.n] = 0;
-    text(w, 6, 6, l.b, rgb(170, 176, 200), 1);
+    font_text(w, &L->ui.small_bold, 8, 15, l.b, rgb(170, 176, 200));
 }
 
 __attribute__((section(".text.start"))) void _start(void) {
     struct life *L = (struct life *)DATA;
     struct line l = {.n = 0};
-    app_assets();
+    ui_load(&L->ui, app_assets());
     L->win = app_surface(LW, LH);
     L->paused = 0;
     L->rng = (unsigned)micros();

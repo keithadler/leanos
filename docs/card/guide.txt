@@ -6,6 +6,7 @@ The dock
   Terminal  commands; type help
   Settings  the background
   Security  what every program's boot check found, and what is proved
+  Apps      every program, built in or on the card, with its icon; click one to start it
 
 The leanos menu
   Click the logo at the top left: Restart, or Shut down.
@@ -25,6 +26,7 @@ Programs on the card
   tiles   2048: the arrow keys slide the tiles
   clock   how long the Pi has been up
   hello   the smallest program
+  fuzz    20,000 system calls with made-up arguments, each answer checked
 
 Every program from the card runs in an open slot: it gets its own memory and a window,
 and nothing else, whatever it was written to do. Up to six run at once.

@@ -46,9 +46,9 @@ theorem reachable_frames {s : KState} (h : Reachable s) (i : Nat) :
     · exact Or.inr (Or.inr ⟨h1, hb⟩)
   · simp at hm
 
-theorem poolFrames_eq : poolFrames = 4096 := rfl
+theorem poolFrames_eq : poolFrames = 5120 := rfl
 theorem fbPages_eq : fbPages = 600 := rfl
-theorem devBase_eq : devBase = 4696 := rfl
+theorem devBase_eq : devBase = 5720 := rfl
 theorem devPages_eq : devPages = 1 := rfl
 
 theorem physOf_pool {s : KState} {f : Nat} (hf : f < poolFrames) :
@@ -56,7 +56,7 @@ theorem physOf_pool {s : KState} {f : Nat} (hf : f < poolFrames) :
   unfold physOf; rw [if_pos hf]; rfl
 
 theorem physOf_fb {s : KState} {f : Nat} (hf : ¬ f < poolFrames) (hd : f < devBase) :
-    physOf s f = s.fbBase + (f - 4096) * 4096 := by
+    physOf s f = s.fbBase + (f - 5120) * 4096 := by
   unfold physOf; rw [if_neg hf, if_pos hd]; rfl
 
 theorem physOf_dev {s : KState} {f : Nat} (hd : devBase ≤ f) :
@@ -66,7 +66,7 @@ theorem physOf_dev {s : KState} {f : Nat} (hd : devBase ≤ f) :
   unfold physOf; rw [if_neg h1, if_neg h2]; simp [devicePA]
 
 theorem fbSane_spec {b : Nat} (h : fbSane b = true) :
-    b % 4096 = 0 ∧ 83886080 ≤ b ∧ b + 2457600 ≤ 0xFE000000 := by
+    b % 4096 = 0 ∧ 88080384 ≤ b ∧ b + 2457600 ≤ 0xFE000000 := by
   unfold fbSane at h
   simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at h
   simp only [pageSize, frameBase, poolFrames, framesPerTask, maxTasks, fbPages] at h
@@ -325,9 +325,9 @@ theorem physOf_inj {s : KState} {f g : Nat} (hf : Valid s f) (hg : Valid s g)
     (h : physOf s f / pageSize = physOf s g / pageSize) : f = g := by
   simp only [pageSize] at h
   have region : ∀ {x : Nat}, Valid s x →
-      (x < 4096 ∧ physOf s x = 67108864 + x * 4096) ∨
-      (4096 ≤ x ∧ x < 4696 ∧ fbSane s.fbBase = true ∧ physOf s x = s.fbBase + (x - 4096) * 4096) ∨
-      (x = 4696 ∧ physOf s x = 0xFE201000) := by
+      (x < 5120 ∧ physOf s x = 67108864 + x * 4096) ∨
+      (5120 ≤ x ∧ x < 5720 ∧ fbSane s.fbBase = true ∧ physOf s x = s.fbBase + (x - 5120) * 4096) ∨
+      (x = 5720 ∧ physOf s x = 0xFE201000) := by
     intro x hx
     rcases hx with hp | ⟨hs, hd⟩ | ⟨hd, hd2⟩
     · left; exact ⟨by rwa [poolFrames_eq] at hp, physOf_pool hp⟩

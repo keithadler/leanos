@@ -1,11 +1,12 @@
 /* calc: a calculator. Type an expression (digits, + - * / %, parentheses) and press Enter;
    Backspace deletes, Escape clears. Whole numbers, with the usual precedence. */
-#include "../app.h"
+#include "../ui.h"
 
 #define CW 360
 #define CH 150
 
 struct calc {
+    struct ui ui;
     struct surface win;
     char in[40];
     int len;
@@ -92,18 +93,19 @@ static void draw(struct calc *c) {
     fill(s, 0, 0, CW, CH, rgb(28, 30, 40));
     round_rect(s, 12, 14, CW - 24, 50, 10, rgb(40, 44, 58), 255);
     c->in[c->len] = 0;
-    int w = text_width(c->in, 3);
-    text(s, CW - 24 - w, 28, c->in, rgb(230, 234, 244), 3);
-    fill(s, CW - 22, 26, 3, 24, rgb(126, 214, 255));
-    int ow = text_width(c->out, 3);
-    text(s, CW - 24 - ow, 84, c->out, c->out[0] == '=' ? rgb(126, 214, 255) : rgb(255, 150, 140), 3);
-    text(s, 16, CH - 20, "Enter: work it out   Esc: clear", rgb(120, 126, 150), 1);
+    int w = font_width(&c->ui.mono, c->in);
+    font_text(s, &c->ui.mono, CW - 30 - w, 45, c->in, rgb(230, 234, 244));
+    fill(s, CW - 27, 29, 2, 20, rgb(126, 214, 255));
+    const struct font *of = c->out[0] == '=' ? &c->ui.title : &c->ui.medium;
+    int ow = font_width(of, c->out);
+    font_text(s, of, CW - 26 - ow, 104, c->out, c->out[0] == '=' ? rgb(126, 214, 255) : rgb(255, 150, 140));
+    font_text(s, &c->ui.small, 18, CH - 14, "Enter: work it out     Esc: clear", rgb(120, 126, 150));
 }
 
 __attribute__((section(".text.start"))) void _start(void) {
     struct calc *c = (struct calc *)DATA;
     struct line l = {.n = 0};
-    app_assets();
+    ui_load(&c->ui, app_assets());
     c->win = app_surface(CW, CH);
     c->len = 0;
     c->shown = 0;

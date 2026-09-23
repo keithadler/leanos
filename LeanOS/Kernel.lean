@@ -155,10 +155,13 @@ def dropVpn (v : Nat) : List Mapping → List Mapping
   | .nil => .nil
   | m :: ms => if m.vpn == v then dropVpn v ms else m :: dropVpn v ms
 
-/-- Remove every mapping of pages `vpn` to `vpn + count - 1`. -/
-def dropRange (vpn : Nat) : Nat → List Mapping → List Mapping
-  | 0, ms => ms
-  | k + 1, ms => dropRange (vpn + 1) k (dropVpn vpn ms)
+/-- Remove every mapping of pages `vpn` to `vpn + count - 1`. One pass over the task's
+mappings, however large `count` is: a task may ask to unmap 2^40 pages, and the kernel must
+not spend 2^40 steps saying yes. -/
+def dropRange (vpn count : Nat) : List Mapping → List Mapping
+  | .nil => .nil
+  | m :: ms => if vpn ≤ m.vpn && m.vpn < vpn + count then dropRange vpn count ms
+               else m :: dropRange vpn count ms
 
 /-- `count` pages: virtual page `vpn + k` shows frame `base + k`. -/
 def runMaps (vpn base : Nat) (r : Rights) : Nat → List Mapping
@@ -184,8 +187,8 @@ without bound by deriving or being granted capabilities. -/
 def maxCaps : Nat := 64
 
 /-- The number of program slots in the manifest, and the most the frame pool has room for. -/
-def numTasks : Nat := 16
-def maxTasks : Nat := 16
+def numTasks : Nat := 17
+def maxTasks : Nat := 20
 
 /-- Each task owns 256 frames (1 MiB) of the pool: task `i` owns frames `256i` to `256i+255`. -/
 def framesPerTask : Nat := 256
@@ -240,7 +243,8 @@ def frameCaps (i : Nat) : List Cap :=
 /-- Endpoint 0 is the display server's inbox. Task 0 (alice's Notes) may send to it and
 grant frames, with badge 1. Task 1 (the display server) receives from it, holds the
 framebuffer as capability 5, may start Notes and the four apps (capabilities 6 to 10), and
-may switch the machine off or restart it (capability 11).
+may switch the machine off or restart it (capability 11), and may start the Apps launcher
+(capability 12).
 Task 2 (mallory) may send to it, without grant, with badge 2. Task 3 (carol) holds no
 endpoint. Task 4 (the input driver) may send to it with badge 3, and holds the UART's
 registers (capability 5) and its interrupt (capability 6). Tasks 5 (Terminal), 6
@@ -249,7 +253,9 @@ Each of these endpoint capabilities is capability 4 of its task.
 
 Terminal also holds the launch capabilities for the open slots, 10 to 15 (its
 capabilities 6 to 11), which run programs from the SD card; they may send and grant to the
-display server with badges 10 to 15.
+display server with badges 10 to 15. Task 16, the Apps launcher, holds the same: a window
+(badge 16), the file server (badge 16, its capability 5, to read programs and their icons),
+and the open slots' launch capabilities (its capabilities 6 to 11).
 
 Endpoint 1 is the file server's inbox. Task 8 (the file server) receives from it, and
 Notes, Terminal and Files may send to it and grant (a buffer, for one request), with
@@ -257,9 +263,9 @@ badges 1, 5 and 9, as their capability 5. The file server alone holds the SD car
 `diskBlocks` blocks, as its capability 5. -/
 def initCaps : Nat → List Cap
   | 0 => snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)
-  | 1 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 1) (epCap 0 true false false 0))
+  | 1 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 1) (epCap 0 true false false 0))
            (runCap poolFrames fbPages Rights.rw)) (launchCap 0)) (launchCap 5)) (launchCap 6)) (launchCap 7))
-           (launchCap 9)) powerCap
+           (launchCap 9)) powerCap) (launchCap 16)
   | 2 => snoc (frameCaps 2) (epCap 0 false true false 2)
   | 4 => snoc (snoc (snoc (frameCaps 4) (epCap 0 false true false 3)) (runCap devBase devPages Rights.rw))
            (irqCap uartIrq)
@@ -276,6 +282,9 @@ def initCaps : Nat → List Cap
   | 13 => snoc (frameCaps 13) (epCap 0 false true true 13)
   | 14 => snoc (frameCaps 14) (epCap 0 false true true 14)
   | 15 => snoc (frameCaps 15) (epCap 0 false true true 15)
+  | 16 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 16) (epCap 0 false true true 16))
+           (epCap 1 false true true 16)) (launchCap 10)) (launchCap 11)) (launchCap 12)) (launchCap 13))
+           (launchCap 14)) (launchCap 15)
   | i => frameCaps i
 
 /-- The open slots, 10 to 15: they run whatever program they are started with (Terminal
@@ -287,7 +296,8 @@ def openSlot (i : Nat) : Bool := Nat.ble 10 i && Nat.ble i 15
 def maxImage : Nat := 16 * 4096
 
 /-- The programs the machine layer loads and checks at boot. The apps in slots 5 (Terminal),
-6 (Settings), 7 (Security) and 9 (Files) wait until the display server launches them. -/
+6 (Settings), 7 (Security), 9 (Files) and 16 (Apps) wait until the display server launches
+them. -/
 def autostart (i : Nat) : Bool := i < 5 || i == 8
 
 /-- Code at pages 0–15, data at 16–23, the stack in the last four pages of the window. -/

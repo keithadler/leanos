@@ -116,9 +116,18 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - `do_syscall` reads the buffer for `write` while the calling task's address space is
   still active. The proof covers which pages may be read. That the read happens in the
   right address space is this code's job.
-- User arguments at or above 2^62 are clamped to 2^62 before reaching Lean. Every system
-  call rejects values that large, so the clamp never changes an outcome, but that is
-  argued here, not proved.
+- The runtime keeps Lean numbers below 2^63 and has no big numbers: one would stop the
+  machine. So `arg` in `arch/kmain.c` clamps every argument that is an index, address,
+  count, length, time or set of rights to 2^40, which every call refuses, and which keeps
+  every sum and product the kernel makes from arguments far below 2^63. Message words
+  (send, call and reply) are only carried, never computed with, and keep their low 63
+  bits; the top bit is dropped. That the clamp never changes an outcome is argued here, not
+  proved. `test/fuzz.sh` runs 20,000 calls with edge-case arguments against it; before
+  this rule, one call with two arguments near 2^62 stopped the machine, and one unmap of
+  2^40 pages kept the kernel busy for hours (`dropRange` now walks the task's mappings,
+  not the range).
+- The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
+  then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.
 - Interrupt routing: `irq_init` enables exactly the lines Lean lists (`irqLines`); when one
   fires, `handle_irq` masks it before telling Lean, and unmasks it only when a Reply says

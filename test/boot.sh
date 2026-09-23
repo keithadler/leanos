@@ -37,7 +37,7 @@ check_order alice \
   "alice: opened a 300x200 window, read-only, 59 pages -> ok"
 
 check_order fs \
-  "fs: ready, 9 files on the SD card"
+  "fs: ready, 18 files on the SD card"
 
 check_order mallory \
   "mallory: I am task 2" \
@@ -72,7 +72,7 @@ expected_head=$(printf '%s\n' "display: boot checks shown: 6 verified, 0 refused
 [ "$(echo "$display" | head -3)" = "$expected_head" ] || fail "display did not show the boot checks, logo and desktop"
 for line in \
   "display: alice opened a 300x200 window from a read-only capability to 59 pages" \
-  "display: mallory asked for a window but sent no pixels; ignored"; do
+  "display: mallory sent a request it cannot make; ignored"; do
   [ "$(echo "$display" | grep -cxF "$line")" = 1 ] || fail "display line missing or repeated: $line"
 done
 expected_tail=$(printf '%s\n' "display: key 'H' to alice" "display: key 'i' to alice" "display: key '!' to alice" \
@@ -132,6 +132,6 @@ for x, y in ((144, 144), (16, 48), (976, 560)):
     assert sum(dot) > sum(between) + 40, ("pattern dot", (x, y), dot, between)
 dark = sum(1 for y in range(292, 314) for x in range(292, 330) if max(at(x, y)) < 100)
 assert dark > 20, ("typed text", dark)
-assert max(at(376, 548)) > 120, ("the Notes icon in the dock", at(376, 548))
+assert max(at(342, 548)) > 120, ("the Notes icon in the dock", at(342, 548))
 print("ok: the boot screen, the desktop, the dock, the typed note and the moved window are on screen; mallory's write never landed")
 PY

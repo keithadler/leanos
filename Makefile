@@ -30,13 +30,13 @@ INIT_C := $(patsubst %,build/c/Init_%.c,$(INIT_MODULES))
 INIT_O := $(INIT_C:.c=.o)
 
 KERNEL_LEAN_C := .lake/build/ir/LeanOS/Kernel.c
-USER_PROGS := alice display mallory carol input terminal settings security fs files
+USER_PROGS := alice display mallory carol input terminal settings security fs files launcher
 USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
 ARCH_O := build/boot.o build/kmain.o build/sd.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
 
 .PHONY: all run test mutants proofs clean pi-image
-ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files)
+ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files launcher open)
 
 all: $(ASSET_BLOBS) build/kernel8.img build/sd-template.img proofs
 
@@ -51,7 +51,8 @@ MANIFEST_INPUTS := build/user/alice.bin+build/assets/alice.bin build/user/displa
   build/user/mallory.bin build/user/carol.bin build/user/input.bin \
   build/user/terminal.bin+build/assets/terminal.bin build/user/settings.bin+build/assets/settings.bin \
   build/user/security.bin+build/assets/security.bin build/user/fs.bin \
-  build/user/files.bin+build/assets/files.bin
+  build/user/files.bin+build/assets/files.bin \
+  "" "" "" "" "" "" build/user/launcher.bin+build/assets/launcher.bin
 LeanOS/Manifest.lean: tools/mkmanifest.py $(USER_BINS) $(ASSET_BLOBS)
 	python3 tools/mkmanifest.py $@ $(MANIFEST_INPUTS)
 
@@ -77,9 +78,9 @@ build/Kernel.o: $(KERNEL_LEAN_C)
 	@mkdir -p build
 	$(CC) $(LEANC_FLAGS) -c $< -o $@
 
-build/%.o: arch/%.c arch/arch.h
+build/%.o: arch/%.c arch/arch.h build/user/font.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) -Wall -Werror -c $< -o $@
+	$(CC) $(CFLAGS) -Ibuild/user -Wall -Werror -c $< -o $@
 
 build/%.o: rt/%.c arch/arch.h
 	@mkdir -p build
@@ -91,7 +92,7 @@ DISPLAY_ASSETS := font:1:$(FONTS)/Inter-Regular.ttf:15 font:2:$(FONTS)/Inter-Sem
   font:3:$(FONTS)/Inter-Regular.ttf:12 font:4:$(FONTS)/Inter-Bold.ttf:48 font:5:$(FONTS)/Inter-Medium.ttf:17 \
   icon:10:assets/icons/memo_3d.png:52 icon:11:assets/icons/file_folder_3d.png:52 \
   icon:12:assets/icons/laptop_3d.png:52 icon:13:assets/icons/gear_3d.png:52 \
-  icon:14:assets/icons/locked_3d.png:52
+  icon:14:assets/icons/locked_3d.png:52 icon:15:assets/icons/rocket_3d.png:52
 ALICE_ASSETS := font:5:$(FONTS)/Inter-SemiBold.ttf:20 font:6:$(FONTS)/Inter-Regular.ttf:17 \
   font:3:$(FONTS)/Inter-Regular.ttf:12
 
@@ -104,6 +105,16 @@ SETTINGS_ASSETS := font:1:$(FONTS)/Inter-Regular.ttf:14 font:2:$(FONTS)/Inter-Se
   font:3:$(FONTS)/Inter-Regular.ttf:12
 SECURITY_ASSETS := $(SETTINGS_ASSETS)
 FILES_ASSETS := $(SETTINGS_ASSETS) font:4:$(FONTS)/JetBrainsMono-Regular.ttf:12
+LAUNCHER_ASSETS := font:1:$(FONTS)/Inter-Regular.ttf:13 font:2:$(FONTS)/Inter-SemiBold.ttf:20 \
+  font:3:$(FONTS)/Inter-Regular.ttf:12 font:4:$(FONTS)/Inter-SemiBold.ttf:12 \
+  icon:10:assets/icons/memo_3d.png:48 icon:11:assets/icons/file_folder_3d.png:48 \
+  icon:12:assets/icons/laptop_3d.png:48 icon:13:assets/icons/gear_3d.png:48 \
+  icon:14:assets/icons/locked_3d.png:48
+# The fonts every program from the SD card gets (user/ui.h names them).
+OPEN_ASSETS := font:1:$(FONTS)/Inter-Regular.ttf:15 font:2:$(FONTS)/Inter-SemiBold.ttf:15 \
+  font:3:$(FONTS)/Inter-Regular.ttf:12 font:4:$(FONTS)/Inter-Bold.ttf:26 \
+  font:5:$(FONTS)/Inter-Medium.ttf:17 font:6:$(FONTS)/JetBrainsMono-Regular.ttf:15 \
+  font:7:$(FONTS)/Inter-Bold.ttf:40 font:8:$(FONTS)/Inter-SemiBold.ttf:12
 
 build/assets/alice.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
 	@mkdir -p build/assets
@@ -125,6 +136,14 @@ build/assets/files.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
 	@mkdir -p build/assets
 	python3 tools/mkassets.py $@ $(FILES_ASSETS)
 
+build/assets/launcher.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
+	@mkdir -p build/assets
+	python3 tools/mkassets.py $@ $(LAUNCHER_ASSETS)
+
+build/assets/open.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
+	@mkdir -p build/assets
+	python3 tools/mkassets.py $@ $(OPEN_ASSETS)
+
 build/boot.o: arch/boot.S $(USER_BINS) $(ASSET_BLOBS)
 	@mkdir -p build
 	$(CC) $(TARGET) -c $< -o $@
@@ -139,7 +158,7 @@ build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/f
 	$(LD) -T user/user.ld --gc-sections build/user/$*.o -o $@
 
 # Programs that live on the SD card, not in the kernel image: stripped ELF files.
-DISK_PROGS := hello clock tour calc snake life tiles
+DISK_PROGS := hello clock tour calc snake life tiles fuzz
 DISK_ELFS := $(patsubst %,build/progs/%.elf,$(DISK_PROGS))
 build/progs/%.elf: user/progs/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/user.ld build/user/font.h
 	@mkdir -p build/progs
@@ -149,21 +168,36 @@ build/progs/%.elf: user/progs/%.c user/lib.h user/gfx.h user/assets.h user/app.h
 
 # A card with welcome.txt and the programs, the way the tests boot (tools/mksd.py).
 DISK_DOCS := guide.txt
-build/sd-template.img: tools/mksd.py $(DISK_ELFS) $(patsubst %,docs/card/%,$(DISK_DOCS))
+
+# Each program's icon, NAME.icon beside it on the card (Fluent Emoji 3D, 56 px).
+ICON_SRC_tour := shield_3d
+ICON_SRC_calc := abacus_3d
+ICON_SRC_snake := snake_3d
+ICON_SRC_life := seedling_3d
+ICON_SRC_tiles := game_die_3d
+ICON_SRC_clock := alarm_clock_3d
+ICON_SRC_hello := waving_hand_3d_default
+ICON_SRC_fuzz := lady_beetle_3d
+DISK_ICONS := $(patsubst %,build/icons/%.icon,$(DISK_PROGS))
+build/icons/%.icon: tools/mkicon.py tools/mkassets.py
+	@mkdir -p build/icons
+	python3 tools/mkicon.py $@ assets/icons/$(ICON_SRC_$*).png 56
+build/sd-template.img: tools/mksd.py $(DISK_ELFS) $(DISK_ICONS) $(patsubst %,docs/card/%,$(DISK_DOCS))
 	python3 tools/mksd.py $@ $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) \
-	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d))
+	  $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d))
 
 # An SD card image a Raspberry Pi 4 boots (tools/mkpiimage.py); the firmware files come from
 # tools/fetch-firmware.sh, which you run once.
-pi-image: build/pi/kernel8.img $(DISK_ELFS) tools/mkpiimage.py tools/mksd.py
+pi-image: build/pi/kernel8.img $(DISK_ELFS) $(DISK_ICONS) tools/mkpiimage.py tools/mksd.py
 	python3 tools/mkpiimage.py build/leanos-pi4.img --kernel build/pi/kernel8.img \
-	  $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d))
+	  $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) \
+	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d))
 
 # The kernel for a real Pi: the same, except that switching off halts instead of ending the
 # emulator through semihosting (a Pi has no debugger to take that call).
-build/pi/kmain.o: arch/kmain.c arch/arch.h
+build/pi/kmain.o: arch/kmain.c arch/arch.h build/user/font.h
 	@mkdir -p build/pi
-	$(CC) $(filter-out -DLEANOS_QEMU,$(CFLAGS)) -Wall -Werror -c $< -o $@
+	$(CC) $(filter-out -DLEANOS_QEMU,$(CFLAGS)) -Ibuild/user -Wall -Werror -c $< -o $@
 
 PI_ARCH_O := $(filter-out build/kmain.o,$(ARCH_O)) build/pi/kmain.o
 build/pi/kernel8.img: $(PI_ARCH_O) $(INIT_O) arch/kernel.ld
@@ -199,6 +233,7 @@ test: all
 	./test/power.sh
 	./test/piimage.sh
 	./test/tamper.sh
+	./test/fuzz.sh
 
 # Break the kernel in known ways and check the proofs catch every one (slow).
 mutants:

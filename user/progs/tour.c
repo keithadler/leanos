@@ -7,12 +7,13 @@
 
    The comparisons are about Linux as most desktops ship it; where Linux has a mitigation
    that closes the gap when it is switched on, the page names it. */
-#include "../app.h"
+#include "../ui.h"
 
-#define TW 600
-#define TH 270
-#define MARGIN 20
-#define COLS ((TW - 2 * MARGIN) / 12)   /* characters per line at scale 2 */
+#define TW 640
+#define TH 288
+#define WIN_OFFSET 40        /* the window's pixels: right after the fonts, in the spare run */
+#define PAD 24
+#define COL_W ((TW - 3 * PAD) / 2)
 
 enum { TRY_NONE, TRY_FILES, TRY_MEMORY, TRY_DISK, TRY_KEYS, TRY_WX, TRY_TAMPER, TRY_POWER };
 
@@ -21,6 +22,7 @@ struct page {
     int try;
     const char *leanos;
     const char *linux_;
+    const char *left, *right;      /* the columns' headings, when not the usual ones */
 };
 
 static const struct page pages[] = {
@@ -72,7 +74,8 @@ static const struct page pages[] = {
      "leanos trusts what its proofs do not cover: its C machine layer, the Lean compiler, "
      "its model of the MMU, the hardware (see TRUST.md).",
      "Linux runs on almost anything, with drivers, networking and decades of hardening; "
-     "switched on, its mitigations close many of these gaps."},
+     "switched on, its mitigations close many of these gaps.",
+     "What leanos still trusts", "Where Linux is ahead"},
     {"The difference", TRY_NONE,
      "On leanos a program starts with nothing and is given what it needs. That is the "
      "default, and the proofs say it holds.",
@@ -82,53 +85,62 @@ static const struct page pages[] = {
 #define NPAGES (int)(sizeof pages / sizeof pages[0])
 
 struct tour {
+    struct ui ui;
     struct surface win;
     int page;
-    char result[160];
-    int refused;         /* the try's outcome: 1 refused, 0 allowed, -1 no try */
+    char what[96];       /* what the attempt was */
+    char said[96];       /* what the kernel said */
+    int verdict;         /* 1 refused, 0 allowed, 2 a check (no attack), -1 no attempt */
 };
 
-static void set(struct tour *t, const char *what, u64 code) {
-    struct line l = {.n = 0};
-    put_s(&l, what);
-    put_s(&l, outcome(code));
-    int n = (int)l.n < 159 ? (int)l.n : 159;
-    for (int i = 0; i < n; i++) t->result[i] = l.b[i];
-    t->result[n] = 0;
-    t->refused = code != OK;
+static void copy(char *to, const char *from, int max) {
+    int i = 0;
+    for (; from[i] && i < max - 1; i++) to[i] = from[i];
+    to[i] = 0;
+}
+
+static const char *said_of(u64 code) {
+    return code == NO_CAP ? "no such capability" : code == BAD_ARG ? "not allowed" : code == OK ? "allowed" : "refused";
+}
+
+static void result(struct tour *t, const char *what, u64 code) {
+    copy(t->what, what, sizeof t->what);
+    copy(t->said, said_of(code), sizeof t->said);
+    t->verdict = code != OK;
 }
 
 /* Really try this page's attack, and keep what the kernel said. */
 static void attempt(struct tour *t) {
-    t->refused = -1;
-    t->result[0] = 0;
+    t->verdict = -1;
+    t->what[0] = t->said[0] = 0;
     switch (pages[t->page].try) {
     case TRY_FILES:        /* the file server's endpoint would be a capability this program lacks */
-        set(t, "Asked the file server for your files", sys(SYS_CALL, 20, 1, 0, 0, 0).status);
+        result(t, "Ask the file server for your files", sys(SYS_CALL, 20, 1, 0, 0, 0).status);
         break;
     case TRY_MEMORY: {
         u64 a = sys2(SYS_MAP, 20, 1000).status;                       /* someone else's frames */
         u64 b = sys(SYS_DERIVE, 1, R, 0, 9, 0).status;                /* 9 pages of an 8-page run */
-        set(t, "Mapped frames it was not given, and stretched its own", a != OK && b != OK ? BAD_ARG : OK);
+        result(t, "Map memory it was not given, and stretch its own", a != OK && b != OK ? BAD_ARG : OK);
         break;
     }
     case TRY_DISK:         /* through the only endpoint it holds, the display server's */
-        set(t, "Read block 0 of the SD card", sys(SYS_BLOCKREAD, 4, 0, DATA, 0, 0).status);
+        result(t, "Read block 0 of the SD card", sys(SYS_BLOCKREAD, 4, 0, DATA, 0, 0).status);
         break;
     case TRY_KEYS:         /* every key arrives at the display server's endpoint */
-        set(t, "Listened on the display server's endpoint", sys1(SYS_RECV, 4).status);
+        result(t, "Listen where every keystroke arrives", sys1(SYS_RECV, 4).status);
         break;
     case TRY_WX: {
         struct res d = sys(SYS_DERIVE, 1, R | W | X, 0, 1, 0);
         u64 bits = d.status == OK ? sys1(SYS_CAPINFO, d.x[1]).x[1] : 0;
         if (d.status == OK) sys1(SYS_DROP, d.x[1]);
+        copy(t->what, "Ask for memory both writable and executable", sizeof t->what);
         struct line l = {.n = 0};
-        put_s(&l, "Asked for write+execute on its data, got ");
+        put_s(&l, "got ");
         put_rights(&l, bits);
-        int n = (int)l.n < 159 ? (int)l.n : 159;
-        for (int i = 0; i < n; i++) t->result[i] = l.b[i];
-        t->result[n] = 0;
-        t->refused = (bits & (W | X)) != (W | X);
+        put_s(&l, (bits & (W | X)) == (W | X) ? "" : ": never both");
+        l.b[l.n] = 0;
+        copy(t->said, l.b, sizeof t->said);
+        t->verdict = (bits & (W | X)) != (W | X);
         break;
     }
     case TRY_TAMPER: {
@@ -138,77 +150,99 @@ static void attempt(struct tour *t) {
             ok += v == 1;
             bad += v == 2;
         }
+        copy(t->what, "Check every program the manifest names", sizeof t->what);
         struct line l = {.n = 0};
-        put_s(&l, "Checked now: ");
         put_dec(&l, (u64)ok);
-        put_s(&l, " programs match the manifest, ");
+        put_s(&l, " match, ");
         put_dec(&l, (u64)bad);
         put_s(&l, " refused");
-        int n = (int)l.n < 159 ? (int)l.n : 159;
-        for (int i = 0; i < n; i++) t->result[i] = l.b[i];
-        t->result[n] = 0;
-        t->refused = -1;
+        l.b[l.n] = 0;
+        copy(t->said, l.b, sizeof t->said);
+        t->verdict = 2;
         break;
     }
     case TRY_POWER:
-        set(t, "Tried to switch the machine off", sys(SYS_POWER, 20, 0, 0, 0, 0).status);
+        result(t, "Switch the machine off", sys(SYS_POWER, 20, 0, 0, 0, 0).status);
         break;
     }
     struct line l = {.n = 0};
     put_s(&l, "tour: ");
     put_s(&l, pages[t->page].title);
-    if (t->result[0]) {
+    if (t->what[0]) {
         put_s(&l, ": ");
-        put_s(&l, t->result);
+        put_s(&l, t->what);
+        put_s(&l, " -> ");
+        put_s(&l, t->verdict == 1 ? "refused, " : t->verdict == 0 ? "ALLOWED, " : "");
+        put_s(&l, t->said);
     }
     put_s(&l, "\n");
     flush(&l);
 }
 
-/* Words of `s` wrapped at `cols` characters, from y down; returns the y after them. */
-static int wrap(struct surface *s, int x, int y, const char *str, unsigned c, int cols) {
-    while (*str) {
-        int n = 0, cut = 0;
-        while (str[n] && n < cols) {
-            if (str[n] == ' ') cut = n;
-            n++;
-        }
-        if (str[n] && cut > 0) n = cut;
-        char line[64];
-        for (int i = 0; i < n && i < 63; i++) line[i] = str[i];
-        line[n < 63 ? n : 63] = 0;
-        text(s, x, y, line, c, 2);
-        y += 17;
-        str += n;
-        while (*str == ' ') str++;
-    }
-    return y;
+/* A rounded label: text on a tinted pill, right-aligned at x1. */
+static void pill(struct tour *t, int x1, int y, const char *s, unsigned bg, unsigned fg) {
+    int w = font_width(&t->ui.small_bold, s) + 20;
+    round_rect(&t->win, x1 - w, y, w, 22, 11, bg, 255);
+    font_text(&t->win, &t->ui.small_bold, x1 - w + 10, y + 15, s, fg);
 }
 
 static void draw(struct tour *t) {
     struct surface *s = &t->win;
     const struct page *p = &pages[t->page];
-    fill(s, 0, 0, TW, TH, rgb(250, 250, 252));
+    struct ui *u = &t->ui;
+    int last = t->page == NPAGES - 1, first = t->page == 0;
+    fill(s, 0, 0, TW, TH, rgb(252, 252, 254));
+    fill(s, 0, 0, TW, 4, rgb(58, 110, 230));
+
+    /* step, title, progress */
     struct line l = {.n = 0};
-    put_dec(&l, (u64)(t->page + 1));
-    put_s(&l, " / ");
-    put_dec(&l, (u64)NPAGES);
-    l.b[l.n] = 0;
-    text(s, TW - MARGIN - text_width(l.b, 2), 16, l.b, rgb(150, 150, 160), 2);
-    text(s, MARGIN, 14, p->title, rgb(28, 30, 40), 3);
-    int y = 48;
-    if (t->result[0]) {
-        unsigned bg = t->refused == 1 ? rgb(232, 246, 236) : t->refused == 0 ? rgb(252, 232, 230) : rgb(236, 240, 250);
-        unsigned fg = t->refused == 1 ? rgb(24, 120, 60) : t->refused == 0 ? rgb(180, 40, 30) : rgb(50, 70, 140);
-        round_rect(s, MARGIN - 8, y - 6, TW - 2 * MARGIN + 16, 44, 8, bg, 255);
-        wrap(s, MARGIN, y, t->result, fg, COLS);
-        y += 48;
+    put_s(&l, first ? "GUIDED TOUR" : "STEP ");
+    if (!first) {
+        put_dec(&l, (u64)t->page);
+        put_s(&l, " OF ");
+        put_dec(&l, (u64)(NPAGES - 1));
     }
-    int first = t->page == 0, last = t->page == NPAGES - 1;
-    text(s, MARGIN, y, first ? "What this is" : "On leanos", rgb(58, 110, 230), 2);
-    y = wrap(s, MARGIN, y + 18, p->leanos, rgb(40, 40, 50), COLS) + 6;
-    text(s, MARGIN, y, first ? "How" : last ? "On Linux" : "On a typical Linux desktop", rgb(150, 90, 30), 2);
-    wrap(s, MARGIN, y + 18, p->linux_, rgb(70, 70, 80), COLS);
+    l.b[l.n] = 0;
+    font_text(s, &u->small_bold, PAD, 30, l.b, rgb(58, 110, 230));
+    font_text(s, &u->title, PAD, 62, first ? "Why leanos is harder to attack" : p->title, rgb(22, 24, 34));
+    for (int i = 0; i < NPAGES; i++) {
+        int x = TW - PAD - (NPAGES - i) * 12 + 4;
+        round_rect(s, x, 22, i == t->page ? 8 : 6, i == t->page ? 8 : 6, 4,
+                   i == t->page ? rgb(58, 110, 230) : i < t->page ? rgb(160, 180, 230) : rgb(214, 218, 228), 255);
+    }
+
+    int y = 80;
+    if (t->what[0]) {
+        /* the live attempt */
+        unsigned edge = t->verdict == 1 ? rgb(46, 170, 100) : t->verdict == 0 ? rgb(220, 60, 50) : rgb(58, 110, 230);
+        round_rect(s, PAD, y, TW - 2 * PAD, 54, 12, rgb(244, 246, 250), 255);
+        round_rect(s, PAD, y, 5, 54, 2, edge, 255);
+        font_text(s, &u->small_bold, PAD + 18, y + 20, "LIVE, JUST NOW, FROM THIS PROGRAM", rgb(130, 136, 152));
+        font_text(s, &u->medium, PAD + 18, y + 42, t->what, rgb(30, 32, 42));
+        int px = TW - PAD - 14;
+        if (t->verdict == 1) pill(t, px, y + 16, "REFUSED", rgb(222, 244, 230), rgb(24, 128, 64));
+        else if (t->verdict == 0) pill(t, px, y + 16, "ALLOWED", rgb(252, 226, 224), rgb(190, 40, 30));
+        else pill(t, px, y + 16, "CHECKED", rgb(226, 234, 252), rgb(40, 80, 180));
+        int sw = font_width(&u->small, t->said);
+        font_text(s, &u->small, px - sw, y + 48, t->said, rgb(120, 126, 140));
+        y += 72;
+    } else {
+        y += 10;
+    }
+
+    /* the two columns */
+    int lx = PAD, rx = PAD * 2 + COL_W;
+    round_rect(s, lx, y, 8, 8, 4, rgb(58, 110, 230), 255);
+    font_text(s, &u->bold, lx + 16, y + 9, p->left ? p->left : first ? "What this is" : "On leanos", rgb(58, 110, 230));
+    round_rect(s, rx, y, 8, 8, 4, rgb(214, 130, 40), 255);
+    font_text(s, &u->bold, rx + 16, y + 9,
+              p->right ? p->right : first ? "How to use it" : last ? "On Linux" : "On a typical Linux desktop",
+              rgb(190, 110, 30));
+    text_wrap(s, &u->body, lx, y + 34, COL_W, 21, p->leanos, rgb(40, 42, 54));
+    text_wrap(s, &u->body, rx, y + 34, COL_W, 21, p->linux_, rgb(70, 72, 84));
+
+    const char *nav = t->page == 0 ? "Next: right arrow, Enter or a click" : last ? "Left arrow: back" : "Left arrow: back    Right arrow or Enter: next";
+    font_text(s, &u->small, TW - PAD - font_width(&u->small, nav), TH - 14, nav, rgb(150, 154, 166));
 }
 
 static void go(struct tour *t, int page) {
@@ -221,13 +255,13 @@ static void go(struct tour *t, int page) {
 __attribute__((section(".text.start"))) void _start(void) {
     struct tour *t = (struct tour *)DATA;
     struct line l = {.n = 0};
-    app_assets();
-    t->win = app_surface(TW, TH);
+    ui_load(&t->ui, app_assets());
+    t->win = app_surface_at(WIN_OFFSET, TW, TH);
     t->page = 0;
-    t->result[0] = 0;
-    t->refused = -1;
+    t->what[0] = 0;
+    t->verdict = -1;
     draw(t);
-    u64 opened = app_open(TW, TH, "Tour");
+    u64 opened = app_open_at(WIN_OFFSET, TW, TH, "Tour");
     put_s(&l, "tour: opened a window");
     put_s(&l, outcome(opened));
     put_s(&l, "\n");

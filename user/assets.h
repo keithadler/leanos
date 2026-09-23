@@ -117,6 +117,42 @@ static inline void icon(struct surface *s, int x, int y, const struct picture *p
     }
 }
 
+/* An icon drawn `size` pixels square at (x, y): each pixel the average of the source
+   pixels it covers (premultiplied, so edges stay clean). */
+static inline void icon_scaled(struct surface *s, int x, int y, int size, const struct picture *p) {
+    if (!p->px || size <= 0) return;
+    for (int j = 0; j < size; j++) {
+        int dy = y + j;
+        if (dy < s->cy0 || dy >= s->cy1) continue;
+        int sy0 = j * p->h / size, sy1 = (j + 1) * p->h / size;
+        if (sy1 <= sy0) sy1 = sy0 + 1;
+        for (int i = 0; i < size; i++) {
+            int dx = x + i;
+            if (dx < s->cx0 || dx >= s->cx1) continue;
+            int sx0 = i * p->w / size, sx1 = (i + 1) * p->w / size;
+            if (sx1 <= sx0) sx1 = sx0 + 1;
+            unsigned a = 0, r = 0, g = 0, b = 0, n = 0;
+            for (int yy = sy0; yy < sy1; yy++)
+                for (int xx = sx0; xx < sx1; xx++) {
+                    unsigned v = p->px[yy * p->w + xx];
+                    a += v >> 24;
+                    r += (v >> 16) & 255;
+                    g += (v >> 8) & 255;
+                    b += v & 255;
+                    n++;
+                }
+            a /= n; r /= n; g /= n; b /= n;
+            if (!a) continue;
+            unsigned *d = s->px + dy * s->stride + dx;
+            unsigned inv = 255 - a;
+            unsigned rr = r + ((*d >> 16) & 255) * inv / 255;
+            unsigned gg = g + ((*d >> 8) & 255) * inv / 255;
+            unsigned bb = b + (*d & 255) * inv / 255;
+            *d = rgb(rr > 255 ? 255 : rr, gg > 255 ? 255 : gg, bb > 255 ? 255 : bb);
+        }
+    }
+}
+
 /* A picture stretched over the whole surface, smoothly (bilinear), for the clipped part. */
 static inline void stretch(struct surface *s, const struct picture *p) {
     if (!p->px) return;

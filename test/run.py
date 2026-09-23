@@ -119,6 +119,16 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     qmp = Qmp(sock)
     deadline = time.monotonic() + timeout
+    # The loop below only looks at the clock when a line arrives; a machine that goes
+    # silent would hang it. A watchdog ends QEMU at the deadline instead.
+    import threading as _threading
+    def watchdog():
+        while proc.poll() is None:
+            if time.monotonic() > deadline + 5:
+                proc.kill()
+                return
+            time.sleep(0.5)
+    _threading.Thread(target=watchdog, daemon=True).start()
     status = None
     waiting_for = None
     import threading
@@ -207,15 +217,15 @@ def click(x, y):
 
 
 APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
-             *click(376, 548), wait_for("alice: opened"),
-             *click(512, 548), wait_for("terminal: opened"),
+             *click(342, 548), wait_for("alice: opened"),
+             *click(478, 548), wait_for("terminal: opened"),
              *keys("caps\r"), wait_for("terminal: caps"), *keys("boot\r"), wait_for("terminal: boot"),
              *keys("write hello.txt Hello from Terminal\r"), wait_for("terminal: write"),
              *keys("ls\r"), wait_for("terminal: ls"),
-             *click(580, 548), wait_for("settings: opened"),
+             *click(546, 548), wait_for("settings: opened"),
              *click(362, 268), wait_for("settings: background"),
              *click(154, 127), wait_for("terminal: window closed"),
-             mouse("v", 300, 300), *click(512, 548), wait_for("terminal: opened"),
+             mouse("v", 300, 300), *click(478, 548), wait_for("terminal: opened"),
              *keys("caps\r"), wait_for("terminal: caps"),
              b"write fast.txt 0123456789abcdefghijklmnopqrstuvwxyz\r", wait_for("terminal: write fast.txt"),
              b"cat fast.txt\r", wait_for("terminal: cat fast.txt"),
@@ -223,9 +233,9 @@ APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
              b"run hello\r", wait_for("hello: opened"),
              *keys("abc"),
              *click(150, 400), b"run clock\r", wait_for("clock: ticked 3 times"),
-             *click(444, 548), wait_for("files: opened"),
-             *[b"\x1b[B"] * 10, wait_for("files: showing hello.txt"),
-             *click(648, 548), wait_for("security: 12")]
+             *click(410, 548), wait_for("files: opened"),
+             *[b"\x1b[B"] * 19, wait_for("files: showing hello.txt"),
+             *click(614, 548), wait_for("security: 12")]
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]

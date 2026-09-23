@@ -1,6 +1,6 @@
 /* snake: the arrow keys steer; eat the orange squares to grow. It keeps its own time with
    the kernel's sleep call and asks for keys without blocking. Space starts a new game. */
-#include "../app.h"
+#include "../ui.h"
 
 #define CELL 12
 #define GW 30
@@ -10,6 +10,7 @@
 #define MAXLEN (GW * GH)
 
 struct snake {
+    struct ui ui;
     struct surface win;
     unsigned char x[MAXLEN], y[MAXLEN];   /* head first */
     int len, dx, dy, alive, score, best;
@@ -85,15 +86,19 @@ static void draw(struct snake *s) {
     put_s(&l, "   best ");
     put_dec(&l, (u64)s->best);
     l.b[l.n] = 0;
-    text(w, 8, 8, l.b, rgb(200, 206, 222), 1);
-    if (!s->alive) text(w, SW / 2 - text_width("space: play again", 2) / 2, SH / 2, "space: play again",
-                        rgb(255, 255, 255), 2);
+    font_text(w, &s->ui.small_bold, 10, 17, l.b, rgb(200, 206, 222));
+    if (!s->alive) {
+        const char *m = "Game over. Space: play again";
+        int mw = font_width(&s->ui.bold, m);
+        round_rect(w, SW / 2 - mw / 2 - 16, SH / 2 - 24, mw + 32, 38, 12, rgb(10, 12, 18), 220);
+        font_text(w, &s->ui.bold, SW / 2 - mw / 2, SH / 2, m, rgb(255, 255, 255));
+    }
 }
 
 __attribute__((section(".text.start"))) void _start(void) {
     struct snake *s = (struct snake *)DATA;
     struct line l = {.n = 0};
-    app_assets();
+    ui_load(&s->ui, app_assets());
     s->win = app_surface(SW, SH);
     s->rng = (unsigned)micros();
     s->best = 0;

@@ -71,12 +71,21 @@ static uint64_t nat(lean_object *o) {
     return lean_unbox(o);
 }
 
-/* A user register becomes a Lean Nat. Values at or above 2^62 are clamped to 2^62; every
-   system call rejects anything that large, so the clamp never changes an outcome. */
-static lean_object *arg(uint64_t v) {
-    const uint64_t cap = 1ULL << 62;
-    return lean_box(v < cap ? v : cap);
-}
+/* A user register becomes a Lean Nat, which this runtime keeps as a small number: below
+   2^63, with no big numbers behind it (rt/runtime.c stops the machine on one). So what a
+   task passes must not only fit, but keep fitting through whatever the kernel computes
+   from it, or one system call with a huge argument would stop the machine.
+
+   Message words (send and call: x1-x3; reply: x1-x3) are data the kernel only carries,
+   never computes with: they keep their low 63 bits. Every other argument is an index, an
+   address, a count, a length, a time or a set of rights, and none is valid at 2^40 or
+   more; those clamp to 2^40, which every call refuses (a 2^40 ms sleep is 34 years), and
+   which keeps every sum and product the kernel makes from arguments far below 2^63.
+   test/fuzz.sh throws such arguments at every call. */
+#define ARG_MAX (1ULL << 40)
+static lean_object *arg(uint64_t v) { return lean_box(v < ARG_MAX ? v : ARG_MAX); }
+static lean_object *msg_word(uint64_t v) { return lean_box(v & ~(1ULL << 63)); }
+static int carries_words(uint64_t num) { return num == 8 || num == 10 || num == 11; }
 
 static uint64_t cur_task(void) { return nat(leanos_cur(K1)); }
 static int ready(uint64_t i) { return leanos_ready(K1, lean_box(i)); }
@@ -160,10 +169,48 @@ static void restart(void) {
     for (;;) __asm__ volatile("wfi");
 }
 
+/* ---- the panic screen ----
+ * A Pi on a desk has a monitor, not a serial cable: when the kernel stops, it says why on
+ * the screen too, in the same 5x7 font the programs use, drawn straight into the
+ * framebuffer. Nothing else runs by then, so nothing else is drawing. */
+#include "font.h"
+
+static uint32_t *panic_fb;
+
+static void panic_text(uint32_t w, uint32_t x, uint32_t y, uint32_t scale, const char *t, uint32_t c) {
+    for (; *t; t++, x += 6 * scale) {
+        unsigned ch = (unsigned char)*t;
+        if (ch < 32 || ch > 126) ch = '?';
+        if (x + 6 * scale > w - 40) { x = 40; y += 10 * scale; }
+        const unsigned char *g = font5x7[ch - 32];
+        for (uint32_t r = 0; r < 7 * scale; r++)
+            for (uint32_t k = 0; k < 5 * scale; k++)
+                if (g[r / scale] & (16 >> (k / scale))) panic_fb[(y + r) * w + x + k] = c;
+    }
+}
+
+static void panic_screen(const char *msg) {
+    if (!panic_fb) return;
+    const uint32_t w = (uint32_t)nat(leanos_fb_width(lean_box(0)));
+    const uint32_t h = (uint32_t)nat(leanos_fb_height(lean_box(0)));
+    for (uint32_t i = 0; i < w * h; i++) panic_fb[i] = 0x1a1c26;
+    for (uint32_t i = 0; i < w * 6; i++) panic_fb[i] = 0xe0483e;
+    panic_text(w, 40, 60, 4, "leanos stopped", 0xffffff);
+    panic_text(w, 40, 120, 2, msg, 0xffb4a8);
+    panic_text(w, 40, 160, 2, "The kernel met something it cannot safely go on from,", 0xc8cad4);
+    panic_text(w, 40, 184, 2, "and stopped rather than guess. It wrote nothing after this.", 0xc8cad4);
+    panic_text(w, 40, 208, 2, "Switch the Pi off and on to start again.", 0xc8cad4);
+    /* The framebuffer is cached memory: push the picture out to where the GPU reads it. */
+    for (uint64_t a = (uint64_t)panic_fb; a < (uint64_t)(panic_fb + w * h); a += 64)
+        __asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+
 void kpanic(const char *msg) {
     kputs("\nleanos: PANIC: ");
     kputs(msg);
     kputs("\n");
+    panic_screen(msg);
     poweroff();
 }
 
@@ -345,6 +392,7 @@ static void handle_irq(void) {
 
 extern const uint64_t user_progs[], user_prog_ends[];
 extern const uint64_t user_assets[], user_asset_ends[];
+extern const uint64_t open_assets[], open_assets_end[];   /* the fonts for the open slots */
 
 static void sync_icache(uint64_t start, uint64_t len) {
     for (uint64_t a = start & ~63UL; a < start + len; a += 64)
@@ -365,7 +413,11 @@ static void load_image(uint64_t i, uint64_t va, uint64_t len) {
     memcpy((void *)base, (const void *)va, len);
     sync_icache(base, len);
     code_len[i] = len;
-    asset_len[i] = 0;
+    /* the shared fonts, at the start of the spare run, where built-in programs find theirs */
+    uint64_t alen = open_assets_end[0] - open_assets[0];
+    if (alen > SPARE_PAGES * PAGE_SIZE) kpanic("the open slots' assets are larger than the spare run");
+    memcpy((void *)(base + SPARE_FIRST * PAGE_SIZE), (const void *)open_assets[0], alen);
+    asset_len[i] = alen;
     memset(&saved[i], 0, sizeof saved[i]);
     saved[i].elr = USER_BASE;
     saved[i].sp = USER_BASE + USER_PAGES * PAGE_SIZE;
@@ -398,8 +450,9 @@ static void load_program(uint64_t i) {
 
 static const char *const names[] = {"alice", "display", "mallory", "carol", "input",
                                     "terminal", "settings", "security", "fs", "files",
-                                    "slot 10", "slot 11", "slot 12", "slot 13", "slot 14", "slot 15"};
-#define NPROGS 10   /* the programs in the kernel image, for slots 0-9 */
+                                    "slot 10", "slot 11", "slot 12", "slot 13", "slot 14", "slot 15",
+                                    "apps"};
+#define NPROGS 17   /* the kernel image's program table: slots 0-16 (empty for the open slots) */
 
 /* SHA-256 of "abc", from FIPS 180-4: the hash must be right before anything relies on it. */
 static void sha256_self_test(void) {
@@ -443,8 +496,9 @@ static void measure_and_verify(uint64_t i) {
 static void do_syscall(uint64_t cur) {
     struct frame *f = &saved[cur];
     syscalls++;
-    lean_object *r = leanos_syscall(K, arg(f->x[8]), arg(f->x[0]), arg(f->x[1]), arg(f->x[2]),
-                                    arg(f->x[3]), arg(f->x[4]));
+    lean_object *(*w)(uint64_t) = carries_words(f->x[8]) ? msg_word : arg;
+    lean_object *r = leanos_syscall(K, arg(f->x[8]), arg(f->x[0]), w(f->x[1]), w(f->x[2]),
+                                    w(f->x[3]), arg(f->x[4]));
     uint64_t out_va = nat(leanos_reply_out_va((lean_inc(r), r)));
     uint64_t out_len = nat(leanos_reply_out_len((lean_inc(r), r)));
     int remap = leanos_reply_remap((lean_inc(r), r));
@@ -486,7 +540,7 @@ static void do_syscall(uint64_t cur) {
         if (k >= ntasks || k == cur) kpanic("start of a slot the kernel should have refused");
         for (uint64_t i = 0; i < ntasks; i++) build_user_pages(i);
         if (load_len) load_image(k, out_va, load_len);
-        else if (k < NPROGS) load_program(k);
+        else if (k < NPROGS && !leanos_open_slot(lean_box(k))) load_program(k);
         else kpanic("start of an open slot without a program");
         kputs("leanos: ");
         kputs(names[k]);
@@ -649,6 +703,7 @@ void kmain(void) {
     lean_dec(res);
 
     uint64_t fb = fb_alloc();
+    panic_fb = (uint32_t *)fb;
     if (fb) {
         kputs("leanos: framebuffer ");
         kputdec(nat(leanos_fb_width(lean_box(0))));

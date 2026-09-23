@@ -23,12 +23,16 @@ off) and shows the kernel's answer next to what a typical Linux desktop allows, 
 included, and ends with what Linux does better.
 
 Also on the card: `calc` (a calculator), `snake`, `life` (Conway's Game of Life), `tiles`
-(2048), `clock`, `hello`, and `guide.txt`, a short user guide. Up to six programs from the
-card run at once, each confined to its own memory and a window.
+(2048), `clock`, `hello`, `fuzz` (20,000 system calls with made-up arguments, every
+answer checked against the proofs), and `guide.txt`, a short user guide. Every program has
+an icon, in the Apps window, its title bar and the dock. Up to six programs from the card
+run at once, each confined to its own memory and a window; starting one that is already
+open brings its window to the front.
 
 The dock starts apps: **Files** lists and shows what the file server holds, **Terminal**
 answers from the kernel (`whoami`, `caps`, `boot`, `ps`, `uptime`), the file server (`ls`,
-`cat`, `write`, `rm`), and runs programs from the SD card (`run calc`, `run snake`, ...), **Settings** changes the background, and **Security** shows every
+`cat`, `write`, `rm`), and runs programs from the SD card (`run calc`, `run snake`, ...), **Settings** changes the background, **Apps** shows every program, built in or on the
+card, and starts it with a click, and **Security** shows every
 program's boot check and what is proved. Notes saves its note to the file server, so it
 is back when Notes starts again. An app is loaded and checked against the manifest each
 time it starts; closing its window stops it, and starting it again first takes back
@@ -223,7 +227,7 @@ make run      # boot it on QEMU's Pi 4, headless, with build/sd.img as its SD ca
 ```
 
 ```bash
-make test     # proofs, axiom check, boot, the apps, the transcript, the pixels on screen, and tampered images
+make test     # proofs, axiom check, boot, the apps, the transcript, the pixels on screen, tampered images, and the fuzzer
 ```
 
 To run it in a browser, start `python3 tools/serve.py` and open http://127.0.0.1:8796.
@@ -266,8 +270,8 @@ partition and never writes to the boot partition.
 | `rt/runtime.c` | The bare-metal slice of Lean's runtime: allocator, reference counts, closures. |
 | `arch/boot.S` | Entry, exception vectors, entering and leaving user mode. |
 | `arch/kmain.c` | Boot, MMU, interrupt controller, timer; carries out what the Lean kernel returns. |
-| `user/` | The display server, the input driver, the file server (`fs.c`), the apps (alice's Notes, Terminal, Settings, Security, Files), and the test tasks mallory and carol; `gfx.h` draws, `assets.h` reads fonts and icons, `app.h` and `fs.h` are the client sides of the window and file protocols. |
-| `test/` | The boot check (transcript and screen), the apps, tampering, the axiom check, and the mutants. |
+| `user/` | The display server, the input driver, the file server (`fs.c`), the apps (alice's Notes, Terminal, Settings, Security, Files, and Apps, `launcher.c`, which starts anything with its icon), and the test tasks mallory and carol; `gfx.h` draws, `assets.h` reads fonts and icons, `app.h` and `fs.h` are the client sides of the window and file protocols. |
+| `test/` | The boot check (transcript and screen), the apps, the card programs, tampering, the fuzzer, the axiom check, and the mutants. |
 | `tools/serve.py` | The browser console: runs QEMU and streams its serial output. |
 
 A trap works like this: the machine layer saves the task's registers and passes the Lean

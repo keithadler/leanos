@@ -3,7 +3,8 @@
 its assets), as eight 32-bit words. The Lean kernel starts a task only if the machine layer
 measured exactly this.
 
-Usage: mkmanifest.py OUT.lean CODE[+ASSETS] ...   (one argument per task, in task order)
+Usage: mkmanifest.py OUT.lean CODE[+ASSETS] ...   (one argument per task, in task order;
+"" for an open slot)
 """
 import hashlib
 import sys
@@ -24,6 +25,8 @@ lines = [
     "def expectedHash : Nat → List Nat",
 ]
 for i, spec in enumerate(tasks):
+    if not spec:             # an open slot: the manifest names no program for it
+        continue
     data = b"".join(open(p, "rb").read() for p in spec.split("+"))
     digest = hashlib.sha256(data).digest()
     words = [int.from_bytes(digest[4 * k: 4 * k + 4], "big") for k in range(8)]
