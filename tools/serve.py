@@ -21,6 +21,7 @@ PORT = 8796
 VNC_DISPLAY = 1           # TCP 5901, localhost only
 WS_PORT = 5701            # the WebSocket noVNC connects to
 IMAGE = os.path.join(ROOT, "build", "kernel8.img")
+SCREEN_W, SCREEN_H = 1024, 600   # fbWidth and fbHeight in LeanOS/Kernel.lean
 QEMU = ["qemu-system-aarch64", "-M", "raspi4b", "-display", "none",
         "-vnc", f"127.0.0.1:{VNC_DISPLAY},websocket=127.0.0.1:{WS_PORT}",
         "-serial", "stdio", "-semihosting", "-kernel", IMAGE]
@@ -61,17 +62,16 @@ button { font: inherit; padding: 6px 16px; border-radius: 6px; border: 1px solid
          background: var(--panel); color: var(--ink); cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
 #status { color: var(--dim); }
-.panes { display: grid; grid-template-columns: minmax(0, 660px) minmax(0, 1fr); gap: 16px; align-items: start; }
-@media (max-width: 1100px) { .panes { grid-template-columns: minmax(0, 1fr); } }
+.panes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
 .screen { background: #000; border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
-          aspect-ratio: 4 / 3; position: relative; }
+          aspect-ratio: %SCREEN_W% / %SCREEN_H%; position: relative; max-width: %SCREEN_W%px; }
 #vnc { position: absolute; inset: 0; }
 #input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
          resize: none; outline: none; cursor: none; opacity: 0; caret-color: transparent; }
 .screen .off { position: absolute; inset: 0; display: grid; place-items: center; color: #9b998f; font-size: 14px; }
 .screen .off[hidden] { display: none; }
 pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0;
-      height: 495px; overflow: auto; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+      height: 280px; overflow: auto; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
 .t { color: var(--dim); user-select: none; }
 .kernel { color: var(--kernel); } .alice { color: var(--alice); } .display { color: var(--display); }
 .mallory { color: var(--mallory); } .carol { color: var(--carol); } .bad { color: var(--bad); font-weight: 600; }
@@ -146,8 +146,8 @@ function sendBytes(str) {
 function pad3(n) { return String(Math.max(0, Math.min(999, n))).padStart(3, '0'); }
 function mouse(kind, e) {
   const r = inputEl.getBoundingClientRect();
-  const x = Math.round((e.clientX - r.left) * 640 / r.width), y = Math.round((e.clientY - r.top) * 480 / r.height);
-  sendBytes('\x1bm' + kind + pad3(Math.min(639, x)) + pad3(Math.min(479, y)));
+  const x = Math.round((e.clientX - r.left) * %SCREEN_W% / r.width), y = Math.round((e.clientY - r.top) * %SCREEN_H% / r.height);
+  sendBytes('\x1bm' + kind + pad3(Math.min(%SCREEN_W% - 1, x)) + pad3(Math.min(%SCREEN_H% - 1, y)));
 }
 let lastMove = 0, pendingMove = null;
 inputEl.addEventListener('mousedown', (e) => { inputEl.focus(); mouse('d', e); e.preventDefault(); });
@@ -174,7 +174,7 @@ stopBtn.onclick = () => { fetch('/stop?id=' + bootId, {method: 'POST'}); finish(
 window.addEventListener('pagehide', () => { if (bootId) navigator.sendBeacon('/stop?id=' + bootId); });
 boot();
 </script></body></html>
-""".replace("%WS_PORT%", str(WS_PORT))
+""".replace("%WS_PORT%", str(WS_PORT)).replace("%SCREEN_W%", str(SCREEN_W)).replace("%SCREEN_H%", str(SCREEN_H))
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
