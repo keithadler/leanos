@@ -23,10 +23,10 @@ PAGE = r"""<!doctype html>
 <title>leanos console</title>
 <style>
 :root { --bg:#f6f5f1; --panel:#ffffff; --ink:#1d1d1b; --dim:#6b6a64; --line:#dddbd3;
-        --kernel:#2f5d8a; --alice:#2e7d4f; --bob:#9a5b13; --carol:#7a3f8f; --bad:#b3261e; }
+        --kernel:#2f5d8a; --alice:#2e7d4f; --server:#1f6f78; --mallory:#9a5b13; --carol:#7a3f8f; --bad:#b3261e; }
 @media (prefers-color-scheme: dark) {
   :root { --bg:#141412; --panel:#1c1c1a; --ink:#e9e7e1; --dim:#9b998f; --line:#33322e;
-          --kernel:#8ab4e0; --alice:#7fcf9d; --bob:#e0a95c; --carol:#c99ad8; --bad:#f28b82; }
+          --kernel:#8ab4e0; --alice:#7fcf9d; --server:#7fd3dc; --mallory:#e0a95c; --carol:#c99ad8; --bad:#f28b82; }
 }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--ink);
@@ -44,7 +44,7 @@ pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8p
       font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
 .t { color: var(--dim); user-select: none; }
 .kernel { color: var(--kernel); } .alice { color: var(--alice); }
-.bob { color: var(--bob); } .carol { color: var(--carol); }
+.server { color: var(--server); } .mallory { color: var(--mallory); } .carol { color: var(--carol); }
 .bad { color: var(--bad); font-weight: 600; }
 </style></head>
 <body><main>
@@ -61,7 +61,7 @@ function cls(line) {
   if (/PANIC|SHOULD NOT|CHANGED/.test(line)) return 'bad';
   const m = line.match(/^(\w+):/);
   if (!m) return '';
-  return {leanos:'kernel', alice:'alice', bob:'bob', carol:'carol'}[m[1]] || '';
+  return {leanos:'kernel', alice:'alice', server:'server', mallory:'mallory', carol:'carol'}[m[1]] || '';
 }
 function boot() {
   out.textContent = ''; btn.disabled = true; status.textContent = 'Booting…';
