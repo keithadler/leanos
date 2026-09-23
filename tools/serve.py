@@ -1,110 +1,142 @@
 #!/usr/bin/env python3
-"""Watch leanos boot from a browser.
+"""Run leanos in a browser.
 
-Serves a console page on http://127.0.0.1:8796. Each press of "Boot" starts a real QEMU
-run of build/kernel8.img on this machine, streams its serial console to the page line by
-line, and shows the screen once the system settles. Nothing is emulated in the browser;
-it only shows what QEMU produced.
+Serves a page on http://127.0.0.1:8796. "Boot" starts QEMU's Raspberry Pi 4 on this
+machine with no window of its own (`-display none`); its screen is published over VNC on a
+localhost-only WebSocket and drawn live in the page by noVNC, keyboard and mouse included,
+while the serial console streams alongside. QEMU keeps running until "Stop", the next
+"Boot", or the page going away.
 """
-import base64
 import http.server
 import json
 import os
 import socketserver
-import sys
+import subprocess
 import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "test"))
-import run  # noqa: E402  (test/run.py: boots QEMU and captures the screen)
-
 PORT = 8796
+VNC_DISPLAY = 1           # TCP 5901, localhost only
+WS_PORT = 5701            # the WebSocket noVNC connects to
 IMAGE = os.path.join(ROOT, "build", "kernel8.img")
-BOOT_LOCK = threading.Lock()
+QEMU = ["qemu-system-aarch64", "-M", "raspi4b", "-display", "none",
+        "-vnc", f"127.0.0.1:{VNC_DISPLAY},websocket=127.0.0.1:{WS_PORT}",
+        "-serial", "stdio", "-semihosting", "-kernel", IMAGE]
+
+lock = threading.Lock()
+current = {"proc": None}
+
+
+def stop_qemu():
+    proc = current["proc"]
+    current["proc"] = None
+    if proc and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
 
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>leanos console</title>
+<title>leanos</title>
 <style>
 :root { --bg:#f6f5f1; --panel:#ffffff; --ink:#1d1d1b; --dim:#6b6a64; --line:#dddbd3;
-        --kernel:#2f5d8a; --alice:#2e7d4f; --server:#1f6f78; --display:#1f6f78; --mallory:#9a5b13; --carol:#7a3f8f; --bad:#b3261e; }
+        --kernel:#2f5d8a; --alice:#2e7d4f; --display:#1f6f78; --mallory:#9a5b13; --carol:#7a3f8f; --bad:#b3261e; }
 @media (prefers-color-scheme: dark) {
   :root { --bg:#141412; --panel:#1c1c1a; --ink:#e9e7e1; --dim:#9b998f; --line:#33322e;
-          --kernel:#8ab4e0; --alice:#7fcf9d; --server:#7fd3dc; --display:#7fd3dc; --mallory:#e0a95c; --carol:#c99ad8; --bad:#f28b82; }
+          --kernel:#8ab4e0; --alice:#7fcf9d; --display:#7fd3dc; --mallory:#e0a95c; --carol:#c99ad8; --bad:#f28b82; }
 }
 * { box-sizing: border-box; }
-body { margin:0; background:var(--bg); color:var(--ink);
-       font: 15px/1.5 -apple-system, system-ui, sans-serif; }
-main { max-width: 1400px; margin: 0 auto; padding: 24px 16px 48px; }
-.panes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 640px); gap: 16px; align-items: start; }
-@media (max-width: 1000px) { .panes { grid-template-columns: minmax(0, 1fr); } }
-.screen { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
-.screen img { display: block; width: 100%; height: auto; image-rendering: pixelated; border-radius: 4px; }
-.screen p { margin: 8px 4px 2px; color: var(--dim); font-size: 13px; }
+body { margin:0; background:var(--bg); color:var(--ink); font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+main { max-width: 1400px; margin: 0 auto; padding: 20px 16px 40px; }
 h1 { font-size: 20px; margin: 0 0 4px; }
-p.sub { margin: 0 0 16px; color: var(--dim); }
-.bar { display:flex; gap:12px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+p.sub { margin: 0 0 14px; color: var(--dim); }
+.bar { display:flex; gap:10px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
 button { font: inherit; padding: 6px 16px; border-radius: 6px; border: 1px solid var(--line);
          background: var(--panel); color: var(--ink); cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
 #status { color: var(--dim); }
-pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-      padding: 14px 16px; margin: 0; min-height: 420px; overflow-x: auto;
-      font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+.panes { display: grid; grid-template-columns: minmax(0, 660px) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 1100px) { .panes { grid-template-columns: minmax(0, 1fr); } }
+.screen { background: #000; border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+          aspect-ratio: 4 / 3; position: relative; }
+#vnc { position: absolute; inset: 0; }
+.screen .off { position: absolute; inset: 0; display: grid; place-items: center; color: #9b998f; font-size: 14px; }
+.screen .off[hidden] { display: none; }
+pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0;
+      height: 495px; overflow: auto; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
 .t { color: var(--dim); user-select: none; }
-.kernel { color: var(--kernel); } .alice { color: var(--alice); }
-.server { color: var(--server); } .display { color: var(--display); } .mallory { color: var(--mallory); } .carol { color: var(--carol); }
-.bad { color: var(--bad); font-weight: 600; }
+.kernel { color: var(--kernel); } .alice { color: var(--alice); } .display { color: var(--display); }
+.mallory { color: var(--mallory); } .carol { color: var(--carol); } .bad { color: var(--bad); font-weight: 600; }
 </style></head>
 <body><main>
-<h1>leanos console</h1>
-<p class="sub">QEMU's Raspberry Pi 4 (<code>raspi4b</code>) running build/kernel8.img on this Mac:
-its serial port as it happens (times since power-on), and its screen once the system settles.</p>
-<div class="bar"><button id="boot">Boot</button><span id="status">Ready</span></div>
+<h1>leanos</h1>
+<p class="sub">QEMU's Raspberry Pi 4 running build/kernel8.img on this Mac, with no window of its own.
+The screen is live, and keys and clicks go to the machine. The serial console streams alongside.</p>
+<div class="bar"><button id="boot">Boot</button><button id="stop" disabled>Stop</button><span id="status">Ready</span></div>
 <div class="panes">
-<pre id="out"></pre>
-<div class="screen"><img id="screen" alt="The Pi's screen, 640 by 480" hidden><p id="screencap">The screen appears when the system settles.</p></div>
+  <div class="screen"><div id="vnc"></div><div class="off" id="off">Not running</div></div>
+  <pre id="out"></pre>
 </div>
 </main>
-<script>
-const out = document.getElementById('out'), btn = document.getElementById('boot'),
-      status = document.getElementById('status');
+<script type="module">
+import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.7.0/core/rfb.js';
+const out = document.getElementById('out'), status = document.getElementById('status');
+const bootBtn = document.getElementById('boot'), stopBtn = document.getElementById('stop');
+const off = document.getElementById('off'), vncEl = document.getElementById('vnc');
+let es = null, rfb = null;
+
 function cls(line) {
   if (/PANIC|SHOULD NOT|CHANGED/.test(line)) return 'bad';
   const m = line.match(/^(\w+):/);
-  if (!m) return '';
-  return {leanos:'kernel', alice:'alice', server:'server', display:'display', mallory:'mallory', carol:'carol'}[m[1]] || '';
+  return m ? ({leanos:'kernel', alice:'alice', display:'display', mallory:'mallory', carol:'carol'}[m[1]] || '') : '';
 }
-const screen = document.getElementById('screen'), screencap = document.getElementById('screencap');
+function connectScreen(tries) {
+  if (rfb) { try { rfb.disconnect(); } catch (e) {} rfb = null; }
+  const r = new RFB(vncEl, 'ws://127.0.0.1:%WS_PORT%');
+  r.scaleViewport = true;
+  r.addEventListener('connect', () => { off.hidden = true; });
+  r.addEventListener('disconnect', () => {
+    if (rfb !== r) return;
+    rfb = null;
+    if (es && tries > 0) setTimeout(() => connectScreen(tries - 1), 300); else off.hidden = false;
+  });
+  rfb = r;
+}
+function finish(text) {
+  if (es) { es.close(); es = null; }
+  if (rfb) { const r = rfb; rfb = null; try { r.disconnect(); } catch (e) {} }
+  off.hidden = false; off.textContent = 'Not running';
+  bootBtn.disabled = false; stopBtn.disabled = true; status.textContent = text;
+}
 function boot() {
-  out.textContent = ''; btn.disabled = true; status.textContent = 'Booting…';
-  screen.hidden = true; screencap.textContent = 'The screen appears when the system settles.';
-  const es = new EventSource('/boot');
+  if (es) es.close();
+  out.textContent = ''; bootBtn.disabled = true; stopBtn.disabled = false;
+  status.textContent = 'Booting…'; off.hidden = false; off.textContent = 'Starting…';
+  es = new EventSource('/boot');
   es.onmessage = (e) => {
     const d = JSON.parse(e.data);
-    if (d.screen) {
-      screen.src = 'data:image/png;base64,' + d.screen; screen.hidden = false;
-      screencap.textContent = 'Captured from QEMU when the kernel went idle.';
-      return;
-    }
-    if (d.done) {
-      status.textContent = d.code === 0 ? 'Done' : 'QEMU ended with status ' + d.code;
-      btn.disabled = false; es.close(); return;
-    }
+    if (d.started) { status.textContent = 'Running'; setTimeout(() => connectScreen(20), 200); return; }
+    if (d.done) { finish(d.code === 0 ? 'The machine powered itself off' : 'Stopped'); return; }
     const row = document.createElement('div');
     const t = document.createElement('span'); t.className = 't';
     t.textContent = (d.t * 1000).toFixed(0).padStart(5) + ' ms  ';
     const s = document.createElement('span'); s.className = cls(d.line); s.textContent = d.line;
-    row.append(t, s); out.append(row);
+    row.append(t, s); out.append(row); out.scrollTop = out.scrollHeight;
+    if (d.line.startsWith('leanos: idle')) status.textContent = 'Running, idle';
   };
-  es.onerror = () => { status.textContent = 'Connection lost'; btn.disabled = false; es.close(); };
+  es.onerror = () => finish('Stopped');
 }
-btn.onclick = boot;
+bootBtn.onclick = boot;
+stopBtn.onclick = () => { fetch('/stop', {method: 'POST'}); finish('Stopped'); };
+window.addEventListener('pagehide', () => navigator.sendBeacon('/stop'));
 boot();
 </script></body></html>
-"""
+""".replace("%WS_PORT%", str(WS_PORT))
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -128,25 +160,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def do_POST(self):
+        if self.path == "/stop":
+            with lock:
+                stop_qemu()
+            self.send_response(204)
+            self.end_headers()
+        else:
+            self.send_error(404)
+
     def send_event(self, obj):
         self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
         self.wfile.flush()
 
     def stream_boot(self):
+        with lock:
+            stop_qemu()
+            proc = subprocess.Popen(QEMU, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT)
+            current["proc"] = proc
         start = time.monotonic()
-
-        def line(text):
-            self.send_event({"t": time.monotonic() - start, "line": text})
-
-        def screen(png):
-            self.send_event({"screen": base64.b64encode(open(png, "rb").read()).decode()})
-
-        with BOOT_LOCK:  # one QEMU at a time: they share build/screen.*
-            try:
-                code = run.boot(30, on_line=line, on_screen=screen)
-                self.send_event({"done": True, "code": code})
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+        try:
+            self.send_event({"started": True})
+            for raw in proc.stdout:
+                line = raw.decode(errors="replace").rstrip("\r\n")
+                if line:
+                    self.send_event({"t": time.monotonic() - start, "line": line})
+            self.send_event({"done": True, "code": proc.wait()})
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            with lock:
+                if current["proc"] is proc:
+                    stop_qemu()
+                elif proc.poll() is None:
+                    proc.kill()
 
 
 class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -156,6 +204,9 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 if __name__ == "__main__":
     if not os.path.exists(IMAGE):
-        raise SystemExit("build/leanos.elf is missing: run `make` first")
-    print(f"leanos console on http://127.0.0.1:{PORT}", flush=True)
-    Server(("127.0.0.1", PORT), Handler).serve_forever()
+        raise SystemExit("build/kernel8.img is missing: run `make` first")
+    print(f"leanos in the browser on http://127.0.0.1:{PORT}", flush=True)
+    try:
+        Server(("127.0.0.1", PORT), Handler).serve_forever()
+    finally:
+        stop_qemu()

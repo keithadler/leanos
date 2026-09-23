@@ -85,16 +85,17 @@ make          # build build/kernel8.img and check every proof
 ```
 
 ```bash
-make run      # boot it on QEMU's Pi 4 in a window (close it to quit)
+make run      # boot it on QEMU's Pi 4, headless: serial here, screen in the browser console
 ```
 
 ```bash
 make test     # proofs, axiom check, boot, the transcript, and the pixels on screen
 ```
 
-To watch a boot from a browser, run `python3 tools/serve.py` and open
-http://127.0.0.1:8796. Each press of Boot starts a real QEMU run on your machine, streams
-its serial console as it happens, and shows the screen when the system settles.
+To run it in a browser, start `python3 tools/serve.py` and open http://127.0.0.1:8796.
+Boot starts QEMU's Pi 4 with no window of its own; the page shows its screen live (through
+noVNC, over a localhost-only WebSocket), passes keys and clicks to it, and streams the
+serial console alongside.
 
 ## How it fits together
 

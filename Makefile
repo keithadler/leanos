@@ -1,7 +1,8 @@
 # leanos: a kernel whose decisions are written and proved in Lean 4, for the Raspberry Pi 4.
 #
 #   make          build build/leanos.elf (and check every proof)
-#   make run      boot it in QEMU
+#   make run      boot it in QEMU, headless (serial on the terminal; watch the screen in
+#                 the browser console, tools/serve.py)
 #   make test     boot it and check the transcript
 #   make proofs   check the proofs only
 #   make mutants  break the kernel on purpose and check the proofs notice
@@ -86,7 +87,7 @@ build/leanos.elf: $(ARCH_O) $(INIT_O) arch/kernel.ld
 build/kernel8.img: build/leanos.elf
 	$(OBJCOPY) -O binary $< $@
 
-QEMU_ARGS := -M raspi4b -serial stdio -semihosting -kernel build/kernel8.img
+QEMU_ARGS := -M raspi4b -display none -serial stdio -semihosting -kernel build/kernel8.img
 
 run: build/kernel8.img
 	$(QEMU) $(QEMU_ARGS)
