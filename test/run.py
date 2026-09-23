@@ -213,6 +213,6 @@ if __name__ == "__main__":
     steps = DEMO_STEPS if demo else APP_STEPS if apps else ()
     # --keep-sd: boot with the card the last run left (build/sd-test.img); --no-sd: no card
     sd = os.path.join(ROOT, "build", "sd-test.img") if "--keep-sd" in sys.argv else "" if "--no-sd" in sys.argv else None
-    until = "display: moved" if demo else "security: 10" if apps else None
+    until = "display: the drag drew" if demo else "security: 10" if apps else None
     sys.exit(boot(float(args[0]) if args else 30, steps=steps, until=until,
                   snaps={"display: boot logo drawn": "logo"}, image=image, settle=2 if apps else 0.3, sd=sd))

@@ -24,11 +24,14 @@ static inline void clip_to(struct surface *s, int x, int y, int w, int h) {
 
 static inline unsigned rgb(unsigned r, unsigned g, unsigned b) { return (r << 16) | (g << 8) | b; }
 
-static inline unsigned mix(unsigned a, unsigned b, unsigned t /* 0..255, weight of b */) {
-    unsigned r = (((a >> 16) & 255) * (255 - t) + ((b >> 16) & 255) * t) / 255;
-    unsigned g = (((a >> 8) & 255) * (255 - t) + ((b >> 8) & 255) * t) / 255;
-    unsigned bl = ((a & 255) * (255 - t) + (b & 255) * t) / 255;
-    return rgb(r, g, bl);
+/* a and b blended, t = 0..255 the weight of b. Red and blue are blended together in one
+   multiply, green in another; the weight is stretched to 0..256 so 0 gives exactly a and
+   255 exactly b, and nothing divides. */
+static inline unsigned mix(unsigned a, unsigned b, unsigned t) {
+    unsigned u = t + (t >> 7), v = 256 - u;
+    unsigned rb = ((a & 0xFF00FFu) * v + (b & 0xFF00FFu) * u) >> 8;
+    unsigned g = ((a & 0x00FF00u) * v + (b & 0x00FF00u) * u) >> 8;
+    return (rb & 0xFF00FFu) | (g & 0x00FF00u);
 }
 
 static inline int inside(const struct surface *s, int x, int y) {
@@ -86,36 +89,100 @@ static inline unsigned round_cover(int px, int py, int x, int y, int w, int h, i
     return cover <= 0 ? 0 : cover >= 16 ? 255 : (unsigned)(cover * 255 / 16);
 }
 
-static inline void round_rect(struct surface *s, int x, int y, int w, int h, int r, unsigned c, unsigned alpha) {
-    for (int j = y; j < y + h; j++) {
-        if (j < s->cy0 || j >= s->cy1) continue;
-        int corner = j < y + r || j >= y + h - r;
-        for (int i = x; i < x + w; i++) {
-            if (i < s->cx0 || i >= s->cx1) continue;
-            unsigned a = corner && (i < x + r || i >= x + w - r) ? round_cover(i, j, x, y, w, h, r) : 255;
-            blend(s, i, j, c, a * alpha / 255);
+/* One row's pixels [i0, i1) of a rounded rectangle, already clipped. */
+static inline void round_span(struct surface *s, int j, int i0, int i1, int x, int y, int w, int h, int r,
+                              unsigned c, unsigned alpha) {
+    unsigned *row = s->px + j * s->stride;
+    int corner = j < y + r || j >= y + h - r;
+    for (int i = i0; i < i1; i++) {
+        unsigned a = alpha;
+        if (corner && (i < x + r || i >= x + w - r)) {
+            a = (round_cover(i, j, x, y, w, h, r) * alpha + 255) >> 8;
+            if (!a) continue;
         }
+        row[i] = a >= 255 ? c : mix(row[i], c, a);
     }
+}
+
+static inline void round_rect(struct surface *s, int x, int y, int w, int h, int r, unsigned c, unsigned alpha) {
+    int x0 = x < s->cx0 ? s->cx0 : x, x1 = x + w > s->cx1 ? s->cx1 : x + w;
+    int y0 = y < s->cy0 ? s->cy0 : y, y1 = y + h > s->cy1 ? s->cy1 : y + h;
+    if (alpha == 0) return;
+    for (int j = y0; j < y1; j++) round_span(s, j, x0, x1, x, y, w, h, r, c, alpha);
 }
 
 /* A rounded rectangle whose color runs from `top` to `bottom`. */
 static inline void round_gradient(struct surface *s, int x, int y, int w, int h, int r, unsigned top, unsigned bottom) {
-    for (int j = y; j < y + h; j++) {
-        if (j < s->cy0 || j >= s->cy1) continue;
-        unsigned c = mix(top, bottom, h > 1 ? (unsigned)((j - y) * 255 / (h - 1)) : 0);
-        int corner = j < y + r || j >= y + h - r;
-        for (int i = x; i < x + w; i++) {
-            if (i < s->cx0 || i >= s->cx1) continue;
-            unsigned a = corner && (i < x + r || i >= x + w - r) ? round_cover(i, j, x, y, w, h, r) : 255;
-            blend(s, i, j, c, a);
-        }
-    }
+    int x0 = x < s->cx0 ? s->cx0 : x, x1 = x + w > s->cx1 ? s->cx1 : x + w;
+    int y0 = y < s->cy0 ? s->cy0 : y, y1 = y + h > s->cy1 ? s->cy1 : y + h;
+    for (int j = y0; j < y1; j++)
+        round_span(s, j, x0, x1, x, y, w, h, r, mix(top, bottom, h > 1 ? (unsigned)((j - y) * 255 / (h - 1)) : 0), 255);
 }
 
-/* A soft shadow under a rounded rectangle: layers that grow and fade. */
-static inline void shadow(struct surface *s, int x, int y, int w, int h, int r) {
-    for (int k = 6; k >= 1; k--)
-        round_rect(s, x - k, y - k + 4, w + 2 * k, h + 2 * k, r + k, 0, 10);
+/* Darken c: keep `f` of it, f = 0..256. */
+static inline unsigned darken(unsigned c, unsigned f) {
+    return (((c & 0xFF00FFu) * f >> 8) & 0xFF00FFu) | (((c & 0x00FF00u) * f >> 8) & 0x00FF00u);
+}
+
+/* A soft shadow, `drop` pixels lower, under a rounded rectangle (x, y, w, h, r) that is
+   drawn over it next. It looks like six black layers of alpha 10, the rectangle grown by
+   1 to 6 pixels; but those layers share their corner centers, so how dark a pixel gets
+   depends only on its distance to the lowered rectangle. That is worked out once per
+   pixel (a square root only in the corners), in one pass, from two small tables. And the
+   rectangle hides everything under it but its corners, so that part is skipped: the work
+   follows the edge, not the area. */
+#define SHADOW_MAX_R 32
+static inline void shadow(struct surface *s, int x, int y, int w, int h, int r, int drop) {
+    if (r > SHADOW_MAX_R) r = SHADOW_MAX_R;
+    int by = y + 4 + drop;                      /* the layers' base: the rectangle, lowered */
+    /* keep_n[n]: what n full layers leave of the pixel under them (0..256) */
+    unsigned keep_n[8];
+    keep_n[0] = 256;
+    for (int n = 1; n < 8; n++) keep_n[n] = keep_n[n - 1] * 246 >> 8;
+    /* keep_e[e]: what the six layers leave at distance e (1/16 px) from a corner's center */
+    unsigned short keep_e[(SHADOW_MAX_R + 7) * 16 + 1];
+    int emax = (r + 7) * 16;
+    for (int e = 0; e <= emax; e++) {
+        unsigned f = 256;
+        for (int k = 1; k <= 6; k++) {
+            int cover = (r + k) * 16 - e + 8;
+            unsigned a = cover <= 0 ? 0 : cover >= 16 ? 255 : (unsigned)(cover * 255 / 16);
+            unsigned ak = (a * 10 + 255) >> 8;
+            f = f * (256 - ak) >> 8;
+        }
+        keep_e[e] = (unsigned short)f;
+    }
+    int x0 = x - 6 < s->cx0 ? s->cx0 : x - 6, x1 = x + w + 6 > s->cx1 ? s->cx1 : x + w + 6;
+    int y0 = by - 6 < s->cy0 ? s->cy0 : by - 6, y1 = by + h + 6 > s->cy1 ? s->cy1 : by + h + 6;
+    for (int j = y0; j < y1; j++) {
+        unsigned *row = s->px + j * s->stride;
+        /* the covered part of this row: all of the rectangle's width away from its top and
+           bottom corners, the middle only within them */
+        int h0 = x1, h1 = x1;
+        if (j >= y && j < y + h) {
+            int inset = (j < y + r || j >= y + h - r) ? r : 0;
+            h0 = x + inset;
+            h1 = x + w - inset;
+        }
+        int iny = j >= by + r && j < by + h - r;
+        int ydist = j < by ? by - j : j >= by + h ? j - (by + h) + 1 : 0;
+        int cy = j < by + r ? by + r : by + h - r - 1;
+        for (int i = x0; i < x1; i++) {
+            if (i >= h0 && i < h1) { i = h1 - 1; continue; }
+            int inx = i >= x + r && i < x + w - r;
+            unsigned f;
+            if (!inx && !iny) {
+                int cx = i < x + r ? x + r : x + w - r - 1;
+                int dx = (i - cx) * 16, dy = (j - cy) * 16;
+                unsigned e = isqrt((unsigned)(dx * dx + dy * dy));
+                f = e <= (unsigned)emax ? keep_e[e] : 256;
+            } else {
+                int dist = inx ? ydist : (i < x ? x - i : i >= x + w ? i - (x + w) + 1 : 0);
+                f = dist == 0 ? keep_n[6] : dist <= 6 ? keep_n[7 - dist] : 256;
+            }
+            if (f < 256) row[i] = darken(row[i], f);
+        }
+    }
 }
 
 /* An anti-aliased line of the given width, by distance from each pixel to the segment

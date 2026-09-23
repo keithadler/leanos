@@ -89,6 +89,26 @@ only ever come from memory it was granted. Keyboard and mouse input: the Pi 4's 
 through PCIe and the VL805 xHCI controller, which is a large driver, so input starts on
 the UART and USB comes after.
 
+Drawing speed (the display server logs it on every boot, and `make test` checks a drag
+frame stays under 20 ms). Measured under QEMU on the development Mac, one window open:
+
+| | before | after |
+|---|---|---|
+| a full redraw of the screen | ~50 ms | ~11 ms |
+| a click on a window | ~50 ms (a full redraw) | ~4 ms |
+| one frame of a window drag | ~35 ms | ~4.5 ms |
+
+What changed: blending with two multiplies on packed channels instead of three divides;
+rounded rectangles that walk only the clipped part; shadows drawn in one pass from a
+distance table, skipping everything the window will cover; a background that precomputes
+its glow per column and looks at the dot grid only on rows that have dots; and a click that
+redraws the two windows whose look changed instead of the whole screen. The output matches
+the old drawing to within rounding (at most 5 of 255 on a channel, in the shadows).
+
+Next for speed: a real Pi 4 maps the framebuffer uncached, where reading it back to blend
+is slow; drawing into a cached back buffer and copying out changed rectangles would fix
+that, and needs more memory for the display server than its 1 MiB slot.
+
 ## 8. A bounded kernel
 
 Prove how much kernel memory each operation can use, and preallocate per task, so no

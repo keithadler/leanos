@@ -64,7 +64,9 @@ check_order input \
 
 # The display: logo, desktop, the two window requests in either order, then the keys and
 # the drag, in order.
-display=$(echo "$out" | grep -E "^display: ")
+# The display's timing lines (checked below) are not part of its story.
+timing=$(echo "$out" | grep -E "^display: (a full redraw took|a click on a window redrew in|the drag drew)")
+display=$(echo "$out" | grep -E "^display: " | grep -vE "^display: (a full redraw took|a click on a window redrew in|the drag drew)")
 expected_head=$(printf '%s\n' "display: boot checks shown: 6 verified, 0 refused" "display: boot logo drawn" \
   "display: desktop drawn on the 1024x600 framebuffer")
 [ "$(echo "$display" | head -3)" = "$expected_head" ] || fail "display did not show the boot checks, logo and desktop"
@@ -87,6 +89,15 @@ echo "$out" | grep -q "^leanos: idle, 4 tasks waiting" || fail "did not settle w
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 echo "$out" | grep -qE "SHOULD NOT|CHANGED" && fail "a protection failed"
 echo "ok: boot transcript matches"
+
+# Drawing speed: each timing is reported, and a drag frame stays well under the 35 ms it
+# took before drawing was reworked (the bound is loose: QEMU shares this machine).
+for what in "a full redraw took" "a click on a window redrew in" "the drag drew"; do
+  echo "$timing" | grep -q "^display: $what" || fail "no timing for: $what"
+done
+frame_ms=$(echo "$timing" | sed -n 's/^display: the drag drew [0-9]* frames, \([0-9]*\)\..* ms each$/\1/p')
+[ -n "$frame_ms" ] && [ "$frame_ms" -lt 20 ] || fail "a drag frame took $frame_ms ms"
+echo "ok: drawing speed: $(echo "$timing" | sed 's/^display: //' | paste -sd ';' - | sed 's/;/; /g')"
 
 # The screens themselves.
 python3 - <<'PY' || fail "the screen is not what the display drew"

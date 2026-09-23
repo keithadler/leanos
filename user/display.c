@@ -78,7 +78,7 @@ struct win {
     char title[9];
     int closing;                /* closed on screen; the client hears EV_CLOSE when it next waits */
     u64 slot;                   /* reply slot + 1 while the client waits, else 0 */
-    u64 queue[QUEUE][3];         /* events waiting for the client, oldest at qhead */
+    unsigned queue[QUEUE][3];    /* events waiting for the client (kind, a, b), oldest at qhead */
     int qhead, qlen;
 };
 
@@ -90,8 +90,12 @@ struct state {
     struct picture icons[DOCK_N];
     /* the background pattern: a color per row, a glow per column, and a 32 x 32 tile */
     unsigned bg_row[H];
-    unsigned char bg_glow[W];
+    /* the glow, per column, ready to blend: the weight left for the row's color, and the
+       glow color's red+blue and green already multiplied by the glow's weight */
+    unsigned short glow_keep[W];
+    unsigned glow_rb[W], glow_g[W];
     unsigned char bg_tile[32 * 32];
+    unsigned char bg_dot_row[32];   /* does this row of the tile have any dot */
     struct win win[MAX_WIN];
     int z[MAX_WIN];             /* window indices, bottom to top */
     int nz;
@@ -105,6 +109,10 @@ struct state {
     int ncaps;
     u64 cap_badge[64];
     int cap_win[64];
+    /* how long drawing takes, for the log: the first full redraw (when the first window
+       opens), the first click on a window, and the frames of each drag */
+    int full_reported, click_reported;
+    u64 drag_frames, drag_us;
 };
 _Static_assert(sizeof(struct state) <= 8 * 4096, "the server's state must fit in its 8 data pages");
 
@@ -264,8 +272,8 @@ static void draw_window(struct state *st, int k) {
     struct win *w = &st->win[k];
     int ow = outer_w(w), oh = outer_h(w), x = w->x, y = w->y;
     int focus = focused(st) == k;
-    shadow(s, x, y, ow, oh, RADIUS);
-    if (focus) shadow(s, x, y + 2, ow, oh, RADIUS);
+    shadow(s, x, y, ow, oh, RADIUS, 0);
+    if (focus) shadow(s, x, y, ow, oh, RADIUS, 2);
     round_gradient(s, x, y, ow, TITLE_H + RADIUS, RADIUS, rgb(248, 248, 250), rgb(234, 234, 238));
     fill(s, x, y + TITLE_H - 1, ow, 1, rgb(214, 214, 220));
     traffic_lights(s, x + 12, y + 9, focus);
@@ -311,14 +319,20 @@ static void dock(struct state *st) {
 }
 
 /* The background: indigo at the top to deep teal at the bottom, a soft glow toward the left,
-   and a fine grid of dots over it. Built once; drawing it is two table lookups a pixel. */
+   and a fine grid of dots over it. Built once; drawing a pixel is two multiply-adds (the
+   same arithmetic as mix(), split so the glow's half is done once per column), and only
+   the rows of the grid that have dots look at the dots. */
 static void make_background(struct state *st) {
     int t = st->theme;
     for (int y = 0; y < H; y++) st->bg_row[y] = mix(theme_top[t], theme_bottom[t], (unsigned)(y * 255 / (H - 1)));
     for (int x = 0; x < W; x++) {
         int d = x < 300 ? 0 : x - 300;              /* glow: strongest on the left third */
         int a = 70 - d * 70 / (W - 300);
-        st->bg_glow[x] = (unsigned char)(a < 0 ? 0 : a);
+        unsigned u = (unsigned)(a < 0 ? 0 : a);     /* under 128, so mix() uses it as is */
+        unsigned g = theme_glow[t];
+        st->glow_keep[x] = (unsigned short)(256 - u);
+        st->glow_rb[x] = (g & 0xFF00FFu) * u;
+        st->glow_g[x] = (g & 0x00FF00u) * u;
     }
     for (int j = 0; j < 32; j++)
         for (int i = 0; i < 32; i++) {
@@ -328,18 +342,26 @@ static void make_background(struct state *st) {
             int cover = 26 - d;                     /* radius 1.6 px in 1/16 px, with a soft edge */
             st->bg_tile[j * 32 + i] = (unsigned char)(cover <= 0 ? 0 : cover >= 16 ? 38 : cover * 38 / 16);
         }
+    for (int j = 0; j < 32; j++) {
+        st->bg_dot_row[j] = 0;
+        for (int i = 0; i < 32; i++) st->bg_dot_row[j] |= st->bg_tile[j * 32 + i] != 0;
+    }
 }
 
 static void background(struct state *st) {
     struct surface *s = &st->screen;
     for (int y = s->cy0; y < s->cy1; y++) {
         unsigned *row = s->px + y * s->stride;
-        unsigned base = st->bg_row[y];
+        unsigned brb = st->bg_row[y] & 0xFF00FFu, bg = st->bg_row[y] & 0x00FF00u;
+        for (int x = s->cx0; x < s->cx1; x++) {
+            unsigned k = st->glow_keep[x];
+            row[x] = (((brb * k + st->glow_rb[x]) >> 8) & 0xFF00FFu) | (((bg * k + st->glow_g[x]) >> 8) & 0x00FF00u);
+        }
+        if (!st->bg_dot_row[y & 31]) continue;
         const unsigned char *tile = st->bg_tile + (y & 31) * 32;
         for (int x = s->cx0; x < s->cx1; x++) {
-            unsigned c = mix(base, theme_glow[st->theme], st->bg_glow[x]);
             unsigned dot = tile[x & 31];
-            row[x] = dot ? mix(c, rgb(200, 220, 255), dot) : c;
+            if (dot) row[x] = mix(row[x], rgb(200, 220, 255), dot);
         }
     }
 }
@@ -374,6 +396,17 @@ static void raise(struct state *st, int k) {
     st->z[st->nz - 1] = k;
 }
 
+/* Bring window k to the front and redraw only what changed: its area, and the area of the
+   window that had the focus (its title bar dims). */
+static void bring_to_front(struct state *st, int k) {
+    int old = focused(st);
+    raise(st, k);
+    if (old >= 0 && old != k) composite_window(st, old);
+    composite_window(st, k);
+    /* the menu bar names the focused window */
+    composite(st, 0, 0, W, BAR_H + 1);
+}
+
 static int window_at(struct state *st, int x, int y) {
     for (int i = st->nz - 1; i >= 0; i--) {
         struct win *w = &st->win[st->z[i]];
@@ -396,9 +429,9 @@ static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
         w->slot = 0;
     } else if (w->qlen < QUEUE) {
         int at = (w->qhead + w->qlen++) % QUEUE;
-        w->queue[at][0] = kind;
-        w->queue[at][1] = a;
-        w->queue[at][2] = b;
+        w->queue[at][0] = (unsigned)kind;   /* keys and screen positions fit in 32 bits */
+        w->queue[at][1] = (unsigned)a;
+        w->queue[at][2] = (unsigned)b;
     }
 }
 
@@ -485,8 +518,7 @@ static void launch(struct state *st, struct line *l, int i) {
     }
     for (int k = 0; k < MAX_WIN; k++)
         if (st->win[k].used && !st->win[k].closing && slot_of(st->win[k].badge) == slot) {
-            raise(st, k);
-            redraw_all(st);
+            bring_to_front(st, k);
             return;
         }
     if (run_state(slot) == 1) return; /* started, not showing a window yet */
@@ -509,6 +541,14 @@ static void launch(struct state *st, struct line *l, int i) {
         say(l);
     }
     composite(st, DOCK_X - 60, DOCK_Y - 44, DOCK_W + 120, DOCK_H + 44);
+}
+
+/* x.y ms, from microseconds */
+static void put_ms(struct line *l, u64 us) {
+    put_dec(l, us / 1000);
+    put_s(l, ".");
+    put_dec(l, us / 100 % 10);
+    put_s(l, " ms");
 }
 
 static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
@@ -540,7 +580,14 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
                 close_window(st, l, k);
                 return;
             }
-            raise(st, k);
+            u64 t0 = micros();
+            bring_to_front(st, k);
+            if (!st->click_reported) {
+                st->click_reported = 1;
+                put_s(l, "display: a click on a window redrew in ");
+                put_ms(l, micros() - t0);
+                say(l);
+            }
             if (st->py >= w->y + TITLE_H)
                 deliver_event(w, EV_DOWN, (u64)(st->px - w->x), (u64)(st->py - w->y - TITLE_H));
             if (st->py < w->y + TITLE_H) {
@@ -550,7 +597,6 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
                 st->drag_x0 = w->x;
                 st->drag_y0 = w->y;
             }
-            redraw_all(st);
         }
     } else if (kind == EV_MOVE && st->drag) {
         struct win *w = &st->win[st->drag - 1];
@@ -561,7 +607,10 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
         w->y = ny;
         int x0 = (oxw < nx ? oxw : nx) - 10, y0 = (oyw < ny ? oyw : ny) - 10;
         int x1 = (oxw > nx ? oxw : nx) + outer_w(w) + 10, y1 = (oyw > ny ? oyw : ny) + outer_h(w) + 14;
+        u64 t0 = micros();
         composite(st, x0, y0, x1 - x0, y1 - y0);
+        st->drag_us += micros() - t0;
+        st->drag_frames++;
     } else if (kind == EV_MOVE) {
         int hv = dock_at(st->px, st->py);
         if (hv != st->hover) {
@@ -579,8 +628,15 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
             put_dec(l, w->y);
             put_s(l, ")");
             say(l);
+            put_s(l, "display: the drag drew ");
+            put_dec(l, st->drag_frames);
+            put_s(l, " frames, ");
+            put_ms(l, st->drag_frames ? st->drag_us / st->drag_frames : 0);
+            put_s(l, " each");
+            say(l);
         }
         st->drag = 0;
+        st->drag_frames = st->drag_us = 0;
     }
     composite(st, ox, oy, 12, 19);
     composite(st, st->px, st->py, 12, 19);
@@ -618,7 +674,14 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     st->cap_win[cap - 1] = k + 1;
     wn->qhead = wn->qlen = 0;
     st->z[st->nz++] = k;
+    u64 t0 = micros();
     redraw_all(st);
+    if (!st->full_reported) {
+        st->full_reported = 1;
+        put_s(l, "display: a full redraw took ");
+        put_ms(l, micros() - t0);
+        say(l);
+    }
     put_s(l, "display: ");
     put_s(l, name_of(badge));
     put_s(l, " opened a ");
@@ -645,7 +708,7 @@ static void on_wait(struct state *st, struct res *r) {
         }
         if (dirty) composite_window(st, k);
         if (w->qlen) {
-            u64 *e = w->queue[w->qhead];
+            unsigned *e = w->queue[w->qhead];
             sys(SYS_REPLY, slot - 1, e[0], e[1], e[2], 0);
             w->qhead = (w->qhead + 1) % QUEUE;
             w->qlen--;
@@ -701,6 +764,8 @@ __attribute__((section(".text.start"))) void _start(void) {
 
     st->screen = surface_of((unsigned *)PAGE(FB_PAGE), W, H);
     st->theme = 0;
+    st->full_reported = st->click_reported = 0;
+    st->drag_frames = st->drag_us = 0;
     make_background(st);
     st->px = W / 2;
     st->py = H / 2;

@@ -87,6 +87,7 @@ static inline void spin(u64 n) { for (volatile u64 i = 0; i < n; i++) {} }
 static inline u64 ticks(void) { u64 v; __asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(v)); return v; }
 static inline u64 tick_rate(void) { u64 v; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(v)); return v ? v : 54000000; }
 static inline u64 millis(void) { return ticks() * 1000 / tick_rate(); }
+static inline u64 micros(void) { return ticks() * 1000000 / tick_rate(); }
 
 /* The compiler may call these for struct copies and zeroing. */
 void *memset(void *d, int c, unsigned long n) {
