@@ -69,7 +69,7 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 69 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 80 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a `start` that forgets to take back
@@ -135,6 +135,17 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   programs the timer for one every 10 ms. That the interval is right, and that no tick is
   lost while interrupts are masked in the kernel, is argued, not proved; the proofs are
   about the count.
+- The USB controller: `usb_request` in `arch/kmain.c` carries out only what `sysUsb`
+  returned. It writes a checked physical address with the controller's bus offset
+  (0xC0000000, the VideoCore's view of RAM, which QEMU's model also maps), and keeps the
+  cache out of the way: a started range is cleaned and invalidated before the start, and
+  invalidated again when the driver next reads that channel's interrupt register. That the
+  DWC2 in buffer DMA mode touches no memory but HCDMA to HCDMA plus the transfer size (and
+  at most one packet more, which the kernel's check includes) is the controller's
+  documented behavior, trusted, not proved; so is that nothing else in its register page
+  can make it DMA once device mode, descriptor DMA and the descriptor-list registers are
+  refused. On a Pi 4 the DWC2 is the USB-C port; the USB-A ports need a separate xHCI
+  driver, whose DMA (rings of descriptors in memory) this scheme does not cover yet.
 - The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
   then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.

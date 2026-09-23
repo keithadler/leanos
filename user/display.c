@@ -50,7 +50,7 @@
 
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8 };
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6 };
-enum { BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
+enum { BADGE_USB = 17, BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
        BADGE_SECURITY = 7, BADGE_FILES = 9 };
 enum { SET_BACKGROUND = 1 };
 #define LAUNCH_FIRST 6  /* launch capabilities: Notes, Terminal, Settings, Security */
@@ -1076,7 +1076,7 @@ __attribute__((section(".text.start"))) void _start(void) {
             st->cap_badge[grant - 1] = badge;
             st->cap_win[grant - 1] = 0;
         }
-        if (badge == BADGE_INPUT && !slot) {
+        if ((badge == BADGE_INPUT || badge == BADGE_USB) && !slot) {
             on_input(st, &l, op, r.x[3], r.x[4]);
         } else if (slot && op == OP_OPEN && r.x[5]) {
             on_open(st, &l, &r);

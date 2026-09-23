@@ -198,6 +198,7 @@ structure CapOK (j : Nat) (c : Cap) : Prop where
   blocks : ∀ b n, c.obj = .blocks b n → ∃ c0 ∈ initCaps j, c0.obj = .blocks b n ∧ RLe c.rights c0.rights
   power : c.obj = .power → ∃ c0 ∈ initCaps j, c0.obj = .power
   board : c.obj = .board → ∃ c0 ∈ initCaps j, c0.obj = .board
+  usb : c.obj = .usbHost → ∃ c0 ∈ initCaps j, c0.obj = .usbHost
   run : RunOK c
 
 /-- A task waiting to send carries only a frame, one that is fine for it to hold, through an
@@ -325,6 +326,12 @@ theorem subObj_blocks {o o' : Obj} {off cnt b n : Nat} (h : subObj o off cnt = s
     (he : o' = .blocks b n) : o = .blocks b n := by
   rw [subObj_same h (by intro b' n' hb; rw [he] at hb; cases hb), he]
 
+theorem subObj_usb {o o' : Obj} {off cnt : Nat} (h : subObj o off cnt = some o')
+    (he : o' = .usbHost) : o = .usbHost := by
+  cases o <;> simp [subObj] at h
+  · split at h <;> split at h <;> simp at h <;> subst he <;> simp at h
+  all_goals first | exact (h ▸ he) | (subst he; simp_all)
+
 theorem subObj_board {o o' : Obj} {off cnt : Nat} (h : subObj o off cnt = some o')
     (he : o' = .board) : o = .board := by
   cases o <;> simp [subObj] at h
@@ -351,6 +358,7 @@ theorem capOK_derive {j : Nat} {c : Cap} {o : Obj} {off cnt : Nat} (h : CapOK j 
     exact ⟨c0, hc0, hco, RLe.trans (meet_le _ _) hle⟩
   power hp := h.power (subObj_power ho hp)
   board hb := h.board (subObj_board ho hb)
+  usb hu := h.usb (subObj_usb ho hu)
   run f f' hf hf' hp := h.run f f' (subObj_covers ho hf) (subObj_covers ho hf') hp
 
 /-- A frame capability that is fine for `A` to hold is fine for `B` to hold, if `A` can pass
@@ -358,7 +366,7 @@ frames to `B`. -/
 theorem capOK_grant {A B : Nat} {g : Cap} (hg : CapOK A g) (hf : ∃ b n, g.obj = .frames b n)
     (he : Edge A B) : CapOK B g := by
   obtain ⟨b, n, hgf⟩ := hf
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, hg.run⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hg.run⟩
   · intro f' hf'
     obtain ⟨hlt, hwx, C, c0, hC, hr, hc0, ho, hle⟩ := hg.frames f' hf'
     exact ⟨hlt, hwx, C, c0, hC, Reach.step hr he, hc0, ho, hle⟩
@@ -368,6 +376,7 @@ theorem capOK_grant {A B : Nat} {g : Cap} (hg : CapOK A g) (hf : ∃ b n, g.obj 
   · intro b' n' hb; rw [hgf] at hb; cases hb
   · intro hp; rw [hgf] at hp; cases hp
   · intro hb; rw [hgf] at hb; cases hb
+  · intro hu; rw [hgf] at hu; cases hu
 
 /-- The endpoint rights a task holds now are rights it held at boot. -/
 theorem boot_rights {j : Nat} {c : Cap} {e : Nat} (h : CapOK j c) (he : c.obj = .endpoint e) :
@@ -787,15 +796,15 @@ theorem len_mkTasksFrom : ∀ (k n : Nat), len (mkTasksFrom k n) = n
 
 theorem cases17 {j : Nat} (h : j < numTasks) :
     j = 0 ∨ j = 1 ∨ j = 2 ∨ j = 3 ∨ j = 4 ∨ j = 5 ∨ j = 6 ∨ j = 7 ∨ j = 8 ∨ j = 9 ∨ j = 10 ∨ j = 11 ∨
-      j = 12 ∨ j = 13 ∨ j = 14 ∨ j = 15 ∨ j = 16 := by
+      j = 12 ∨ j = 13 ∨ j = 14 ∨ j = 15 ∨ j = 16 ∨ j = 17 := by
   simp [numTasks] at h; omega
 
 /-- At boot, every frame a task holds is its own (`owner`), read-execute or read-write. -/
 theorem initCaps_frame {j f : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps j)
     (hf : Covers c f) : owner f = j ∧ f < devBase + devPages ∧ ¬ WX c.rights := by
   obtain ⟨b, n, ho, h1, h2⟩ := hf
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc <;>
+  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc <;>
     rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> obtain ⟨rfl, rfl⟩ := ho <;>
     by_cases hfp : f < 5120 <;> by_cases hfd : f < 5720 <;>
     simp [WX, Rights.rx, Rights.rw, owner, poolFrames, framesPerTask, maxTasks, fbPages,
@@ -814,8 +823,8 @@ theorem initCaps_run {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCap
   intro f f' hf hf'
   have ⟨b, n, ho, _, _⟩ := hf
   apply runOK_of ho _ f f' hf hf'
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc <;>
+  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc <;>
     rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;>
     obtain ⟨rfl, rfl⟩ := ho <;> simp [poolFrames, framesPerTask, maxTasks, devBase, fbPages]
 
@@ -829,6 +838,7 @@ theorem initCap_ok {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps 
   blocks b n hb := ⟨c, hc, hb, RLe.refl _⟩
   power hp := ⟨c, hc, hp⟩
   board hb := ⟨c, hc, hb⟩
+  usb hu := ⟨c, hc, hu⟩
   run := initCaps_run hj hc
 
 theorem mkTask_ok {fb : Bool} {j : Nat} (hj : j < numTasks) : TaskOK fb j (mkTask j) := by
@@ -836,11 +846,11 @@ theorem mkTask_ok {fb : Bool} {j : Nat} (hj : j < numTasks) : TaskOK fb j (mkTas
   · intro m hm
     simp only [mkTask, initMaps] at hm
     have hcode : runCap (256 * j) 16 Rights.rx ∈ initCaps j := by
-      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
+      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
     have hdata : runCap (256 * j + 16) 8 Rights.rw ∈ initCaps j := by
-      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
+      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
     have hstack : runCap (256 * j + 24) 4 Rights.rw ∈ initCaps j := by
-      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
+      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
     rcases mem_app.1 hm with hm | hm
     · obtain ⟨k, hk, -, hf, hr⟩ := mem_runMaps hm
       exact ⟨_, hcode, ⟨_, _, rfl, by omega, by omega⟩, hr.symm⟩
@@ -859,7 +869,7 @@ theorem mkTask_ok {fb : Bool} {j : Nat} (hj : j < numTasks) : TaskOK fb j (mkTas
   · intro m hm
     left
     simp only [mkTask, initMaps] at hm
-    have : j < 17 := by simpa [numTasks] using hj
+    have : j < 18 := by simpa [numTasks] using hj
     rcases mem_app.1 hm with hm | hm
     · obtain ⟨k, hk, -, hf, -⟩ := mem_runMaps hm; simp [poolFrames, framesPerTask, maxTasks]; omega
     · rcases mem_app.1 hm with hm | hm
@@ -1090,6 +1100,27 @@ theorem inv_sysBoard {s : KState} {t : Task} {ci w v : Nat} (hs : Inv s)
     | exact inv_ret hs ht _
     | exact inv_setTask hs (ht.result _)
 
+/-- The USB channel shadows are not part of the invariant. -/
+theorem inv_usbFields {s : KState} (hs : Inv s) (d z : List Nat) :
+    Inv { s with usbDma := d, usbSize := z } :=
+  ⟨hs.len, hs.tasks⟩
+
+theorem inv_sysUsb {s : KState} {t : Task} {ci op reg v : Nat} (hs : Inv s)
+    (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysUsb s t ci op reg v).state := by
+  unfold sysUsb usbReply
+  repeat' (first | split | dsimp only)
+  all_goals first
+    | exact inv_ret hs ht _
+    | exact inv_setTask hs (ht.result _)
+    | exact inv_ret (s := { s with usbDma := setNth s.usbDma (chanOf reg) v }) (inv_usbFields hs _ _) ht _
+    | exact inv_ret (s := { s with usbSize := setNth s.usbSize (chanOf reg) v }) (inv_usbFields hs _ _) ht _
+
+theorem inv_usbDone {s : KState} (hs : Inv s) (v : Nat) : Inv (usbDone s v) := by
+  unfold usbDone
+  split
+  · rename_i t ht; exact inv_setTask hs ((hs.tasks _ t ht).result _)
+  · exact hs
+
 theorem inv_boardDone {s : KState} (hs : Inv s) (a b c d e : Nat) : Inv (boardDone s a b c d e) := by
   unfold boardDone
   split
@@ -1175,6 +1206,7 @@ theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
       · exact inv_sysPower hs hto
       · exact inv_ret hs hto _
       · exact inv_sysBoard hs hto
+      · exact inv_sysUsb hs hto
       · exact inv_ret hs hto _
     · exact hs
 
@@ -1221,6 +1253,7 @@ inductive Reachable : KState → Prop
   | verify {s} (i : Nat) (h : List Nat) : Reachable s → Reachable (verify s i h)
   | ioFail {s} : Reachable s → Reachable (ioFailed s)
   | board {s} (a b c d e : Nat) : Reachable s → Reachable (boardDone s a b c d e)
+  | usb {s} (v : Nat) : Reachable s → Reachable (usbDone s v)
 
 theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   induction h with
@@ -1233,6 +1266,7 @@ theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   | verify i h _ ih => exact inv_verify ih i h
   | ioFail _ ih => exact inv_ioFailed ih
   | board a b c d e _ ih => exact inv_boardDone ih a b c d e
+  | usb v _ ih => exact inv_usbDone ih v
 
 /-! ## The guarantees -/
 
@@ -1396,8 +1430,8 @@ def FsClient (A : Nat) : Prop := A = 0 ∨ A = 5 ∨ A = 9 ∨ A = 16
 server on endpoint 1, nobody else. (One pass over the manifest, not one per sender.) -/
 theorem recv_owner {B e : Nat} {d : Cap} (hB : B < numTasks) (hd : d ∈ initCaps B)
     (hdo : d.obj = .endpoint e) (hr : d.rights.r = true) : (e = 0 ∧ B = 1) ∨ (e = 1 ∧ B = 8) := by
-  rcases cases17 hB with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hd <;>
+  rcases cases17 hB with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hd <;>
     rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp at hdo hr <;> subst hdo <;> simp
 
@@ -1406,8 +1440,8 @@ file server's clients through endpoint 1. -/
 theorem grant_sender {A e : Nat} {c : Cap} (hA : A < numTasks) (hc : c ∈ initCaps A)
     (hco : c.obj = .endpoint e) (hw : c.rights.w = true) (hx : c.rights.x = true) :
     (e = 0 ∧ App A) ∨ (e = 1 ∧ FsClient A) := by
-  rcases cases17 hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc <;>
+  rcases cases17 hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc <;>
     rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp at hco hw hx <;> subst hco <;> simp [App, FsClient]
 
@@ -1691,8 +1725,8 @@ theorem only_display_launches {s : KState} (h : Reachable s) {j : Nat} {t : Task
     (j = displayTask ∧ App k ∧ openSlot k = false) ∨ ((j = 5 ∨ j = 16) ∧ openSlot k = true) := by
   obtain ⟨c0, hc0, ho⟩ := launch_fixed h ht hc hk
   have hj := (reachable_inv h).lt ht
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc0 <;>
+  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc0 <;>
     rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp at ho <;> subst ho <;> simp [App, displayTask, openSlot] <;> decide
 
@@ -1737,9 +1771,9 @@ theorem uart_irq_only_input {s : KState} (h : Reachable s) {j : Nat} {t : Task}
     j = inputTask := by
   obtain ⟨c0, hc0, ho⟩ := irqs_fixed h ht hc hn
   have hj := (reachable_inv h).lt ht
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc0 <;>
-    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> rfl
+  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc0 <;>
+    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [usbIrq, uartIrq] at ho <;> rfl
 
 /-- **The UART belongs to the input driver.** No other task can ever hold a capability to
 the UART's registers. -/
@@ -1836,6 +1870,9 @@ theorem outLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
       | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
          all_goals simp at h
          done)
+      | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
+         all_goals simp at h
+         done)
       | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
          all_goals simp at h
          done)
@@ -1885,8 +1922,8 @@ theorem disk_only_file_server {s : KState} (h : Reachable s) {j : Nat} {t : Task
     j = fileServer ∧ b = 0 ∧ n = diskBlocks := by
   obtain ⟨c0, hc0, ho, -⟩ := blocks_fixed h ht hc hb
   have hj := (reachable_inv h).lt ht
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc0 <;>
+  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc0 <;>
     rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp at ho <;> simp [fileServer, ho]
 
@@ -1961,6 +1998,9 @@ theorem io_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
            done)
         | (unfold sysTime at h; simp at h; done)
         | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
@@ -2119,6 +2159,9 @@ theorem power_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
         | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
+        | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
@@ -2141,8 +2184,8 @@ theorem only_display_powers {s : KState} (hr : Reachable s) {num a0 a1 a2 a3 a4 
       revert hc0 ho
       generalize s.cur = j at hj ⊢
       intro hc0 ho
-      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-        simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc0 <;>
+      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+        simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc0 <;>
         rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
         simp at ho <;> rfl
     · simp at hp
@@ -2250,6 +2293,9 @@ theorem loadLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
            done)
         | (unfold sysTime at h; simp at h; done)
         | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
@@ -2432,6 +2478,8 @@ theorem syscall_now (s : KState) (num a0 a1 a2 a3 a4 : Nat) :
         | (unfold sysPower; repeat' (first | split | dsimp only)
            all_goals simp [ret_now])
         | (unfold sysTime; simp [ret_now])
+        | (unfold sysUsb usbReply; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
         | (unfold sysBoard; repeat' (first | split | dsimp only)
            all_goals simp [ret_now])
     · rfl
@@ -2555,6 +2603,9 @@ theorem board_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
         | (unfold sysPower at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
+        | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
@@ -2648,10 +2699,272 @@ theorem only_settings_touches_board {s : KState} (hr : Reachable s) {num a0 a1 a
       revert hc0 ho
       generalize s.cur = j at hj ⊢
       intro hc0 ho
-      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-        simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc0 <;>
+      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+        simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc0 <;>
         rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
         simp at ho <;> rfl
     · simp at hp
+
+/-! ## The USB host controller
+
+The theorems behind `sysUsb`: only the USB driver reaches the controller; a DMA transfer
+starts only inside frames the driver holds, with the right its direction needs; those
+frames are the driver's own (nobody can pass memory to it, and it cannot pass memory on);
+and the writes that could aim DMA anywhere else never reach the controller. -/
+
+@[simp] theorem ret_usbOp (s : KState) (t : Task) (r : List Nat) : (ret s t r).usbOp = 0 := rfl
+
+theorem usb_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
+    (h : (syscall s num a0 a1 a2 a3 a4).usbOp ≠ 0) :
+    ∃ t, nth? s.tasks s.cur = some t ∧ ∃ ci op reg v, syscall s num a0 a1 a2 a3 a4 = sysUsb s t ci op reg v := by
+  unfold syscall at *
+  split at *
+  · simp at h
+  · rename_i t ht
+    refine ⟨t, ht, ?_⟩
+    split at *
+    rotate_left
+    · simp at h
+    unfold runCall at *
+    split at *
+    all_goals first
+      | exact ⟨_, _, _, _, rfl⟩
+      | exfalso
+        first
+        | (simp at h; done)
+        | (unfold sysUnmap at h; simp at h; done)
+        | (unfold sysWrite at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysMap at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysDerive at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysCapInfo at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysSend at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysRecv at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysReply at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysIrqWait at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysIrqAck at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysBootInfo at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysStart at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysTime at h; simp at h; done)
+        | (unfold sysPower at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+
+
+
+/-- What a USB reply asks of the machine layer, and what the kernel checked first. -/
+theorem sysUsb_spec {s : KState} {t : Task} {ci op reg v : Nat} (h : (sysUsb s t ci op reg v).usbOp ≠ 0) :
+    ∃ c, nth? t.caps ci = some c ∧ c.obj = .usbHost ∧
+    let r := sysUsb s t ci op reg v
+    ((r.usbOp = 3 ∧ c.rights.r = true ∧ r.usbA % 4 = 0 ∧ r.usbA < 0x1000) ∨
+     (r.usbOp = 1 ∧ c.rights.w = true ∧ usbForbidden r.usbA r.usbB = false ∧
+        ¬(inChan r.usbA = true ∧ (chanReg r.usbA = 0x14 ∨ chanReg r.usbA = 0x10)) ∧
+        ¬(inChan r.usbA = true ∧ chanReg r.usbA = 0 ∧ bit r.usbB 31 = true ∧ bit r.usbB 30 = false)) ∨
+     (r.usbOp = 2 ∧ c.rights.w = true ∧ r.usbA < 8 ∧
+        r.usbB = nthD s.usbDma r.usbA ∧ r.usbC = nthD s.usbSize r.usbA ∧
+        dmaOk t.caps r.usbB (r.usbC % 2 ^ 19 + usbSlack) (bit r.usbD 15) = true)) := by
+  unfold sysUsb usbReply at *
+  cases hc : nth? t.caps ci with
+  | none => simp [hc] at h
+  | some c =>
+    simp only [hc] at h ⊢
+    cases ho : c.obj
+    all_goals try (simp [ho] at h; done)
+    simp only [ho] at h ⊢
+    refine ⟨c, rfl, ho, ?_⟩
+    by_cases hop0 : op = 0
+    · subst hop0
+      simp only [if_true] at h ⊢
+      split at h
+      · rename_i hr
+        simp only [Bool.and_eq_true, beq_iff_eq, Nat.ble_eq] at hr
+        simp only [if_pos (by simp [hr.1.1, hr.1.2, hr.2] : (c.rights.r && reg % 4 == 0 && Nat.ble (reg + 1) 0x1000) = true)]
+        left; exact ⟨by simp, hr.1.1, hr.1.2, by omega⟩
+      · simp at h
+    · simp only [hop0, if_false] at h ⊢
+      split at h
+      · rename_i hw
+        rw [if_pos hw]
+        simp only [Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq] at hw
+        obtain ⟨⟨_, hwr⟩, hf⟩ := hw
+        split at h
+        · simp at h
+        · rename_i hd
+          rw [if_neg hd]
+          split at h
+          · simp at h
+          · rename_i hz
+            rw [if_neg hz]
+            split at h
+            · rename_i hen
+              rw [if_pos hen]
+              try dsimp only at h ⊢
+              split at h
+              · rename_i hok
+                rw [if_pos hok]
+                right; right
+                simp only [Bool.and_eq_true, beq_iff_eq, Nat.ble_eq, inChan] at hen
+                refine ⟨by simp, hwr, ?_, by simp, by simp, hok⟩
+                show chanOf reg < 8
+                unfold chanOf; omega
+              · simp at h
+            · rename_i hen
+              rw [if_neg hen]
+              right; left
+              refine ⟨by simp, hwr, hf, ?_, ?_⟩
+              · rintro ⟨hi, hr | hr⟩
+                · exact hd (by simp [hi, hr])
+                · exact hz (by simp [hi, hr])
+              · rintro ⟨hi, hr, h31, h30⟩
+                exact hen (by simp [hi, hr, h31, h30])
+      · simp at h
+
+/-- **Only the USB driver reaches the USB controller.** When a system call asks the machine
+layer to read or write the controller, the caller is the USB driver: the USB capability is
+the manifest's, only frames can be granted, so it never moves, and only the driver holds it. -/
+theorem only_usb_driver_drives_usb {s : KState} (hr : Reachable s) {num a0 a1 a2 a3 a4 : Nat}
+    (hp : (syscall s num a0 a1 a2 a3 a4).usbOp ≠ 0) : s.cur = usbTask := by
+  obtain ⟨t, ht, ci, op, reg, v, heq⟩ := usb_pos hp
+  rw [heq] at hp
+  obtain ⟨c, hc, hu, -⟩ := sysUsb_spec hp
+  obtain ⟨c0, hc0, ho⟩ := ((reachable_inv hr).tasks _ t ht).caps c (nth?_mem hc) |>.usb hu
+  have hj := (reachable_inv hr).lt ht
+  revert hc0 ho
+  generalize s.cur = j at hj ⊢
+  intro hc0 ho
+  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc0 <;>
+    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp at ho <;> rfl
+
+theorem dmaOk_spec : ∀ {cs : List Cap} {a n : Nat} {w : Bool}, dmaOk cs a n w = true →
+    ∃ c ∈ cs, ∃ b k, c.obj = .frames b k ∧ b + k ≤ poolFrames ∧ frameBase + b * pageSize ≤ a ∧
+      a + n ≤ frameBase + (b + k) * pageSize ∧ (if w then c.rights.w else c.rights.r) = true
+  | [], _, _, _, h => by simp [dmaOk] at h
+  | c :: cs, a, n, w, h => by
+    unfold dmaOk at h
+    rcases Bool.or_eq_true_iff.1 h with h1 | h1
+    · split at h1
+      · rename_i b k hbk
+        simp only [Bool.and_eq_true, Nat.ble_eq] at h1
+        exact ⟨c, List.mem_cons_self .., b, k, hbk, h1.1.1.1, h1.1.1.2, h1.1.2, h1.2⟩
+      · simp at h1
+    · obtain ⟨c', hc', rest⟩ := dmaOk_spec h1
+      exact ⟨c', List.mem_cons_of_mem _ hc', rest⟩
+
+/-- **A USB transfer starts only inside the driver's memory.** When a system call asks the
+machine layer to start a USB channel, the whole transfer (its size, plus one packet of
+slack) lies in one run of frame-pool frames the caller holds, with the write right if data
+comes in and the read right if it goes out. -/
+theorem usb_dma_confined {s : KState} {num a0 a1 a2 a3 a4 : Nat}
+    (h : (syscall s num a0 a1 a2 a3 a4).usbOp = 2) :
+    ∃ t, nth? s.tasks s.cur = some t ∧ ∃ c ∈ t.caps, ∃ b k, c.obj = .frames b k ∧
+      b + k ≤ poolFrames ∧
+      frameBase + b * pageSize ≤ (syscall s num a0 a1 a2 a3 a4).usbB ∧
+      (syscall s num a0 a1 a2 a3 a4).usbB + ((syscall s num a0 a1 a2 a3 a4).usbC % 2 ^ 19 + usbSlack) ≤
+        frameBase + (b + k) * pageSize ∧
+      (if bit (syscall s num a0 a1 a2 a3 a4).usbD 15 then c.rights.w else c.rights.r) = true := by
+  have hne : (syscall s num a0 a1 a2 a3 a4).usbOp ≠ 0 := by omega
+  obtain ⟨t, ht, ci, op, reg, v, heq⟩ := usb_pos hne
+  refine ⟨t, ht, ?_⟩
+  rw [heq] at h ⊢
+  obtain ⟨c, _, _, hs⟩ := sysUsb_spec (by omega : (sysUsb s t ci op reg v).usbOp ≠ 0)
+  rcases hs with ⟨h3, -⟩ | ⟨h1, -⟩ | ⟨-, -, -, -, -, hok⟩
+  · omega
+  · omega
+  · exact dmaOk_spec hok
+
+/-- **The USB controller only ever touches the USB driver's own memory.** In every reachable
+state, every byte a started transfer can reach is in a frame the manifest gave the USB
+driver: it holds no other memory, since nobody may pass it memory and it cannot receive. -/
+theorem usb_dma_own_memory {s : KState} (hr : Reachable s) {num a0 a1 a2 a3 a4 : Nat}
+    (h : (syscall s num a0 a1 a2 a3 a4).usbOp = 2) (x : Nat)
+    (hx1 : (syscall s num a0 a1 a2 a3 a4).usbB ≤ x)
+    (hx2 : x < (syscall s num a0 a1 a2 a3 a4).usbB + ((syscall s num a0 a1 a2 a3 a4).usbC % 2 ^ 19 + usbSlack)) :
+    frameBase ≤ x ∧ owner ((x - frameBase) / pageSize) = usbTask := by
+  have hcur := only_usb_driver_drives_usb hr (by omega : (syscall s num a0 a1 a2 a3 a4).usbOp ≠ 0)
+  obtain ⟨t, ht, c, hc, b, k, ho, hpool, hlo, hhi, -⟩ := usb_dma_confined h
+  have hf : Covers c ((x - frameBase) / pageSize) := by
+    refine ⟨b, k, ho, ?_, ?_⟩ <;> simp only [pageSize, frameBase] at * <;> omega
+  refine ⟨by simp only [pageSize, frameBase] at *; omega, ?_⟩
+  rw [hcur] at ht
+  have hreach := (frame_flow hr ht hc hf).1
+  rcases reach_iff hreach with h1 | ⟨-, h2⟩ | ⟨-, h2⟩
+  · exact h1
+  · simp [usbTask] at h2
+  · simp [usbTask] at h2
+
+/-- **The dangerous USB writes never happen.** A plain register write the kernel passes on
+is an aligned register in the first page (never the data FIFOs); never one of device mode's
+registers (0x800-0xBFF, whose DMA addresses nobody checks); never forces device mode
+(GUSBCFG bit 30) or turns on descriptor DMA (HCFG bit 23); never a channel's descriptor
+list (HCDMAB), DMA address (HCDMA) or transfer size (HCTSIZ), which reach the controller
+only when a checked transfer starts; and never starts a channel, which must go through
+that check. -/
+theorem usb_writes_safe {s : KState} {num a0 a1 a2 a3 a4 : Nat}
+    (h : (syscall s num a0 a1 a2 a3 a4).usbOp = 1) :
+    let reg := (syscall s num a0 a1 a2 a3 a4).usbA
+    let v := (syscall s num a0 a1 a2 a3 a4).usbB
+    reg % 4 = 0 ∧ reg < 0x1000 ∧ ¬(0x800 ≤ reg ∧ reg < 0xC00) ∧
+    ¬(reg = 0x00C ∧ bit v 30 = true) ∧ ¬(reg = 0x400 ∧ bit v 23 = true) ∧
+    ¬(inChan reg = true ∧ (chanReg reg = 0x1C ∨ chanReg reg = 0x14 ∨ chanReg reg = 0x10)) ∧
+    ¬(inChan reg = true ∧ chanReg reg = 0 ∧ bit v 31 = true ∧ bit v 30 = false) := by
+  have hne : (syscall s num a0 a1 a2 a3 a4).usbOp ≠ 0 := by omega
+  obtain ⟨t, ht, ci, op, reg, v, heq⟩ := usb_pos hne
+  rw [heq] at h ⊢
+  obtain ⟨c, _, _, hs⟩ := sysUsb_spec (by omega : (sysUsb s t ci op reg v).usbOp ≠ 0)
+  rcases hs with ⟨h3, -⟩ | ⟨-, -, hf, hd, hen⟩ | ⟨h2, -⟩
+  · omega
+  · generalize (sysUsb s t ci op reg v).usbA = R at hf hd hen ⊢
+    generalize (sysUsb s t ci op reg v).usbB = V at hf hd hen ⊢
+    simp only [usbForbidden, Bool.or_eq_false_iff, Bool.not_eq_false', beq_iff_eq, Nat.ble_eq,
+      Bool.and_eq_false_imp] at hf
+    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, hen⟩
+    · exact hf.1.1.1.1.1
+    · have := hf.1.1.1.1.2; omega
+    · rintro ⟨a, b⟩
+      have := hf.1.1.1.2 a
+      have hb : Nat.ble (R + 1) 3072 = true := by rw [Nat.ble_eq]; omega
+      rw [hb] at this; exact absurd this (by decide)
+    · rintro ⟨a, b⟩; have := hf.1.1.2 a; simp_all
+    · rintro ⟨a, b⟩; have := hf.1.2 a; simp_all
+    · rintro ⟨hi, hr | hr | hr⟩
+      · have := hf.2 hi; simp_all
+      · exact hd ⟨hi, Or.inl hr⟩
+      · exact hd ⟨hi, Or.inr hr⟩
+  · omega
 
 end LeanOS

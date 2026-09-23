@@ -42,6 +42,12 @@ uint8_t leanos_open_slot(lean_object *i);
 lean_object *leanos_reply_io_block(lean_object *r);
 lean_object *leanos_io_failed(lean_object *s);
 lean_object *leanos_reply_board(lean_object *r);
+lean_object *leanos_reply_usb_op(lean_object *r);
+lean_object *leanos_reply_usb_a(lean_object *r);
+lean_object *leanos_reply_usb_b(lean_object *r);
+lean_object *leanos_reply_usb_c(lean_object *r);
+lean_object *leanos_reply_usb_d(lean_object *r);
+lean_object *leanos_usb_done(lean_object *s, lean_object *v);
 lean_object *leanos_board_done(lean_object *s, lean_object *a, lean_object *b, lean_object *c,
                                lean_object *d, lean_object *e);
 int sd_init(void);
@@ -275,7 +281,7 @@ static uint64_t fb_alloc(void) {
 /* One property tag: `in` words go in, up to `nout` words come back in `out`. With the MMU
    on the buffer is cached memory, and the firmware reads and writes RAM behind the cache:
    clean it out before, drop it after. 1 if the firmware answered. */
-static int mbox_tag(uint32_t tag, const uint32_t *in, int nin, uint32_t *out, int nout) {
+int mbox_tag(uint32_t tag, const uint32_t *in, int nin, uint32_t *out, int nout) {
     int n = nin > nout ? nin : nout, i = 0;
     mbox_buf[i++] = 0;
     mbox_buf[i++] = 0;
@@ -343,6 +349,51 @@ static int board_request(uint64_t req, uint64_t v[5]) {
         return 1;
     }
     kpanic("a board request the kernel should never have made");
+}
+
+/* ---- the USB host controller ----
+ * The Pi 4's DWC2 (behind the USB-C port; the USB-A ports are the VL805's, over PCIe). The
+ * Lean kernel decides every access (`sysUsb`): this code only carries out a register read,
+ * a register write it passed, or a channel start whose whole DMA range it checked lies in
+ * the USB driver's own frames (`usb_dma_own_memory`). Two things are this layer's:
+ *   - the controller sees RAM at bus address 0xC0000000 + physical (the VideoCore's
+ *     uncached alias; QEMU's model maps it too), so a checked physical address is written
+ *     with that offset;
+ *   - the frames are cached memory, and the controller reads and writes RAM behind the
+ *     cache: a started range is cleaned and invalidated before the start, and invalidated
+ *     again when the driver next reads that channel's interrupt register (which it does to
+ *     learn the transfer is done, before it looks at the data). */
+#define USB_BASE (PERIPHERAL_BASE + 0x980000)
+#define USB_BUS 0xC0000000u
+
+static struct { uint64_t pa, len; } usb_last[8];
+
+static void cache_range(uint64_t pa, uint64_t len) {
+    for (uint64_t a = pa & ~63UL; a < pa + len; a += 64) __asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+
+/* Carry out a USB request the Lean kernel returned; for a read, hand the value back. */
+static void usb_request(uint64_t op, uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
+    if (op == 1) {
+        mmio_w32(USB_BASE + a, (uint32_t)b);
+    } else if (op == 2) {
+        if (a >= 8) kpanic("a USB channel the kernel should never have started");
+        uint64_t len = (c & 0x7ffff) + 1024;          /* the size the kernel checked, slack included */
+        cache_range(b, len);
+        usb_last[a].pa = b;
+        usb_last[a].len = len;
+        mmio_w32(USB_BASE + 0x514 + 0x20 * a, USB_BUS | (uint32_t)b);
+        mmio_w32(USB_BASE + 0x510 + 0x20 * a, (uint32_t)c);
+        mmio_w32(USB_BASE + 0x500 + 0x20 * a, (uint32_t)d);
+    } else if (op == 3) {
+        if (a >= 0x508 && a < 0x600 && (a - 0x508) % 0x20 == 0) {
+            uint64_t n = (a - 0x508) / 0x20;
+            if (usb_last[n].len) cache_range(usb_last[n].pa, usb_last[n].len);
+        }
+        uint32_t v = mmio_r32(USB_BASE + a);
+        K = leanos_usb_done(K, lean_box(v));
+    }
 }
 
 /* ---- memory management unit ----
@@ -534,8 +585,8 @@ static void load_program(uint64_t i) {
 static const char *const names[] = {"alice", "display", "mallory", "carol", "input",
                                     "terminal", "settings", "security", "fs", "files",
                                     "slot 10", "slot 11", "slot 12", "slot 13", "slot 14", "slot 15",
-                                    "apps"};
-#define NPROGS 17   /* the kernel image's program table: slots 0-16 (empty for the open slots) */
+                                    "apps", "usb"};
+#define NPROGS 18   /* the kernel image's program table: slots 0-17 (empty for the open slots) */
 
 /* SHA-256 of "abc", from FIPS 180-4: the hash must be right before anything relies on it. */
 static void sha256_self_test(void) {
@@ -592,6 +643,11 @@ static void do_syscall(uint64_t cur) {
     uint64_t io = nat(leanos_reply_io((lean_inc(r), r)));
     uint64_t io_block = nat(leanos_reply_io_block((lean_inc(r), r)));
     uint64_t board = nat(leanos_reply_board((lean_inc(r), r)));
+    uint64_t usb_op = nat(leanos_reply_usb_op((lean_inc(r), r)));
+    uint64_t usb_a = nat(leanos_reply_usb_a((lean_inc(r), r)));
+    uint64_t usb_b = nat(leanos_reply_usb_b((lean_inc(r), r)));
+    uint64_t usb_c = nat(leanos_reply_usb_c((lean_inc(r), r)));
+    uint64_t usb_d = nat(leanos_reply_usb_d((lean_inc(r), r)));
     K = leanos_reply_state(r);
     if (unmask) gic_enable((uint32_t)(unmask - 1));
 
@@ -615,6 +671,8 @@ static void do_syscall(uint64_t cur) {
             K = leanos_board_done(K, lean_box(v[0]), lean_box(v[1]), lean_box(v[2]), lean_box(v[3]), lean_box(v[4]));
         else K = leanos_io_failed(K);
     }
+    /* The USB driver asked (only it can: `only_usb_driver_drives_usb`). */
+    if (usb_op) usb_request(usb_op, usb_a, usb_b, usb_c, usb_d);
     /* The display server asked (only it can: `only_display_powers`). Every file is already
        on the card: the file server writes each change through before it answers. */
     if (power == 1) {

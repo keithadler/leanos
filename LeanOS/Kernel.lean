@@ -57,6 +57,7 @@ inductive Obj where
   | blocks (base count : Nat)
   | power
   | board
+  | usbHost
 
 /-- A capability: an object, what its holder may do with it, and a badge. The badge of an
 endpoint capability is delivered with every message sent through it, so a receiver knows
@@ -122,6 +123,11 @@ structure KState where
   pending : List Nat
   /-- Timer ticks since boot (one every `tickMs` milliseconds). -/
   now : Nat
+  /-- The USB host channels' DMA addresses and transfer sizes, as the driver last wrote them.
+  They reach the controller only when a transfer starts, and only after the kernel checked
+  them against the driver's memory (`sysUsb`). -/
+  usbDma : List Nat
+  usbSize : List Nat
 
 /-! ## List helpers
 
@@ -188,7 +194,7 @@ without bound by deriving or being granted capabilities. -/
 def maxCaps : Nat := 64
 
 /-- The number of program slots in the manifest, and the most the frame pool has room for. -/
-def numTasks : Nat := 17
+def numTasks : Nat := 18
 def maxTasks : Nat := 20
 
 /-- Each task owns 256 frames (1 MiB) of the pool: task `i` owns frames `256i` to `256i+255`. -/
@@ -219,6 +225,12 @@ def uartIrq : Nat := 153
 
 /-- The task that owns the UART at boot: the input driver. -/
 def inputTask : Nat := 4
+/-- The USB driver: the only task that holds the USB host controller (`usbCap`). -/
+def usbTask : Nat := 17
+/-- The USB host controller's interrupt (the DWC2's, VideoCore IRQ 9: GIC INTID 105). -/
+def usbIrq : Nat := 105
+/-- The DWC2 has eight host channels; each has a DMA address and a transfer size register. -/
+def usbZeros : List Nat := 0 :: 0 :: 0 :: 0 :: 0 :: 0 :: 0 :: 0 :: .nil
 /-- The file server: it receives on endpoint 1. -/
 def fileServer : Nat := 8
 
@@ -237,6 +249,9 @@ def powerCap : Cap := ⟨.power, ⟨true, true, false⟩, 0⟩
 /-- The Raspberry Pi's own settings: read the board and its sensors (read right), change the
 CPU clock and the activity light (write right). Settings' capability 5. -/
 def boardCap : Cap := ⟨.board, ⟨true, true, false⟩, 0⟩
+/-- The USB host controller (the Pi 4's DWC2): its registers, read and written only through
+the kernel, which starts a DMA transfer only into memory the holder owns (`sysUsb`). -/
+def usbCap : Cap := ⟨.usbHost, ⟨true, true, false⟩, 0⟩
 
 /-- Task `i`'s frames, as four runs: 16 pages of code (read/execute), 8 of data, 4 of
 stack, and 228 spare pages it holds a capability to but has not mapped. The machine layer
@@ -288,6 +303,7 @@ def initCaps : Nat → List Cap
   | 13 => snoc (frameCaps 13) (epCap 0 false true true 13)
   | 14 => snoc (frameCaps 14) (epCap 0 false true true 14)
   | 15 => snoc (frameCaps 15) (epCap 0 false true true 15)
+  | 17 => snoc (snoc (snoc (frameCaps 17) (epCap 0 false true false 17)) (irqCap usbIrq)) usbCap
   | 16 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 16) (epCap 0 false true true 16))
            (epCap 1 false true true 16)) (launchCap 10)) (launchCap 11)) (launchCap 12)) (launchCap 13))
            (launchCap 14)) (launchCap 15)
@@ -304,7 +320,7 @@ def maxImage : Nat := 16 * 4096
 /-- The programs the machine layer loads and checks at boot. The apps in slots 5 (Terminal),
 6 (Settings), 7 (Security), 9 (Files) and 16 (Apps) wait until the display server launches
 them. -/
-def autostart (i : Nat) : Bool := i < 5 || i == 8
+def autostart (i : Nat) : Bool := i < 5 || i == 8 || i == 17
 
 /-- Code at pages 0–15, data at 16–23, the stack in the last four pages of the window. -/
 def initMaps (i : Nat) : List Mapping :=
@@ -318,7 +334,7 @@ def mkTasksFrom (i : Nat) : Nat → List Task
   | 0 => .nil
   | k + 1 => mkTask i :: mkTasksFrom (i + 1) k
 
-def init (fbBase : Nat) : KState := ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil, 0⟩
+def init (fbBase : Nat) : KState := ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil, 0, usbZeros, usbZeros⟩
 
 def setTask (s : KState) (j : Nat) (t : Task) : KState := { s with tasks := setNth s.tasks j t }
 
@@ -492,10 +508,18 @@ structure Reply where
   /-- ask the board's firmware or hardware (0 = nothing), at the request of a board
   capability's holder: one of `boardRequests`, see `sysBoard` -/
   board : Nat
+  /-- the USB host controller, for the holder of the USB capability (0 = nothing):
+  1 write `usbB` to register `usbA` · 2 start channel `usbA`: DMA address `usbB`, transfer
+  size register `usbC`, then its characteristics `usbD` · 3 read register `usbA` -/
+  usbOp : Nat
+  usbA : Nat
+  usbB : Nat
+  usbC : Nat
+  usbD : Nat
 
 /-- The call returns to the caller with result registers `r`. -/
 def ret (s : KState) (t : Task) (r : List Nat) : Reply :=
-  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
+  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-- Where the frame pool starts: frame `f < poolFrames` is at `frameBase + f * pageSize`. -/
 def frameBase : Nat := 0x04000000
@@ -528,13 +552,13 @@ def sysMap (s : KState) (t : Task) (ci vpn : Nat) : Reply :=
       if vpn + count ≤ userPages && c.rights.r && validRun s base count then
         ⟨setTask s s.cur { t with maps := app (runMaps vpn base c.rights count)
                                                (dropRange vpn count t.maps),
-                                  result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0, 0⟩
+                                  result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
 /-- Unmap pages `vpn` to `vpn + count - 1`. -/
 def sysUnmap (s : KState) (t : Task) (vpn count : Nat) : Reply :=
-  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0, 0⟩
+  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-- The object a derived capability names: for a run of frames, the `count` frames from
 `offset` on (`count = 0`: all of them from `offset` on), if they lie inside the run. -/
@@ -574,6 +598,7 @@ def sysCapInfo (s : KState) (t : Task) (ci : Nat) : Reply :=
     | .blocks _ n => ret s t (0 :: c.rights.toBits :: 4 :: n :: .nil)
     | .power => ret s t (0 :: c.rights.toBits :: 5 :: 0 :: .nil)
     | .board => ret s t (0 :: c.rights.toBits :: 6 :: 0 :: .nil)
+    | .usbHost => ret s t (0 :: c.rights.toBits :: 7 :: 0 :: .nil)
 
 /-- Virtual page `v` is mapped with read rights. -/
 def readableAt : List Mapping → Nat → Bool
@@ -592,7 +617,7 @@ def sysWrite (s : KState) (t : Task) (va n : Nat) : Reply :=
   else if n ≤ maxWrite ∧ userBase ≤ va ∧
       allReadable t.maps ((va - userBase) / pageSize)
         ((va + n - 1 - userBase) / pageSize + 1 - (va - userBase) / pageSize) = true then
-    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0, 0, 0, 0, 0, 0, 0⟩
+    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
   else ret s t (eBadArg :: .nil)
 
 /-- The capability a send carries: none if `gi = 0`, else capability `gi - 1`, which must be
@@ -631,12 +656,12 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply
               | some u' =>
                 if call then
                   ⟨schedule (setTask (setTask s j u') s.cur { t with status := .awaiting j, result := .nil }),
-                    0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
+                    0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
                 else ret (setTask s j u') t (0 :: .nil)
               | none => ret s t (eFull :: .nil)
             | none => ret s t (eBadArg :: .nil)
           | none =>
-            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
+            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -657,11 +682,11 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) : Reply :=
             | some t' =>
               let u' : Task := if m.call then { u with status := .awaiting s.cur, result := .nil }
                                else { u with status := .ready, result := 0 :: .nil }
-              ⟨setTask (setTask s j u') s.cur t', 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
+              ⟨setTask (setTask s j u') s.cur t', 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
             | none => ret s t (eFull :: .nil)
           | none => ret s t (eBadArg :: .nil)
         | none =>
-          ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
+          ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -698,7 +723,7 @@ def sysIrqWait (s : KState) (t : Task) (ci : Nat) : Reply :=
     match c.obj with
     | .irq n =>
       if hasLine n s.pending then ret { s with pending := dropLine n s.pending } t (0 :: .nil)
-      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
+      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
     | _ => ret s t (eBadArg :: .nil)
 
 /-- The holder of an interrupt has dealt with it: let it fire again. -/
@@ -747,7 +772,7 @@ def sysBlock (s : KState) (t : Task) (ci idx va : Nat) (write : Bool) : Reply :=
     match c.obj with
     | .blocks b n =>
       if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then
-        ⟨setTask s s.cur { t with result := 0 :: .nil }, va, 0, false, 0, 0, ioCode write, b + idx, 0, 0, 0⟩
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, va, 0, false, 0, 0, ioCode write, b + idx, 0, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -770,7 +795,7 @@ def sysPower (s : KState) (t : Task) (ci action : Nat) : Reply :=
     match c.obj with
     | .power =>
       if c.rights.w && Nat.ble action 1 then
-        ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, action + 1, 0⟩
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, action + 1, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -810,7 +835,7 @@ def sysBoard (s : KState) (t : Task) (ci what value : Nat) : Reply :=
     | .board =>
       let req := boardRequest what value
       if !(req == 0) && (if boardChanges req then c.rights.w else c.rights.r) then
-        ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, 0, req⟩
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, 0, req, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -819,6 +844,87 @@ from the firmware, become the task's results. -/
 def boardDone (s : KState) (a b c d e : Nat) : KState :=
   match nth? s.tasks s.cur with
   | some t => setTask s s.cur { t with result := 0 :: a :: b :: c :: d :: e :: .nil }
+  | none => s
+
+/-! ## The USB host controller
+
+The Pi 4's DWC2 moves data by DMA: it reads and writes RAM at whatever address its channel
+registers hold, and the Pi has no IOMMU to stop it. So the USB driver never writes those
+registers itself. It reads and writes the controller's registers only through `usb`, and
+the kernel keeps each channel's DMA address and transfer size aside until the driver starts
+the channel; then it checks the whole transfer lies in frames the driver holds, with the
+right the direction needs (write for data coming in, read for data going out), and only
+then are the three registers written, together. The registers that could aim DMA anywhere
+else (device mode's, descriptor lists, descriptor DMA itself, forcing device mode) are never
+written at all. `usb_dma_confined` and `usb_dma_own_memory` are the theorems. -/
+
+/-- Bit `k` of `v`. -/
+def bit (v k : Nat) : Bool := (v / 2 ^ k) % 2 == 1
+
+/-- A host channel register: offsets 0x500 to 0x5FF, eight channels of 0x20 bytes. -/
+def inChan (reg : Nat) : Bool := Nat.ble 0x500 reg && Nat.ble (reg + 1) 0x600
+def chanOf (reg : Nat) : Nat := (reg - 0x500) / 0x20
+def chanReg (reg : Nat) : Nat := (reg - 0x500) % 0x20
+
+/-- Writes the kernel never lets through: anything but an aligned register in the first
+page (the data FIFOs above it are for slave mode), device mode's registers (whose DMA
+addresses nobody checks), forcing device mode (GUSBCFG bit 30), descriptor DMA (HCFG bit 23),
+and the channels' descriptor-list addresses (HCDMAB). -/
+def usbForbidden (reg value : Nat) : Bool :=
+  !(reg % 4 == 0) || !(Nat.ble (reg + 1) 0x1000) ||
+  (Nat.ble 0x800 reg && Nat.ble (reg + 1) 0xC00) ||
+  (reg == 0x00C && bit value 30) || (reg == 0x400 && bit value 23) ||
+  (inChan reg && chanReg reg == 0x1C)
+
+/-- The most a channel can write past its transfer size: one full-speed packet. -/
+def usbSlack : Nat := 1024
+
+/-- Some frame capability in `cs` covers bytes `a` to `a + n - 1` of the frame pool, with
+the write right (`w`) or the read right. -/
+def dmaOk : List Cap → Nat → Nat → Bool → Bool
+  | .nil, _, _, _ => false
+  | c :: cs, a, n, w =>
+    (match c.obj with
+     | .frames b k => Nat.ble (b + k) poolFrames && Nat.ble (frameBase + b * pageSize) a &&
+         Nat.ble (a + n) (frameBase + (b + k) * pageSize) && (if w then c.rights.w else c.rights.r)
+     | _ => false) || dmaOk cs a n w
+
+def nthD (l : List Nat) (i : Nat) : Nat := match nth? l i with | some v => v | none => 0
+
+/-- A reply that asks the machine layer for something on the USB controller. -/
+def usbReply (s : KState) (t : Task) (op a b c d : Nat) : Reply :=
+  ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, op, a, b, c, d⟩
+
+/-- `usb(cap, op, reg, value)`: op 0 reads register `reg`, op 1 writes `value` to it. -/
+def sysUsb (s : KState) (t : Task) (ci op reg value : Nat) : Reply :=
+  match nth? t.caps ci with
+  | none => ret s t (eNoCap :: .nil)
+  | some c =>
+    match c.obj with
+    | .usbHost =>
+      if op = 0 then
+        if c.rights.r && reg % 4 == 0 && Nat.ble (reg + 1) 0x1000 then usbReply s t 3 reg 0 0 0
+        else ret s t (eBadArg :: .nil)
+      else if op = 1 && c.rights.w && !usbForbidden reg value then
+        if inChan reg && chanReg reg == 0x14 then
+          ret { s with usbDma := setNth s.usbDma (chanOf reg) value } t (0 :: .nil)
+        else if inChan reg && chanReg reg == 0x10 then
+          ret { s with usbSize := setNth s.usbSize (chanOf reg) value } t (0 :: .nil)
+        else if inChan reg && chanReg reg == 0 && bit value 31 && !bit value 30 then
+          let n := chanOf reg
+          let dma := nthD s.usbDma n
+          let size := nthD s.usbSize n
+          if dmaOk t.caps dma (size % 2 ^ 19 + usbSlack) (bit value 15) then
+            usbReply s t 2 n dma size value
+          else ret s t (eBadArg :: .nil)
+        else usbReply s t 1 reg value 0 0
+      else ret s t (eBadArg :: .nil)
+    | _ => ret s t (eBadArg :: .nil)
+
+/-- The machine layer read a USB register for the current task: `v` is its result. -/
+def usbDone (s : KState) (v : Nat) : KState :=
+  match nth? s.tasks s.cur with
+  | some t => setTask s s.cur { t with result := 0 :: v :: .nil }
   | none => s
 
 /-! ## Time -/
@@ -840,9 +946,9 @@ def sysTime (s : KState) (t : Task) : Reply :=
 run; 0 just lets the next ready task run. -/
 def sysSleep (s : KState) (t : Task) (ms : Nat) : Reply :=
   let ticks := (ms + tickMs - 1) / tickMs
-  if ticks = 0 then ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
+  if ticks = 0 then ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
   else ⟨schedule (setTask s s.cur { t with status := .sleeping (s.now + ticks), result := .nil }),
-        0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
+        0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-! ## Dropping a capability -/
 
@@ -876,7 +982,7 @@ def sysDrop (s : KState) (t : Task) (ci : Nat) : Reply :=
   | some _ =>
     let cs := removeNth t.caps ci
     ⟨setTask s s.cur { t with caps := cs, maps := keepBacked cs t.maps, result := 0 :: .nil },
-      0, 0, true, 0, 0, 0, 0, 0, 0, 0⟩
+      0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-! ## Starting programs, and taking back what they shared -/
 
@@ -955,7 +1061,7 @@ def sysStart (s : KState) (t : Task) (ci src len : Nat) : Reply :=
         if startable u.status && !(k == s.cur) && imageOk (dropMaps k t.maps) k src len then
           let s1 : KState := setTask { s with tasks := revokeAll k s.tasks } k (mkTask k)
           match nth? s1.tasks s.cur with
-          | some t1 => ⟨setTask s1 s.cur { t1 with result := 0 :: .nil }, src, 0, true, 0, k + 1, 0, 0, len, 0, 0⟩
+          | some t1 => ⟨setTask s1 s.cur { t1 with result := 0 :: .nil }, src, 0, true, 0, k + 1, 0, 0, len, 0, 0, 0, 0, 0, 0, 0⟩
           | none => ret s t (eBadArg :: .nil)
         else ret s t (eBadArg :: .nil)
       | none => ret s t (eBadArg :: .nil)
@@ -980,7 +1086,7 @@ def irqFired (s : KState) (n : Nat) : KState :=
   | none => if hasLine n s.pending then s else { s with pending := snoc s.pending n }
 
 /-- The interrupt lines the manifest hands out; the machine layer enables these at boot. -/
-def irqLines : List Nat := uartIrq :: .nil
+def irqLines : List Nat := uartIrq :: usbIrq :: .nil
 
 /-- Task number `i`'s boot check: x1 = 0 not measured yet, 1 matches the manifest, 2
 refused, 3 an open slot's program (measured, not in the manifest); x2 and x3 = the first two words of its measured hash; x4 = 0 not started, 1
@@ -1008,11 +1114,11 @@ def sysBootInfo (s : KState) (t : Task) (i : Nat) : Reply :=
 def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match num with
   | 0 => sysWrite s t a0 a1
-  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
+  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
   | 2 => sysMap s t a0 a1
   | 3 => sysUnmap s t a0 a1
   | 4 => sysDerive s t a0 a1 a2 a3
-  | 5 => ⟨killCurrent s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
+  | 5 => ⟨killCurrent s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
   | 6 => sysCapInfo s t a0
   | 7 => ret s t (0 :: s.cur :: .nil)
   | 8 => sysSend s t a0 a1 a2 a3 a4 false
@@ -1031,6 +1137,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 21 => sysPower s t a0 a1
   | 22 => sysTime s t
   | 23 => sysBoard s t a0 a1 a2
+  | 24 => sysUsb s t a0 a1 a2 a3
   | _ => ret s t (eNoCall :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
@@ -1042,14 +1149,15 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   19 exec(cap, va, len): start an open slot with the program at va · 20 sleep(ms)
   21 power(cap, action): 0 switch off, 1 restart · 22 time
   23 board(cap, what, value): read the board or its sensors, set the CPU clock or the light
+  24 usb(cap, op, reg, value): read (op 0) or write (op 1) a USB host controller register
 Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with
-  | none => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
+  | none => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
   | some t =>
     match t.status with
     | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩  -- only a running task makes system calls
+    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩  -- only a running task makes system calls
 
 /-- The machine layer has loaded task `j`'s result registers; forget them. -/
 def clearResult (s : KState) (j : Nat) : KState :=
@@ -1083,6 +1191,12 @@ before passing it in. -/
 @[export leanos_reply_load_len] def exRLoadLen (r : Reply) : Nat := r.loadLen
 @[export leanos_reply_power] def exRPower (r : Reply) : Nat := r.power
 @[export leanos_reply_board] def exRBoard (r : Reply) : Nat := r.board
+@[export leanos_reply_usb_op] def exRUsbOp (r : Reply) : Nat := r.usbOp
+@[export leanos_reply_usb_a] def exRUsbA (r : Reply) : Nat := r.usbA
+@[export leanos_reply_usb_b] def exRUsbB (r : Reply) : Nat := r.usbB
+@[export leanos_reply_usb_c] def exRUsbC (r : Reply) : Nat := r.usbC
+@[export leanos_reply_usb_d] def exRUsbD (r : Reply) : Nat := r.usbD
+@[export leanos_usb_done] def exUsbDone (s : KState) (v : Nat) : KState := usbDone s v
 @[export leanos_board_done] def exBoardDone (s : KState) (a b c d e : Nat) : KState := boardDone s a b c d e
 @[export leanos_open_slot] def exOpenSlot (i : Nat) : Bool := openSlot i
 @[export leanos_reply_io_block] def exRIoBlock (r : Reply) : Nat := r.ioBlock

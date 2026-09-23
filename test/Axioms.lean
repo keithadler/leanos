@@ -54,3 +54,7 @@ open LeanOS
 #print axioms cpu_never_overclocked
 #print axioms board_needs_right
 #print axioms only_settings_touches_board
+#print axioms only_usb_driver_drives_usb
+#print axioms usb_dma_confined
+#print axioms usb_dma_own_memory
+#print axioms usb_writes_safe

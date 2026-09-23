@@ -2,7 +2,7 @@
    slot, and checks every answer against what the proofs promise:
 
      - a call that needs a capability this slot does not hold (power, start, exec, the
-       disk, interrupts, the board's settings) is always refused;
+       disk, interrupts, the board's settings, the USB controller) is always refused;
      - a number that is not a system call gets "no such call";
      - write never reads memory the slot has not mapped;
      - a derived capability never has a right, or a frame, its source did not have;
@@ -96,11 +96,11 @@ static void one(struct fuzz *f) {
     u64 pick = next(f) % 16;
     f->calls++;
     if (pick == 0) {                                   /* calls that need what it lacks */
-        static const u64 need[] = {SYS_POWER, SYS_START, SYS_EXEC, SYS_BLOCKREAD, SYS_BLOCKWRITE, SYS_IRQACK, SYS_BOARD};
-        u64 n = need[next(f) % 7];
+        static const u64 need[] = {SYS_POWER, SYS_START, SYS_EXEC, SYS_BLOCKREAD, SYS_BLOCKWRITE, SYS_IRQACK, SYS_BOARD, SYS_USB};
+        u64 n = need[next(f) % 8];
         expect_refused(f, 0, n, sys(n, arg(f), arg(f), arg(f), arg(f), arg(f)));
     } else if (pick == 1) {                            /* not a call at all */
-        u64 n = 24 + next(f) % 2000;
+        u64 n = 25 + next(f) % 2000;
         if (next(f) % 4 == 0) n = ~0UL - next(f) % 16;
         struct res r = sys(n, arg(f), arg(f), arg(f), arg(f), arg(f));
         if (r.status != NO_CALL) fail(f, 1, "a number that is not a call was taken", n, r.status);

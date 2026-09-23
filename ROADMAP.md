@@ -85,9 +85,15 @@ capability derivation tree for revoking what was derived, not just what a slot o
 
 A display server that owns the framebuffer and composites windows; clients draw into
 memory they share with it by grant, never into each other's. Proved: a client's pixels
-only ever come from memory it was granted. Keyboard and mouse input: the Pi 4's USB goes
-through PCIe and the VL805 xHCI controller, which is a large driver, so input starts on
-the UART and USB comes after.
+only ever come from memory it was granted. Keyboard and mouse input: the UART first, then
+USB. USB, part 1, done: a user-space driver (slot 17) for the Pi 4's DWC2 (the USB-C port;
+what QEMU emulates), with hubs and boot-protocol keyboards and mice. It reaches the
+controller only through `usb`, and the kernel checks each DMA transfer against the
+driver's own frames: `usb_dma_own_memory` proves the controller never touches anyone
+else's memory, with no IOMMU. Part 2, next: the USB-A ports, which are a VL805 xHCI
+controller behind the BCM2711's PCIe bridge (no QEMU model: only testable on a Pi). xHCI
+reads rings of descriptors from memory, so its DMA needs a different check: the rings kept
+in memory only the kernel writes, or a bounce buffer.
 
 Drawing speed (the display server logs it on every boot, and `make test` checks a drag
 frame stays under 20 ms). Measured under QEMU on the development Mac, one window open:
@@ -170,4 +176,4 @@ programs (the browser console sends them as a terminal would, ESC [ A to D).
 
 Next: a journal (so a power cut cannot lose a change halfway), more open slots and a way to give a program more authority on
 purpose (a file server endpoint, say) with the user's consent, the first boot on real Pi 4 hardware (EMMC2, colors,
-timings), USB keyboard and mouse, multiple cores, and the Pi 5.
+timings), the USB-A ports (xHCI on PCIe), multiple cores, and the Pi 5.

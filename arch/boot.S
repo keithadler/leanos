@@ -165,17 +165,17 @@ restore:
 .global user_progs, user_prog_ends
 user_progs:
     .quad prog0, prog1, prog2, prog3, prog4, prog5, prog6, prog7, prog8, prog9
-    .quad noasset, noasset, noasset, noasset, noasset, noasset, prog16    // 10-15: open slots
+    .quad noasset, noasset, noasset, noasset, noasset, noasset, prog16, prog17    // 10-15: open slots
 user_prog_ends:
     .quad prog0_end, prog1_end, prog2_end, prog3_end, prog4_end, prog5_end, prog6_end, prog7_end, prog8_end, prog9_end
-    .quad noasset, noasset, noasset, noasset, noasset, noasset, prog16_end
+    .quad noasset, noasset, noasset, noasset, noasset, noasset, prog16_end, prog17_end
 .global user_assets, user_asset_ends
 user_assets:
     .quad asset0, asset1, noasset, noasset, noasset, asset5, asset6, asset7, noasset, asset9
-    .quad noasset, noasset, noasset, noasset, noasset, noasset, asset16
+    .quad noasset, noasset, noasset, noasset, noasset, noasset, asset16, noasset
 user_asset_ends:
     .quad asset0_end, asset1_end, noasset, noasset, noasset, asset5_end, asset6_end, asset7_end, noasset, asset9_end
-    .quad noasset, noasset, noasset, noasset, noasset, noasset, asset16_end
+    .quad noasset, noasset, noasset, noasset, noasset, noasset, asset16_end, noasset
 // The fonts every program from the SD card gets in its spare run, as the built-in apps get
 // their assets: data in the program's own memory, which grants nothing.
 .global open_assets, open_assets_end
@@ -241,3 +241,6 @@ prog9_end:
 .balign 16
 prog16: .incbin "build/user/launcher.bin"
 prog16_end:
+.balign 16
+prog17: .incbin "build/user/usb.bin"
+prog17_end:

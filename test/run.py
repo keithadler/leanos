@@ -71,6 +71,23 @@ def mouse(kind, x, y):
     return f"\x1bm{kind}{x:03d}{y:03d}".encode()
 
 
+def usb_key(qcode, shift=False):
+    """Steps that press and release a key on the USB keyboard (a QEMU qcode: "a", "ret", ...)."""
+    down = lambda d: ("qmp", "input-send-event", {"events":
+                      ([{"type": "key", "data": {"down": d, "key": {"type": "qcode", "data": "shift"}}}] if shift else []) +
+                      [{"type": "key", "data": {"down": d, "key": {"type": "qcode", "data": qcode}}}]})
+    return [down(True), down(False)]
+
+
+def usb_mouse(dx=0, dy=0, button=None):
+    """A step that moves the USB mouse by (dx, dy), or presses (True) or releases (False) its left button."""
+    if button is not None:
+        return ("qmp", "input-send-event", {"events":
+                [{"type": "btn", "data": {"down": button, "button": "left"}}]})
+    return ("qmp", "input-send-event", {"events":
+            [{"type": "rel", "data": {"axis": "x", "value": dx}}, {"type": "rel", "data": {"axis": "y", "value": dy}}]})
+
+
 # Where each dock icon's center is (user/display.c: DOCK_X + DOCK_PAD + ICON / 2 + 66 i).
 DOCK = {name: (248 + 66 * i, 548) for i, name in enumerate(
     ["Notes", "Files", "Terminal", "Settings", "Security", "Apps", "Clock", "Calculator", "Tour"])}
@@ -106,7 +123,7 @@ def fresh_card(path=TEST_CARD):
 
 
 def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None, image=None,
-         settle=0.3, sd=None):
+         settle=0.3, sd=None, usb=False):
     """sd: the SD card image to boot with (a fresh copy of the programs card if None; ""
     for no card)."""
     if sd is None:
@@ -120,7 +137,9 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
     proc = subprocess.Popen(
         ["qemu-system-aarch64", "-M", "raspi4b", "-display", "none", "-serial", "stdio",
          "-semihosting", "-qmp", f"unix:{sock},server,nowait", "-kernel", image or IMAGE]
-        + (["-drive", f"if=sd,format=raw,file={sd}"] if sd else []),
+        + (["-drive", f"if=sd,format=raw,file={sd}"] if sd else [])
+        # usb: a USB keyboard and mouse on the DWC2 (QEMU puts them behind a hub)
+        + (["-device", "usb-kbd,id=kbd", "-device", "usb-mouse,id=mouse"] if usb else []),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     qmp = Qmp(sock)
     deadline = time.monotonic() + timeout
@@ -170,6 +189,12 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
             if line.startswith("leanos: idle") and steps and waiting_for is None:
                 def type_steps():
                     for chunk in steps:
+                        if isinstance(chunk, tuple) and chunk[0] == "qmp":
+                            reply = qmp.cmd(chunk[1], **chunk[2])
+                            if isinstance(reply, dict) and "error" in reply:
+                                print("run.py: QMP", chunk[1], "failed:", reply["error"], flush=True)
+                            time.sleep(0.05)
+                            continue
                         if isinstance(chunk, tuple):
                             with cond:
                                 cond.wait_for(lambda: sum(l.startswith(chunk[1]) for l in seen) >= chunk[2],

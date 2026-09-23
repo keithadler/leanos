@@ -5,7 +5,7 @@
  * caller has mapped with the right permission) through the data port, word by word.
  *
  * The Pi 4's SD slot is on EMMC2; QEMU's raspi4b puts the card on the older EMMC
- * controller. Whichever reports a card is used. Only QEMU has run this so far. */
+ * controller. EMMC2 is tried first, then EMMC. Only QEMU has run this so far. */
 #include "arch.h"
 
 void kputs(const char *s);
@@ -97,19 +97,21 @@ static void set_clock(uint32_t divisor) {
     wr(CONTROL1, rd(CONTROL1) | 4);                 /* the card clock on */
 }
 
-/* Find the card and bring it to the transfer state. Returns 1 if a card is ready. */
-int sd_init(void) {
-    base = 0;
-    if (*(volatile uint32_t *)(EMMC2 + STATUS) & (1u << 16)) base = EMMC2;
-    else if (*(volatile uint32_t *)(EMMC + STATUS) & (1u << 16)) base = EMMC;
-    if (!base) return 0;
-
+/* Bring the card on controller `at` to the transfer state: 1 if it is ready. */
+static int init_at(uint64_t at, uint32_t firmware_clock) {
+    base = at;
     wr(CONTROL1, rd(CONTROL1) | (1u << 24));        /* reset the whole controller */
     for (uint32_t n = 0; n < 1000000 && (rd(CONTROL1) & (1u << 24)); n++) {}
     wr(CONTROL0, rd(CONTROL0) | (0xFu << 8));       /* bus power on, 3.3 V */
     wr(IRPT_MASK, 0xFFFFFFFF);                      /* report every event in INTERRUPT */
     wr(IRPT_EN, 0);                                 /* but never raise an interrupt: we poll */
+    /* The base clock: what the controller says, or else what the firmware says it gave
+       it (a Pi 4's EMMC2 may report none). */
     uint32_t base_mhz = (rd(CAPS) >> 8) & 0xFF;
+    if (!base_mhz) {
+        uint32_t in = firmware_clock, out[2];
+        if (mbox_tag(0x00030002, &in, 1, out, 2) && out[1]) base_mhz = out[1] / 1000000;
+    }
     set_clock(base_mhz ? base_mhz * 1000 / 400 : 256);   /* 400 kHz to identify the card */
 
     if (!cmd(0, 0, RESP_NONE)) return 0;
@@ -129,6 +131,18 @@ int sd_init(void) {
     if (!high_capacity && !cmd(16, 512, R1)) return 0;
     if (base_mhz) set_clock(base_mhz > 25 ? (base_mhz + 24) / 25 : 1);  /* up to 25 MHz */
     return 1;
+}
+
+/* Find the card and bring it to the transfer state. Returns 1 if a card is ready. The Pi
+   4's slot is on EMMC2, whose card-detect line reports nothing (Linux marks it broken-cd),
+   so EMMC2 is tried whatever it says; the older EMMC (QEMU's card, a Pi's Wi-Fi chip) only
+   if it reports a card. A controller with nothing that answers an SD card's commands just
+   fails them. */
+int sd_init(void) {
+    if (init_at(EMMC2, 12)) return 1;               /* firmware clock 12: EMMC2 */
+    if ((*(volatile uint32_t *)(EMMC + STATUS) & (1u << 16)) && init_at(EMMC, 1)) return 1;
+    base = 0;
+    return 0;
 }
 
 int sd_present(void) { return base != 0; }

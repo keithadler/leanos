@@ -48,6 +48,9 @@ void sha256_init(struct sha256 *s);
 void sha256_update(struct sha256 *s, const void *data, uint64_t n);
 void sha256_final(struct sha256 *s, uint32_t out[8]);
 
+/* One property tag through the firmware's mailbox (kmain.c): 1 if it answered. */
+int mbox_tag(uint32_t tag, const uint32_t *in, int nin, uint32_t *out, int nout);
+
 void *memcpy(void *d, const void *s, size_t n);
 void *memset(void *d, int c, size_t n);
 void *memmove(void *d, const void *s, size_t n);

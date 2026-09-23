@@ -30,7 +30,7 @@ INIT_C := $(patsubst %,build/c/Init_%.c,$(INIT_MODULES))
 INIT_O := $(INIT_C:.c=.o)
 
 KERNEL_LEAN_C := .lake/build/ir/LeanOS/Kernel.c
-USER_PROGS := alice display mallory carol input terminal settings security fs files launcher
+USER_PROGS := alice display mallory carol input terminal settings security fs files launcher usb
 USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
 ARCH_O := build/boot.o build/kmain.o build/sd.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
@@ -52,7 +52,7 @@ MANIFEST_INPUTS := build/user/alice.bin+build/assets/alice.bin build/user/displa
   build/user/terminal.bin+build/assets/terminal.bin build/user/settings.bin+build/assets/settings.bin \
   build/user/security.bin+build/assets/security.bin build/user/fs.bin \
   build/user/files.bin+build/assets/files.bin \
-  "" "" "" "" "" "" build/user/launcher.bin+build/assets/launcher.bin
+  "" "" "" "" "" "" build/user/launcher.bin+build/assets/launcher.bin build/user/usb.bin
 LeanOS/Manifest.lean: tools/mkmanifest.py $(USER_BINS) $(ASSET_BLOBS)
 	python3 tools/mkmanifest.py $@ $(MANIFEST_INPUTS)
 
@@ -235,6 +235,7 @@ test: all
 	./test/piimage.sh
 	./test/tamper.sh
 	./test/fuzz.sh
+	./test/usb.sh
 
 # Break the kernel in known ways and check the proofs catch every one (slow).
 mutants:

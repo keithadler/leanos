@@ -72,8 +72,8 @@ mutant "verify ignores the manifest" \
 mutant "tasks start ready, unchecked" \
   "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .unverified, .nil, .nil, .nil⟩" "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil, .nil, .nil⟩"
 mutant "a stopped task may make system calls" \
-  "    | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
+  "    | .ready => runCall s t num a0 a1 a2 a3 a4" "    | .ready => runCall s t num a0 a1 a2 a3 a4
+    | .dead => runCall s t num a0 a1 a2 a3 a4"
 mutant "user pages always executable" \
   "privNoExec + (if m.rights.x then 0 else userNoExec)" "privNoExec + 0"
 mutant "read-only pages writable" \
@@ -165,5 +165,31 @@ mutant "the clock's minutes run past 59" \
   "(secs / 3600, secs / 60 % 60, secs % 60)" "(secs / 3600, secs / 60, secs % 60)"
 mutant "sleep rounds down" \
   "let ticks := (ms + tickMs - 1) / tickMs" "let ticks := ms / tickMs"
+
+mutant "USB start skips the DMA check" \
+  "if dmaOk t.caps dma (size % 2 ^ 19 + usbSlack) (bit value 15) then" "if true then"
+mutant "USB DMA check ignores the transfer's direction" \
+  "Nat.ble (a + n) (frameBase + (b + k) * pageSize) && (if w then c.rights.w else c.rights.r)" "Nat.ble (a + n) (frameBase + (b + k) * pageSize) && true"
+mutant "USB DMA check ignores the end of the run" \
+  "Nat.ble (a + n) (frameBase + (b + k) * pageSize) && (if w" "true && (if w"
+mutant "USB DMA may target frames outside the pool" \
+  "     | .frames b k => Nat.ble (b + k) poolFrames && Nat.ble" "     | .frames b k => Nat.ble"
+mutant "USB DMA check forgets the packet of slack" \
+  "(size % 2 ^ 19 + usbSlack)" "(size % 2 ^ 19)"
+mutant "a channel's DMA address goes straight to the controller" \
+  "if inChan reg && chanReg reg == 0x14 then" "if false then"
+mutant "descriptor DMA allowed" \
+  "(reg == 0x00C && bit value 30) || (reg == 0x400 && bit value 23) ||" "(reg == 0x00C && bit value 30) ||"
+mutant "device mode allowed" \
+  "(reg == 0x00C && bit value 30) || (reg == 0x400 && bit value 23) ||" "(reg == 0x400 && bit value 23) ||"
+mutant "device mode's registers writable" \
+  "(Nat.ble 0x800 reg && Nat.ble (reg + 1) 0xC00) ||" ""
+mutant "manifest gives mallory the USB controller" \
+  "| 2 => snoc (frameCaps 2) (epCap 0 false true false 2)" "| 2 => snoc (snoc (frameCaps 2) (epCap 0 false true false 2)) usbCap"
+mutant "grant the USB capability" \
+  "      | .frames _ _ => some (some g)
+      | _ => none" "      | .frames _ _ => some (some g)
+      | .usbHost => some (some g)
+      | _ => none"
 
 } | python3 test/mutants.py ${JOBS:-}

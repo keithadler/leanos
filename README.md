@@ -210,6 +210,13 @@ can reach, under any sequence of system calls with any arguments:
   one, and never back; no system call changes it; `time` reads it without changing anything
   else and hands out hours, minutes and seconds that add up to exactly the uptime; and
   `sleep` never ends before the time asked for.
+- **The USB controller only ever touches the USB driver's own memory.** The Pi 4 has no
+  IOMMU, and a USB host controller moves data by DMA wherever its registers point. The USB
+  driver never writes those registers: the kernel keeps each channel's DMA address and size
+  aside and starts a transfer only when the whole range lies in frames the driver holds,
+  with the right the direction needs; the writes that could aim DMA anywhere else (device
+  mode, descriptor DMA, descriptor lists) are never passed on; and only the driver holds
+  the controller, which nobody can pass memory to. The driver tries all of it at start.
 - **Devices and interrupts stay with their owners**: only the display server can reach the
   screen, only the input driver the UART and its interrupt, and an interrupt wakes only a
   holder of its capability.
@@ -217,7 +224,7 @@ can reach, under any sequence of system calls with any arguments:
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
 MMU proves that user mode reaches exactly its own mappings, only the frame pool and the
 framebuffer (never the kernel or the peripherals), and shares a physical page with another
-task only along a grant path. `make mutants` breaks the kernel in 69 ways and checks the
+task only along a grant path. `make mutants` breaks the kernel in 80 ways and checks the
 proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
@@ -257,14 +264,19 @@ make pi-image                # build/leanos-pi4.img: a FAT boot partition, and a
 ```
 
 Write `build/leanos-pi4.img` to a microSD card with Raspberry Pi Imager ("Use custom") or
-`dd`, and boot a Pi 4 with an HDMI screen. Until there is a USB driver, the keyboard and
-mouse come in over the serial console: a 3.3 V USB-serial adapter on the header's pins 6
-(ground), 8 (TX) and 10 (RX), at 115200 baud. Keys are plain bytes, and mouse reports use
-the browser console's protocol (see `user/input.c`).
+`dd`, and boot a Pi 4 with an HDMI screen. The USB driver (`user/usb.c`) runs the Pi 4's DWC2
+controller, which is the USB-C port, not the four USB-A ports (those are a VL805 chip
+behind PCIe, and need an xHCI driver, next). So on a Pi 4 today, a keyboard and mouse reach
+leanos either through the USB-C port (with an OTG adapter or hub, powering the Pi through
+its GPIO header) or over the serial console: a 3.3 V USB-serial adapter on the header's
+pins 6 (ground), 8 (TX) and 10 (RX), at 115200 baud, keys as plain bytes and mouse reports
+in the browser console's protocol (see `user/input.c`). Under QEMU, `test/usb.sh` plugs a
+USB keyboard and mouse into the DWC2, behind a hub.
 
 This image has never booted on real hardware yet, and several things may need fixing
-there: the SD driver on the Pi 4's EMMC2 controller, the screen's red and blue order, and
-the timings QEMU does not model. `make test` checks what can be checked without a Pi: the
+there: the SD driver on the Pi 4's EMMC2 controller (it now ignores EMMC2's card-detect
+line, which a Pi 4 does not wire, and asks the firmware for the base clock), the screen's
+red and blue order, the DWC2 on real silicon, and the timings QEMU does not model. `make test` checks what can be checked without a Pi: the
 boot partition is a clean FAT file system with the four files the firmware reads, and
 leanos, booted with the image as its card, finds its data partition behind the boot
 partition and never writes to the boot partition.
@@ -319,6 +331,7 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 | 20 | `sleep(ms)` | sleeps at least that long (whole 10 ms timer ticks), letting other tasks run |
 | 21 | `power(cap, action)` | switches the machine off (0) or restarts it (1), through the power capability |
 | 22 | `time()` | the kernel's clock: timer ticks since boot, milliseconds, and hours, minutes and seconds |
+| 24 | `usb(cap, op, reg, value)` | reads (0) or writes (1) a register of the USB host controller, through the USB capability; a channel starts only with a DMA range in the caller's own frames |
 | 23 | `board(cap, what, value)` | through the board capability: the board (model, serial, memory, firmware), its sensors (temperature, CPU clock, throttling), the CPU clock (600, 1000 or 1500 MHz), or the activity light |
 
 Capabilities come in four kinds. Frame capabilities name a run of physical frames and carry read, write and execute rights.
