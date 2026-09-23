@@ -13,23 +13,25 @@
 
 /* ---- the Lean kernel (LeanOS/Kernel.lean) ---- */
 lean_object *initialize_leanos_LeanOS_Kernel(uint8_t builtin);
-lean_object *leanos_init(lean_object *n);
-lean_object *leanos_syscall(lean_object *s, lean_object *num, lean_object *a0, lean_object *a1);
+lean_object *leanos_init(lean_object *unused);
+lean_object *leanos_syscall(lean_object *s, lean_object *num, lean_object *a0, lean_object *a1,
+                            lean_object *a2, lean_object *a3, lean_object *a4);
 lean_object *leanos_tick(lean_object *s);
 lean_object *leanos_fault(lean_object *s);
+lean_object *leanos_clear_result(lean_object *s, lean_object *j);
 lean_object *leanos_cur(lean_object *s);
-uint8_t leanos_alive(lean_object *s, lean_object *i);
+uint8_t leanos_ready(lean_object *s, lean_object *i);
+uint8_t leanos_dead(lean_object *s, lean_object *i);
 lean_object *leanos_ntasks(lean_object *s);
+lean_object *leanos_result_len(lean_object *s, lean_object *j);
+lean_object *leanos_result(lean_object *s, lean_object *j, lean_object *k);
 lean_object *leanos_kernel_l1(lean_object *k);
 lean_object *leanos_l1(lean_object *l2, lean_object *k);
 lean_object *leanos_l2(lean_object *l3, lean_object *k);
 lean_object *leanos_l3(lean_object *s, lean_object *i, lean_object *k);
-lean_object *leanos_reply_status(lean_object *r);
-lean_object *leanos_reply_value(lean_object *r);
 lean_object *leanos_reply_out_va(lean_object *r);
 lean_object *leanos_reply_out_len(lean_object *r);
 uint8_t leanos_reply_remap(lean_object *r);
-uint8_t leanos_reply_resched(lean_object *r);
 lean_object *leanos_reply_state(lean_object *r);
 
 uint64_t rt_heap_live(void);
@@ -56,7 +58,7 @@ static lean_object *arg(uint64_t v) {
 }
 
 static uint64_t cur_task(void) { return nat(leanos_cur(K1)); }
-static int alive(uint64_t i) { return leanos_alive(K1, lean_box(i)); }
+static int ready(uint64_t i) { return leanos_ready(K1, lean_box(i)); }
 
 /* ---- console ---- */
 
@@ -238,14 +240,13 @@ static void load_programs(void) {
     }
 }
 
-static const char *const names[] = {"alice", "bob", "carol"};
+static const char *const names[] = {"alice", "server", "mallory", "carol"};
 
 static void do_syscall(uint64_t cur) {
     struct frame *f = &saved[cur];
     syscalls++;
-    lean_object *r = leanos_syscall(K, arg(f->x[8]), arg(f->x[0]), arg(f->x[1]));
-    uint64_t status = nat(leanos_reply_status((lean_inc(r), r)));
-    uint64_t value = nat(leanos_reply_value((lean_inc(r), r)));
+    lean_object *r = leanos_syscall(K, arg(f->x[8]), arg(f->x[0]), arg(f->x[1]), arg(f->x[2]),
+                                    arg(f->x[3]), arg(f->x[4]));
     uint64_t out_va = nat(leanos_reply_out_va((lean_inc(r), r)));
     uint64_t out_len = nat(leanos_reply_out_len((lean_inc(r), r)));
     int remap = leanos_reply_remap((lean_inc(r), r));
@@ -257,9 +258,38 @@ static void do_syscall(uint64_t cur) {
         if (c == '\n') kputc('\r');
         kputc(c);
     }
-    f->x[0] = status;
-    f->x[1] = value;
     if (remap) build_user_pages(cur);
+}
+
+/* Load the result registers the Lean kernel left for task j (the outcome of its last
+   system call, or a message it was waiting for), then tell the kernel they are loaded. */
+static void load_result(uint64_t j) {
+    uint64_t n = nat(leanos_result_len(K1, lean_box(j)));
+    if (n == 0) return;
+    if (n > 31) kpanic("too many result registers");
+    for (uint64_t k = 0; k < n; k++) saved[j].x[k] = nat(leanos_result(K1, lean_box(j), lean_box(k)));
+    K = leanos_clear_result(K, lean_box(j));
+}
+
+static void finish(void) {
+    uint64_t waiting = 0;
+    for (uint64_t i = 0; i < ntasks; i++)
+        if (!leanos_dead(K1, lean_box(i))) waiting++;
+    if (waiting == 0) kputs("leanos: every task has finished (");
+    else {
+        kputs("leanos: no task can run: ");
+        kputdec(waiting);
+        kputs(" waiting for a message that will not come (");
+    }
+    kputdec(syscalls);
+    kputs(" system calls, ");
+    kputdec(ticks);
+    kputs(" timer ticks, kernel heap ");
+    kputdec(rt_heap_live());
+    kputs(" bytes live, ");
+    kputdec(rt_heap_peak());
+    kputs(" peak)\n");
+    poweroff();
 }
 
 static const char *fault_name(uint64_t ec) {
@@ -296,7 +326,7 @@ void trap(struct frame *f, uint64_t kind) {
             do_syscall(cur);
         } else {
             kputs("leanos: ");
-            kputs(cur < 3 ? names[cur] : "task");
+            kputs(cur < 4 ? names[cur] : "task");
             kputs(" stopped: ");
             kputs(fault_name(ec));
             kputs(" at ");
@@ -315,18 +345,8 @@ void trap(struct frame *f, uint64_t kind) {
     }
 
     uint64_t next = cur_task();
-    if (!alive(next)) {
-        kputs("leanos: every task has finished (");
-        kputdec(syscalls);
-        kputs(" system calls, ");
-        kputdec(ticks);
-        kputs(" timer ticks, kernel heap ");
-        kputdec(rt_heap_live());
-        kputs(" bytes live, ");
-        kputdec(rt_heap_peak());
-        kputs(" peak)\n");
-        poweroff();
-    }
+    if (!ready(next)) finish(); /* schedule found no ready task */
+    load_result(next);
     switch_to(next);
     *f = saved[next];
 }
@@ -346,9 +366,9 @@ void kmain(void) {
     mmu_init();
     kputs("leanos: MMU on\n");
 
-    ntasks = 3;
-    K = leanos_init(lean_box(ntasks));
-    if (nat(leanos_ntasks(K1)) != ntasks || ntasks > MAX_TASKS) kpanic("kernel made the wrong number of tasks");
+    K = leanos_init(lean_box(0));
+    ntasks = nat(leanos_ntasks(K1));
+    if (ntasks > MAX_TASKS || ntasks > 4) kpanic("the manifest has more tasks than the machine layer supports");
     kputs("leanos: Lean kernel initialized, ");
     kputdec(ntasks);
     kputs(" tasks\n");

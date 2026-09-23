@@ -2,26 +2,45 @@
 #pragma once
 
 typedef unsigned long u64;
-struct res { u64 status, value; };
 
-enum { SYS_WRITE, SYS_YIELD, SYS_MAP, SYS_UNMAP, SYS_DERIVE, SYS_EXIT, SYS_CAPINFO, SYS_WHOAMI };
-enum { OK = 0, NO_CAP = 1, BAD_ARG = 2 };
+/* x0 is the status (0 = ok); the rest depend on the call. */
+struct res { u64 x[6]; };
+#define status x[0]
+
+enum { SYS_WRITE, SYS_YIELD, SYS_MAP, SYS_UNMAP, SYS_DERIVE, SYS_EXIT, SYS_CAPINFO, SYS_WHOAMI,
+       SYS_SEND, SYS_RECV };
+enum { OK = 0, NO_CAP = 1, BAD_ARG = 2, NO_CALL = 3, FULL = 4 };
+/* Frame rights: read, write, execute. Endpoint rights use the same bits for receive,
+   send, grant. */
 enum { R = 1, W = 2, X = 4 };
+enum { RECV = 1, SEND = 2, GRANT = 4 };
 
-/* Every task's window: code page 0, data page 1, stack at the top. */
+/* Every task's window: code page 0, data page 1, stack at the top. Capabilities 0-3 are
+   the task's code, data, stack and spare frames; capability 4, if any, is its endpoint. */
 #define PAGE(n) (0x80000000UL + (n) * 4096UL)
+#define ENDPOINT 4
 
-static inline struct res sys(u64 n, u64 a0, u64 a1) {
+static inline struct res sys(u64 n, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
     register u64 x8 __asm__("x8") = n;
     register u64 x0 __asm__("x0") = a0;
     register u64 x1 __asm__("x1") = a1;
-    __asm__ volatile("svc #0" : "+r"(x0), "+r"(x1) : "r"(x8) : "memory");
-    return (struct res){x0, x1};
+    register u64 x2 __asm__("x2") = a2;
+    register u64 x3 __asm__("x3") = a3;
+    register u64 x4 __asm__("x4") = a4;
+    register u64 x5 __asm__("x5");
+    __asm__ volatile("svc #0"
+                     : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "=r"(x5)
+                     : "r"(x8)
+                     : "memory");
+    return (struct res){{x0, x1, x2, x3, x4, x5}};
 }
+#define sys0(n) sys(n, 0, 0, 0, 0, 0)
+#define sys1(n, a) sys(n, a, 0, 0, 0, 0)
+#define sys2(n, a, b) sys(n, a, b, 0, 0, 0)
 
 static inline u64 slen(const char *s) { u64 n = 0; while (s[n]) n++; return n; }
-static inline struct res print(const char *s) { return sys(SYS_WRITE, (u64)s, slen(s)); }
-static inline void exit_task(void) { sys(SYS_EXIT, 0, 0); for (;;) {} }
+static inline struct res print(const char *s) { return sys2(SYS_WRITE, (u64)s, slen(s)); }
+static inline void exit_task(void) { sys0(SYS_EXIT); for (;;) {} }
 
 /* Format into a stack buffer and print it in one call, so lines never interleave. */
 struct line { char b[200]; u64 n; };
@@ -43,7 +62,19 @@ static inline void put_rights(struct line *l, u64 r) {
     char s[4] = {r & R ? 'r' : '-', r & W ? 'w' : '-', r & X ? 'x' : '-', 0};
     put_s(l, s);
 }
-static inline void flush(struct line *l) { sys(SYS_WRITE, (u64)l->b, l->n); l->n = 0; }
+static inline void put_ep_rights(struct line *l, u64 r) {
+    int any = 0;
+    if (r & RECV) { put_s(l, "receive"); any = 1; }
+    if (r & SEND) { put_s(l, any ? "+send" : "send"); any = 1; }
+    if (r & GRANT) { put_s(l, any ? "+grant" : "grant"); any = 1; }
+    if (!any) put_s(l, "nothing");
+}
+static inline const char *outcome(u64 st) {
+    return st == OK ? " -> ok" : st == NO_CAP ? " -> refused, no such capability"
+         : st == BAD_ARG ? " -> refused, not allowed" : st == FULL ? " -> refused, full"
+         : " -> refused";
+}
+static inline void flush(struct line *l) { sys2(SYS_WRITE, (u64)l->b, l->n); l->n = 0; }
 
 /* Burn time so the timer, not the program, decides when others run. */
 static inline void spin(u64 n) { for (volatile u64 i = 0; i < n; i++) {} }

@@ -31,26 +31,38 @@ check_order() {
 
 check_order alice \
   "alice: wrote secret 0x5ec12e7 to my data page" \
-  "alice: still working, round 1" \
-  "alice: still working, round 2" \
-  "alice: still working, round 3" \
+  "alice: granted the server read-only capability 5 to my page 2 -> ok" \
+  "alice: sent the words 7 8 9 -> ok" \
   "alice: secret intact, exiting"
 
-check_order bob \
-  "bob: I am task 1" \
-  "bob: map capability 9 (not mine) at page 5 -> refused, no such capability" \
-  "bob: print 16 bytes of kernel memory at 0x80000 -> refused, bad argument" \
-  "bob: print from page 7, which I have not mapped -> refused, bad argument" \
-  "bob: asked for rwx on my data frame, got capability 4 with rw-" \
-  "bob: map my spare frame (capability 3) at page 2 -> ok" \
-  "bob: wrote and read back 42 through page 2" \
-  "bob: now reading page 3 directly, which is not mapped" \
-  "leanos: bob stopped: data access not allowed at 0x80003000"
+check_order mallory \
+  "mallory: I am task 2" \
+  "mallory: map capability 9 (not mine) at page 5 -> refused, no such capability" \
+  "mallory: print 16 bytes of kernel memory at 0x80000 -> refused, not allowed" \
+  "mallory: receive on the server's endpoint -> refused, not allowed" \
+  "mallory: grant my data page to the server -> refused, not allowed" \
+  "mallory: map the endpoint as memory -> refused, not allowed" \
+  "mallory: asked for every right on the endpoint, got send" \
+  "mallory: send 666 to the server -> ok" \
+  "mallory: reading page 2 directly, which nobody mapped for me" \
+  "leanos: mallory stopped: data access not allowed at 0x80002000"
 
 check_order carol \
   "carol: asked for write+execute on my data frame, got -w-" \
   "carol: jumping into the instruction I wrote in my data page" \
   "leanos: carol stopped: instruction fetch not allowed at 0x80001000"
+
+# The server's three messages may arrive in any order; each must arrive exactly once.
+server=$(echo "$out" | grep -E "^server: ")
+[ "$(echo "$server" | head -1)" = "server: waiting for messages" ] || fail "server did not start"
+[ "$(echo "$server" | tail -1)" = "server: done" ] || fail "server did not finish"
+for line in \
+  "server: from badge 1: 44 0 0, with a frame capability (r--); mapped at page 8, it says: a page alice drew into and shared, read-only" \
+  "server: from badge 2: 666 0 0" \
+  "server: from badge 1: 7 8 9"; do
+  [ "$(echo "$server" | grep -cxF "$line")" = 1 ] || fail "server line missing or repeated: $line"
+done
+[ "$(echo "$server" | wc -l | tr -d ' ')" = 5 ] || fail "server printed unexpected lines"
 
 echo "$out" | grep -q "^leanos: every task has finished" || fail "did not finish"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"

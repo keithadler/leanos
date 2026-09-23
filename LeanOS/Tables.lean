@@ -28,64 +28,14 @@ def el0View (s : KState) (i va : Nat) : Option (Nat × Arm.Perm) :=
     | none => none
   else none
 
-/-! ## The number of tasks never changes -/
-
-theorem len_withTask (s : KState) (t : Task) : len (withTask s t).tasks = len s.tasks := by
-  simp [withTask, len_setNth]
-
-theorem len_schedule (s : KState) : len (schedule s).tasks = len s.tasks := by
-  unfold schedule; split <;> rfl
-
-theorem len_killCurrent (s : KState) : len (killCurrent s).tasks = len s.tasks := by
-  unfold killCurrent; split <;> simp [len_schedule, len_setNth]
-
-theorem len_syscall (s : KState) (num a0 a1 : Nat) :
-    len (syscall s num a0 a1).state.tasks = len s.tasks := by
-  unfold syscall
-  split
-  · rfl
-  · split
-    · rw [sysWrite_state]
-    · exact len_schedule s
-    · unfold sysMap; split
-      · rfl
-      · split
-        · exact len_withTask _ _
-        · rfl
-    · exact len_withTask _ _
-    · unfold sysDerive; split
-      · rfl
-      · split
-        · exact len_withTask _ _
-        · rfl
-    · exact len_killCurrent s
-    · unfold sysCapInfo; split <;> rfl
-    · rfl
-    · rfl
-
-theorem len_mkTasksFrom' (k n : Nat) : len (mkTasksFrom k n) = n := len_mkTasksFrom k n
-
-theorem reachable_len {s : KState} (h : Reachable s) : len s.tasks ≤ maxTasks := by
-  induction h with
-  | init n =>
-    simp only [init, len_mkTasksFrom']
-    split
-    · assumption
-    · exact Nat.le_refl _
-  | syscall num a0 a1 _ ih => rw [len_syscall]; exact ih
-  | tick _ ih => rw [len_schedule]; exact ih
-  | fault _ ih => rw [len_killCurrent]; exact ih
-
-/-- In a reachable state every mapped frame is inside the pool of `4 * maxTasks` frames. -/
+/-- In a reachable state every mapped frame is inside the pool. -/
 theorem reachable_frames {s : KState} (h : Reachable s) (i : Nat) :
-    ∀ m ∈ mapsOf s i, m.frame < 4 * maxTasks := by
+    ∀ m ∈ mapsOf s i, m.frame < poolFrames := by
   intro m hm
   unfold mapsOf at hm
   split at hm
   · rename_i t ht
-    have := (maps_in_range h ht m hm).2
-    have := reachable_len h
-    omega
+    exact (maps_in_range h ht m hm).2
   · simp at hm
 
 theorem findVpn_mem : ∀ {ms : List Mapping} {v : Nat} {m : Mapping},
@@ -186,7 +136,7 @@ theorem walk_eq_view {s : KState} (h : Reachable s) (i : Nat)
       split
       · rename_i m hm
         have hmem := (findVpn_mem hm).1
-        have hf : m.frame < 16 := by have := hfr m hmem; simp [maxTasks] at this; omega
+        have hf : m.frame < 16 := by have := hfr m hmem; simp [poolFrames, maxTasks] at this; omega
         by_cases hr : m.rights.r = true
         · obtain ⟨hty, hleaf⟩ := leaf_pageDesc m hr hf va
           rw [hm]
@@ -266,13 +216,12 @@ kernel image, its heap, its tables, or the peripherals, which all lie outside it
 theorem el0_only_frame_pool {s : KState} (h : Reachable s) {i : Nat} {mem : Arm.Mem}
     {l1 l2 l3 : Nat} (hi : Installed s i mem l1 l2 l3)
     {va pa : Nat} {p : Arm.Perm} (hw : Arm.walkEL0 mem l1 va = some (pa, p)) :
-    frameBase ≤ pa ∧ pa < frameBase + 4 * maxTasks * pageSize := by
+    frameBase ≤ pa ∧ pa < frameBase + poolFrames * pageSize := by
   rw [hi.walk h] at hw
   obtain ⟨t, m, ht, hm, -, rfl, -⟩ := el0View_some hw
   have := (maps_in_range h ht m hm).2
-  have := reachable_len h
   have : va % pageSize < pageSize := Nat.mod_lt _ (by decide)
-  simp [framePA, maxTasks, pageSize] at *
+  simp [framePA, poolFrames, maxTasks, pageSize] at *
   omega
 
 /-- No address user mode can reach is both writable and executable. -/
@@ -284,23 +233,51 @@ theorem el0_no_write_execute {s : KState} (h : Reachable s) {i : Nat} {mem : Arm
   obtain ⟨t, m, ht, hm, -, -, rfl⟩ := el0View_some hw
   exact no_write_execute h ht m hm
 
-/-- **Isolation, down to the hardware.** Two different tasks never reach the same physical
-page from user mode. -/
-theorem el0_isolation {s : KState} (h : Reachable s) {i j : Nat} (hij : i ≠ j)
+/-- The physical page user mode reaches is the frame's page. -/
+theorem framePA_page (f v : Nat) :
+    (framePA f + v % pageSize) / pageSize = frameBase / pageSize + f := by
+  have : v % pageSize < pageSize := Nat.mod_lt _ (by decide)
+  simp [framePA, frameBase, pageSize] at *; omega
+
+/-- **Authority flow, down to the hardware.** If task `i`'s user mode can reach a physical
+page, the task that owned that page at boot can pass frames to `i` along grant edges. -/
+theorem el0_flow {s : KState} (h : Reachable s) {i : Nat} {mem : Arm.Mem}
+    {l1 l2 l3 : Nat} (hi : Installed s i mem l1 l2 l3)
+    {va pa : Nat} {p : Arm.Perm} (hw : Arm.walkEL0 mem l1 va = some (pa, p)) :
+    Reach ((pa / pageSize - frameBase / pageSize) / 4) i := by
+  rw [hi.walk h] at hw
+  obtain ⟨t, m, ht, hm, -, rfl, -⟩ := el0View_some hw
+  rw [framePA_page, Nat.add_sub_cancel_left]
+  exact mapping_flow h ht hm
+
+/-- **Shared pages need a grant path.** Two different tasks reach the same physical page only
+if the page's owner at boot can reach both of them. In the demo manifest that means only
+alice and the server, only on alice's pages. -/
+theorem el0_shared {s : KState} (h : Reachable s) {i j : Nat}
     {mem mem' : Arm.Mem} {l1 l2 l3 l1' l2' l3' : Nat}
     (hi : Installed s i mem l1 l2 l3) (hj : Installed s j mem' l1' l2' l3')
     {va va' pa pa' : Nat} {p p' : Arm.Perm}
+    (hw : Arm.walkEL0 mem l1 va = some (pa, p)) (hw' : Arm.walkEL0 mem' l1' va' = some (pa', p'))
+    (hsame : pa / pageSize = pa' / pageSize) :
+    ∃ A, Reach A i ∧ Reach A j := by
+  have ha := el0_flow h hi hw
+  have hb := el0_flow h hj hw'
+  rw [hsame] at ha
+  exact ⟨_, ha, hb⟩
+
+/-- mallory's user mode never reaches a physical page any other task can reach. -/
+theorem el0_mallory_isolated {s : KState} (h : Reachable s) {j : Nat} (hj2 : j ≠ 2)
+    {mem mem' : Arm.Mem} {l1 l2 l3 l1' l2' l3' : Nat}
+    (hi : Installed s 2 mem l1 l2 l3) (hj : Installed s j mem' l1' l2' l3')
+    {va va' pa pa' : Nat} {p p' : Arm.Perm}
     (hw : Arm.walkEL0 mem l1 va = some (pa, p)) (hw' : Arm.walkEL0 mem' l1' va' = some (pa', p')) :
     pa / pageSize ≠ pa' / pageSize := by
-  rw [hi.walk h] at hw
-  rw [hj.walk h] at hw'
-  obtain ⟨t, m, ht, hm, -, rfl, -⟩ := el0View_some hw
-  obtain ⟨u, m', hu, hm', -, rfl, -⟩ := el0View_some hw'
-  have hne := isolation h hij ht hu m hm m' hm'
-  have e : ∀ f v, (framePA f + v % pageSize) / pageSize = frameBase / pageSize + f := by
-    intro f v
-    have : v % pageSize < pageSize := Nat.mod_lt _ (by decide)
-    simp [framePA, frameBase, pageSize] at *; omega
-  rw [e, e]; omega
+  intro hsame
+  obtain ⟨A, ha, hb⟩ := el0_shared h hi hj hw hw' hsame
+  rcases reach_iff ha with rfl | ⟨_, h2⟩
+  · rcases reach_iff hb with h3 | ⟨h0, h1⟩
+    · exact hj2 h3.symm
+    · cases h0
+  · cases h2
 
 end LeanOS

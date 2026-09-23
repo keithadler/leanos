@@ -29,7 +29,7 @@ INIT_C := $(patsubst %,build/c/Init_%.c,$(INIT_MODULES))
 INIT_O := $(INIT_C:.c=.o)
 
 KERNEL_LEAN_C := .lake/build/ir/LeanOS/Kernel.c
-USER_PROGS := alice bob carol
+USER_PROGS := alice server mallory carol
 USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
 ARCH_O := build/boot.o build/kmain.o build/runtime.o build/libc.o build/Kernel.o

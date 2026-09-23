@@ -29,12 +29,13 @@ machine layer stores the words Lean computed, user mode can reach exactly the fr
 mappings name, with exactly their rights, and nothing of the kernel's. This takes
 page-table encoding off the trusted list.
 
-## 3. Communication
+## 3. Communication — done
 
 Synchronous IPC through endpoint capabilities: send and receive with a few registers and
 an optional capability transfer, with tasks blocking and waking. The isolation theorem
 changes from "task memory never overlaps" to authority confinement: a task can reach a
-frame only if a chain of explicit grants gave it one. A GUI needs this: clients talk to
+frame only if a chain of explicit grants gave it one. (Done with endpoint capabilities
+fixed by the boot manifest; creating and passing endpoints waits for stage 5.) A GUI needs this: clients talk to
 the display server over IPC and hand it the memory they draw into.
 
 ## 4. Drivers in user space

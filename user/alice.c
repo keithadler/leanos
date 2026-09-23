@@ -1,6 +1,8 @@
-/* alice keeps a secret in her data page and checks, after the others have tried their
-   worst, that nobody changed it. She never yields: the timer takes turns away from her. */
+/* alice keeps a secret in her data page, shares another page with the server read-only,
+   and sends it a message. At the end she checks nobody changed her secret. */
 #include "lib.h"
+
+static const char text[] = "a page alice drew into and shared, read-only";
 
 __attribute__((section(".text.start"))) void _start(void) {
     volatile u64 *secret = (u64 *)PAGE(1);
@@ -10,13 +12,29 @@ __attribute__((section(".text.start"))) void _start(void) {
     put_hex(&l, *secret);
     put_s(&l, " to my data page\n");
     flush(&l);
-    for (int round = 1; round <= 3; round++) {
-        spin(3000000);
-        put_s(&l, "alice: still working, round ");
-        put_dec(&l, round);
-        put_s(&l, "\n");
-        flush(&l);
-    }
+
+    /* Draw into the spare frame, then hand the server a read-only capability to it. */
+    sys2(SYS_MAP, 3, 2);
+    char *shared = (char *)PAGE(2);
+    u64 n = 0;
+    for (; text[n]; n++) shared[n] = text[n];
+    struct res ro = sys2(SYS_DERIVE, 3, R);
+    struct res sent = sys(SYS_SEND, ENDPOINT, n, 0, 0, ro.x[1] + 1);
+    put_s(&l, "alice: granted the server read-only capability ");
+    put_dec(&l, ro.x[1]);
+    put_s(&l, " to my page 2");
+    put_s(&l, outcome(sent.status));
+    put_s(&l, "\n");
+    flush(&l);
+
+    spin(3000000);
+    sent = sys(SYS_SEND, ENDPOINT, 7, 8, 9, 0);
+    put_s(&l, "alice: sent the words 7 8 9");
+    put_s(&l, outcome(sent.status));
+    put_s(&l, "\n");
+    flush(&l);
+
+    spin(3000000);
     put_s(&l, *secret == 0x5ec12e7 ? "alice: secret intact, exiting\n" : "alice: SECRET CHANGED\n");
     flush(&l);
     exit_task();

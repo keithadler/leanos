@@ -152,15 +152,18 @@ restore:
 .balign 16
 .global user_progs, user_prog_ends
 user_progs:
-    .quad prog0, prog1, prog2
+    .quad prog0, prog1, prog2, prog3
 user_prog_ends:
-    .quad prog0_end, prog1_end, prog2_end
+    .quad prog0_end, prog1_end, prog2_end, prog3_end
 .balign 16
 prog0: .incbin "build/user/alice.bin"
 prog0_end:
 .balign 16
-prog1: .incbin "build/user/bob.bin"
+prog1: .incbin "build/user/server.bin"
 prog1_end:
 .balign 16
-prog2: .incbin "build/user/carol.bin"
+prog2: .incbin "build/user/mallory.bin"
 prog2_end:
+.balign 16
+prog3: .incbin "build/user/carol.bin"
+prog3_end:

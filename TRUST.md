@@ -13,19 +13,27 @@ leanos splits the kernel in two:
 
 ## Proved
 
-These hold for every state the kernel can reach: `init n`, then any sequence of system
-calls with any arguments, timer ticks and faults. They are all in `LeanOS/Proofs.lean`.
+These hold for every state the kernel can reach: `init`, then any sequence of system calls
+with any arguments, timer ticks, faults, and result loads. They are in
+`LeanOS/Proofs.lean`.
+
+Tasks can hand each other memory, so the central guarantee is about where memory can go.
+The boot manifest (`initCaps` in `Kernel.lean`) fixes which task can send with the grant
+right to which (`Edge`). Endpoint capabilities themselves never move.
 
 | Theorem | Statement |
 |---|---|
-| `isolation` | No physical frame appears in two different tasks' address spaces. |
-| `caps_isolated` | No two tasks hold capabilities to the same frame. |
+| `frame_flow` | A task holds a frame only if a chain of grant edges leads to it from the frame's owner at boot, and never with more rights than the owner had. |
+| `endpoints_fixed` | Endpoint capabilities never gain rights and keep their badge, so no task can forge who it is. |
+| `edge_iff` | In the demo manifest the only grant edge is alice to the server. |
+| `mallory_confined`, `carol_confined`, `alice_confined` | Each of these tasks only ever holds its own frames. |
+| `server_frames` | The server holds only its own frames and alice's. |
 | `maps_backed` | Every page a task can see comes from one of its own capabilities, with that capability's rights. |
 | `no_write_execute` | No page is ever both writable and executable. |
-| `maps_in_range` | Every mapping's page number is inside the 512-page user window and its frame is inside the frame pool. |
-| `derive_never_amplifies` | A derived capability names its parent's frame and allows nothing the parent does not. |
+| `maps_in_range` | Every mapping is inside the 512-page user window and the frame pool. |
+| `derive_never_amplifies` | A derived capability names its parent's object, keeps its badge, and allows nothing the parent does not. |
 | `write_reads_only_readable` | When `write` asks the machine layer to print user memory, every byte is in a page the calling task has mapped readable. |
-| `schedule_picks_alive` | If any task is alive, the scheduler picks a live task. |
+| `schedule_picks_ready` | If any task is ready, the scheduler picks a ready task. |
 
 And down to the hardware, in `LeanOS/Tables.lean`. The Lean kernel computes every
 translation-table word. If the machine layer stores those words (the `Installed`
@@ -36,13 +44,15 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `walk_eq_view` | For every virtual address, what user mode may do there is exactly what the task's mappings say, and nothing outside the 2 MiB user window. |
 | `el0_only_frame_pool` | User mode can reach only the frame pool: never the kernel image, heap, tables or peripherals. |
 | `el0_no_write_execute` | No address user mode can reach is both writable and executable. |
-| `el0_isolation` | Two tasks never reach the same physical page. |
+| `el0_flow`, `el0_shared` | A physical page user mode can reach came along grant edges from its owner; two tasks share a page only if one owner reaches both. |
+| `el0_mallory_isolated` | mallory's user mode never reaches a page any other task can reach. |
 
-`make mutants` breaks the kernel in nine specific ways (a `derive` that amplifies, a
-`write` that skips its check, a kernel entry missing its execute-never bit, and so on) and
-checks that the proofs reject every one.
+`make mutants` breaks the kernel in 17 specific ways (a `derive` that amplifies or forges a
+badge, a send without the grant right, an endpoint granted like a frame, a manifest that
+gives mallory one more right, a kernel page-table entry missing its execute-never bit, and
+so on) and checks that the proofs reject every one.
 
-`make test` checks that each of these rests only on Lean's standard axioms (`propext`,
+`make test` checks that each theorem rests only on Lean's standard axioms (`propext`,
 `Classical.choice`, `Quot.sound`) and never on `sorry`.
 
 ## Trusted, not proved
@@ -78,6 +88,8 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   granule, T0SZ = 25, EPD1 = 1, WXN = 0). `mmu_init` sets each of these explicitly.
 - Trap entry and exit, the saved-register copy, and the switch between address spaces
   (TTBR0, with one ASID per task).
+- Result registers: after every kernel entry, `load_result` copies the registers the Lean
+  kernel left for the task about to run into its saved frame, then tells the kernel.
 - `do_syscall` reads the buffer for `write` while the calling task's address space is
   still active. The proof covers which pages may be read. That the read happens in the
   right address space is this code's job.
@@ -103,3 +115,8 @@ QEMU's model of them, because leanos has only run under QEMU.
 - No protection against timing or cache side channels.
 - Only one scheduling property is proved (a live task is always picked). Fairness is not.
 - No devices are given to user tasks, so DMA isolation is not addressed yet.
+- Endpoint capabilities are fixed by the boot manifest; tasks cannot create or pass them
+  yet (stage 5). Granted frames cannot be revoked yet.
+- Confinement is about capabilities. A task that holds a frame can still copy its bytes
+  into a message it sends, so the proofs bound what each task can *hold*, and a task on a
+  grant path (the server, here) is trusted with what passes through it.

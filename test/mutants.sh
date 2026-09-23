@@ -27,13 +27,35 @@ PY
 }
 
 mutant "derive grants whatever is asked" \
-  "⟨c.frame, c.rights.meet (Rights.ofBits bits)⟩" "⟨c.frame, Rights.ofBits bits⟩"
+  "⟨c.obj, c.rights.meet (Rights.ofBits bits), c.badge⟩" "⟨c.obj, Rights.ofBits bits, c.badge⟩"
+mutant "derive lets a task pick its badge" \
+  "⟨c.obj, c.rights.meet (Rights.ofBits bits), c.badge⟩" "⟨c.obj, c.rights.meet (Rights.ofBits bits), bits⟩"
 mutant "map ignores the capability's frame" \
-  "⟨vpn, c.frame, c.rights⟩ :: dropVpn" "⟨vpn, c.frame + 1, c.rights⟩ :: dropVpn"
+  "⟨vpn, f, c.rights⟩ :: dropVpn" "⟨vpn, f + 1, c.rights⟩ :: dropVpn"
 mutant "map outside the user window" \
   "if vpn < userPages && c.rights.r then" "if c.rights.r then"
 mutant "write skips the page check" \
   "allReadable t.maps ((va - userBase) / pageSize)" "true || allReadable t.maps ((va - userBase) / pageSize)"
+mutant "send without the send right" \
+  "if c.rights.w then
+        match grantOf" "if true then
+        match grantOf"
+mutant "receive without the receive right" \
+  "if c.rights.r then
+        match findSender" "if true then
+        match findSender"
+mutant "grant without the grant right" \
+  "else if ep.rights.x then" "else if true then"
+mutant "grant an endpoint capability" \
+  "      | .endpoint _ => none
+    | none => none" "      | .endpoint _ => some (some g)
+    | none => none"
+mutant "sender picks its own badge" \
+  "let m : Msg := ⟨c.badge, w0, w1, w2, g⟩" "let m : Msg := ⟨w0, w0, w1, w2, g⟩"
+mutant "manifest gives mallory the grant right" \
+  "epCap 0 false true false 2" "epCap 0 false true true 2"
+mutant "manifest gives mallory the receive right" \
+  "epCap 0 false true false 2" "epCap 0 true true false 2"
 mutant "user pages always executable" \
   "privNoExec + (if m.rights.x then 0 else userNoExec)" "privNoExec + 0"
 mutant "read-only pages writable" \
@@ -42,8 +64,8 @@ mutant "kernel RAM executable from user mode" \
   "0 + dValid + attrNormal + shInner + accessFlag + userNoExec" "0 + dValid + attrNormal + shInner + accessFlag"
 mutant "kernel RAM readable from user mode" \
   "0 + dValid + attrNormal + shInner + accessFlag + userNoExec" "0 + dValid + attrNormal + apUserRO + shInner + accessFlag + userNoExec"
-mutant "scheduler may pick a stopped task" \
-  "if isAlive ts j then some j else findAlive ts (j + 1) fuel" "some j"
+mutant "scheduler may pick a waiting task" \
+  "if isReady ts j then some j else findReady ts (j + 1) fuel" "some j"
 
 cp "$backup" LeanOS/Kernel.lean
 lake build >/dev/null 2>&1 || { echo "FAIL: the unmutated kernel no longer builds"; exit 1; }
