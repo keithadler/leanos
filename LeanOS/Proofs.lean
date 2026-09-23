@@ -181,6 +181,12 @@ def StatusOK (j : Nat) : Status → Prop
   | .waitingIrq n => ∃ c0 ∈ initCaps j, c0.obj = .irq n
   | _ => True
 
+/-- A task that may run: it has been checked against the manifest and has not stopped. -/
+def Alive : Status → Prop
+  | .unverified => False
+  | .dead => False
+  | _ => True
+
 /-- Task `j` is fine. `fb` says whether the framebuffer address is sane; framebuffer frames
 are only ever mapped if it is. -/
 structure TaskOK (fb : Bool) (j : Nat) (t : Task) : Prop where
@@ -189,6 +195,8 @@ structure TaskOK (fb : Bool) (j : Nat) (t : Task) : Prop where
   caps : ∀ c ∈ t.caps, CapOK j c
   status : StatusOK j t.status
   fbMaps : ∀ m ∈ t.maps, m.frame < poolFrames ∨ (fb = true ∧ m.frame < devBase) ∨ devBase ≤ m.frame
+  /-- A task that may run was loaded with exactly what the manifest names. -/
+  measured : Alive t.status → t.hash = expectedHash j
 
 structure Inv (s : KState) : Prop where
   len : len s.tasks = numTasks
@@ -218,17 +226,18 @@ theorem inv_schedule {s : KState} (hs : Inv s) : Inv (schedule s) := by
 
 /-- The registers a task will resume with play no part in the invariant. -/
 theorem TaskOK.result {fb : Bool} {j : Nat} {t : Task} (h : TaskOK fb j t) (r : List Nat) :
-    TaskOK fb j { t with result := r } := ⟨h.backed, h.vpnOk, h.caps, h.status, h.fbMaps⟩
+    TaskOK fb j { t with result := r } := ⟨h.backed, h.vpnOk, h.caps, h.status, h.fbMaps, h.measured⟩
 
 theorem TaskOK.setStatus {fb : Bool} {j : Nat} {t : Task} (h : TaskOK fb j t) (st : Status)
-    (hst : StatusOK j st) (r : List Nat) : TaskOK fb j { t with status := st, result := r } :=
-  ⟨h.backed, h.vpnOk, h.caps, hst, h.fbMaps⟩
+    (hst : StatusOK j st) (hm : Alive st → t.hash = expectedHash j) (r : List Nat) :
+    TaskOK fb j { t with status := st, result := r } :=
+  ⟨h.backed, h.vpnOk, h.caps, hst, h.fbMaps, hm⟩
 
 theorem inv_killCurrent {s : KState} (hs : Inv s) : Inv (killCurrent s) := by
   unfold killCurrent
   split
   · rename_i t ht
-    exact inv_schedule (inv_setTask hs ((hs.tasks _ t ht).setStatus .dead trivial _))
+    exact inv_schedule (inv_setTask hs ((hs.tasks _ t ht).setStatus .dead trivial (fun h => h.elim) _))
   · exact inv_schedule hs
 
 theorem inv_clearResult {s : KState} (hs : Inv s) (j : Nat) : Inv (clearResult s j) := by
@@ -378,7 +387,7 @@ theorem findSender_spec {e : Nat} : ∀ {ts : List Task} {k j : Nat} {m : Msg},
 /-- What a delivery can change: the receiver's capabilities grow by at most the granted one,
 its mappings stay the same, and it becomes ready. -/
 theorem deliver_spec {u u' : Task} {m : Msg} {sender : Nat} (hd : deliver u m sender = some u') :
-    u'.maps = u.maps ∧ u'.status = .ready ∧
+    u'.maps = u.maps ∧ u'.status = .ready ∧ u'.hash = u.hash ∧
       (u'.caps = u.caps ∨ ∃ c, m.grant = some c ∧ u'.caps = snoc u.caps c) := by
   unfold deliver at hd
   dsimp only at hd
@@ -387,14 +396,14 @@ theorem deliver_spec {u u' : Task} {m : Msg} {sender : Nat} (hd : deliver u m se
     | (simp at hd; done)
     | (simp only [Option.some.injEq] at hd; subst hd
        first
-         | exact ⟨rfl, rfl, Or.inl rfl⟩
-         | exact ⟨rfl, rfl, Or.inr ⟨_, by assumption, rfl⟩⟩)
+         | exact ⟨rfl, rfl, rfl, Or.inl rfl⟩
+         | exact ⟨rfl, rfl, rfl, Or.inr ⟨_, by assumption, rfl⟩⟩)
 
 /-- Receiving a message leaves a task fine, as long as a granted capability is fine for it. -/
 theorem deliver_ok {fb : Bool} {j : Nat} {u u' : Task} {m : Msg} {sender : Nat}
-    (hu : TaskOK fb j u) (hg : ∀ g, m.grant = some g → CapOK j g)
+    (hu : TaskOK fb j u) (hm : u.hash = expectedHash j) (hg : ∀ g, m.grant = some g → CapOK j g)
     (hd : deliver u m sender = some u') : TaskOK fb j u' := by
-  obtain ⟨hmaps, hst, hcaps⟩ := deliver_spec hd
+  obtain ⟨hmaps, hst, hhash, hcaps⟩ := deliver_spec hd
   have hcap : ∀ c ∈ u'.caps, c ∈ u.caps ∨ CapOK j c := by
     intro c hc
     rcases hcaps with h | ⟨g, hg', h⟩
@@ -403,7 +412,7 @@ theorem deliver_ok {fb : Bool} {j : Nat} {u u' : Task} {m : Msg} {sender : Nat}
       rcases mem_snoc.1 hc with h1 | h1
       · exact Or.inl h1
       · subst h1; exact Or.inr (hg _ hg')
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_, fun _ => hhash.trans hm⟩
   · intro mp hmp
     rw [hmaps] at hmp
     obtain ⟨c, hc, h1, h2⟩ := hu.backed mp hmp
@@ -437,7 +446,7 @@ theorem inv_sysMap {s : KState} {t : Task} {ci vpn : Nat} (hs : Inv s) (ht : Tas
       split
       · rename_i hcond
         simp only [validRun, Bool.and_eq_true, Bool.or_eq_true, decide_eq_true_eq] at hcond
-        refine inv_setTask hs ⟨?_, ?_, ht.caps, ht.status, ?_⟩
+        refine inv_setTask hs ⟨?_, ?_, ht.caps, ht.status, ?_, ht.measured⟩
         · intro m hm
           rcases mem_app.1 hm with hm | hm
           · obtain ⟨k, hk, -, hf', hr⟩ := mem_runMaps hm
@@ -463,7 +472,7 @@ theorem inv_sysUnmap {s : KState} {t : Task} {vpn count : Nat} (hs : Inv s) (ht 
     Inv (sysUnmap s t vpn count).state :=
   inv_setTask hs ⟨fun m hm => ht.backed m (mem_dropRange hm),
     fun m hm => ht.vpnOk m (mem_dropRange hm), ht.caps, ht.status,
-    fun m hm => ht.fbMaps m (mem_dropRange hm)⟩
+    fun m hm => ht.fbMaps m (mem_dropRange hm), ht.measured⟩
 
 theorem inv_sysDerive {s : KState} {t : Task} {ci bits off cnt : Nat} (hs : Inv s)
     (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysDerive s t ci bits off cnt).state := by
@@ -476,7 +485,7 @@ theorem inv_sysDerive {s : KState} {t : Task} {ci bits off cnt : Nat} (hs : Inv 
     · rename_i o ho
       split
       · apply inv_ret hs
-        refine ⟨?_, ht.vpnOk, ?_, ht.status, ht.fbMaps⟩
+        refine ⟨?_, ht.vpnOk, ?_, ht.status, ht.fbMaps, ht.measured⟩
         · intro m hm
           obtain ⟨c0, hc0, h1, h2⟩ := ht.backed m hm
           exact ⟨c0, mem_snoc.2 (Or.inl hc0), h1, h2⟩
@@ -503,7 +512,8 @@ theorem inv_sysWrite {s : KState} {t : Task} {va n : Nat} (hs : Inv s) (ht : Tas
     · exact inv_ret hs ht _
 
 theorem inv_sysSend {s : KState} {t : Task} {ci w0 w1 w2 gi : Nat} {call : Bool} (hs : Inv s)
-    (hcur : nth? s.tasks s.cur = some t) : Inv (sysSend s t ci w0 w1 w2 gi call).state := by
+    (hcur : nth? s.tasks s.cur = some t) (hmt : t.hash = expectedHash s.cur) :
+    Inv (sysSend s t ci w0 w1 w2 gi call).state := by
   have ht := hs.tasks _ _ hcur
   have hA := hs.lt hcur
   unfold sysSend
@@ -545,22 +555,23 @@ theorem inv_sysSend {s : KState} {t : Task} {ci w0 w1 w2 gi : Nat} {call : Bool}
                 rw [hst] at hrecv
                 obtain ⟨c1, hc1, ho1, hr1⟩ := hrecv
                 have hdel : Inv (setTask s j u') := by
-                  apply inv_setTask hs (deliver_ok huok ?_ hd)
+                  apply inv_setTask hs (deliver_ok huok (huok.measured (by rw [hst]; trivial)) ?_ hd)
                   intro g' hg'
                   obtain ⟨hgok, hgf, c2, hc2, ho2, hw2, hx2⟩ := hgr g' hg'
                   exact capOK_grant hgok hgf ⟨hA, hB, e, ⟨c2, hc2, ho2, hw2, hx2⟩, ⟨c1, hc1, ho1, hr1⟩⟩
                 split
-                · exact inv_schedule (inv_setTask hdel (ht.setStatus (.awaiting j) trivial _))
+                · exact inv_schedule (inv_setTask hdel (ht.setStatus (.awaiting j) trivial (fun _ => hmt) _))
                 · exact inv_ret hdel ht _
               · exact inv_ret hs ht _
             · exact inv_ret hs ht _
           · apply inv_schedule
             exact inv_setTask hs (ht.setStatus (.sending e ⟨c.badge, w0, w1, w2, g, call⟩)
-              ⟨⟨c0, hc0, ho0, hle0.2.1 hw, hb0⟩, fun g' hg' => hgr g' hg'⟩ _)
+              ⟨⟨c0, hc0, ho0, hle0.2.1 hw, hb0⟩, fun g' hg' => hgr g' hg'⟩ (fun _ => hmt) _)
       · exact inv_ret hs ht _
 
 theorem inv_sysRecv {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
-    (hcur : nth? s.tasks s.cur = some t) : Inv (sysRecv s t ci).state := by
+    (hcur : nth? s.tasks s.cur = some t) (hmt : t.hash = expectedHash s.cur) :
+    Inv (sysRecv s t ci).state := by
   have ht := hs.tasks _ _ hcur
   have hB := hs.lt hcur
   unfold sysRecv
@@ -593,10 +604,12 @@ theorem inv_sysRecv {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
               have h1 : Inv (setTask s j (if m.call then { u with status := .awaiting s.cur, result := .nil }
                   else { u with status := .ready, result := 0 :: .nil })) := by
                 split
-                · exact inv_setTask hs (huok.setStatus (.awaiting s.cur) trivial _)
-                · exact inv_setTask hs (huok.setStatus .ready trivial _)
+                · exact inv_setTask hs (huok.setStatus (.awaiting s.cur) trivial
+                    (fun _ => huok.measured (by rw [hst]; trivial)) _)
+                · exact inv_setTask hs (huok.setStatus .ready trivial
+                    (fun _ => huok.measured (by rw [hst]; trivial)) _)
               apply inv_setTask h1
-              apply deliver_ok ht _ hd
+              apply deliver_ok ht hmt _ hd
               intro g hg
               obtain ⟨hgok, hgf, c2, hc2, ho2, hw2, hx2⟩ := hgrant g hg
               exact capOK_grant hgok hgf ⟨hA, hB, e, ⟨c2, hc2, ho2, hw2, hx2⟩,
@@ -604,11 +617,21 @@ theorem inv_sysRecv {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
             · exact inv_ret hs ht _
           · exact inv_ret hs ht _
         · apply inv_schedule
-          exact inv_setTask hs (ht.setStatus (.receiving e) ⟨c0, hc0, ho0, hle0.1 hr⟩ _)
+          exact inv_setTask hs (ht.setStatus (.receiving e) ⟨c0, hc0, ho0, hle0.1 hr⟩ (fun _ => hmt) _)
       · exact inv_ret hs ht _
 
 theorem TaskOK.setCallers {fb : Bool} {j : Nat} {t : Task} (h : TaskOK fb j t) (cs : List Nat) :
-    TaskOK fb j { t with callers := cs } := ⟨h.backed, h.vpnOk, h.caps, h.status, h.fbMaps⟩
+    TaskOK fb j { t with callers := cs } := ⟨h.backed, h.vpnOk, h.caps, h.status, h.fbMaps, h.measured⟩
+
+theorem awaitsFrom_spec {ts : List Task} {j server : Nat} (h : awaitsFrom ts j server = true) :
+    ∃ u, nth? ts j = some u ∧ u.status = .awaiting server := by
+  unfold awaitsFrom at h
+  split at h
+  · rename_i u hu
+    split at h
+    · rename_i k hk; simp at h; subst h; exact ⟨u, hu, hk⟩
+    · simp at h
+  · simp at h
 
 theorem inv_sysReply {s : KState} {t : Task} {slot w0 w1 w2 : Nat} (hs : Inv s)
     (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysReply s t slot w0 w1 w2).state := by
@@ -618,15 +641,20 @@ theorem inv_sysReply {s : KState} {t : Task} {slot w0 w1 w2 : Nat} (hs : Inv s)
   · rename_i j hj
     dsimp only
     split
-    · split
+    · rename_i haw
+      split
       · rename_i u hu
-        exact inv_ret (inv_setTask hs ((hs.tasks j u hu).setStatus .ready trivial _))
-          (ht.setCallers _) _
+        have halive : Alive u.status := by
+          obtain ⟨w, hw, hst⟩ := awaitsFrom_spec haw
+          rw [hu] at hw; cases hw; rw [hst]; trivial
+        exact inv_ret (inv_setTask hs ((hs.tasks j u hu).setStatus .ready trivial
+          (fun _ => (hs.tasks j u hu).measured halive) _)) (ht.setCallers _) _
       · exact inv_ret hs (ht.setCallers _) _
     · exact inv_ret hs (ht.setCallers _) _
 
 theorem inv_sysIrqWait {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
-    (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysIrqWait s t ci).state := by
+    (ht : TaskOK (fbSane s.fbBase) s.cur t) (hmt : t.hash = expectedHash s.cur) :
+    Inv (sysIrqWait s t ci).state := by
   unfold sysIrqWait
   split
   · exact inv_ret hs ht _
@@ -637,7 +665,7 @@ theorem inv_sysIrqWait {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
       · exact inv_ret (s := { s with pending := dropLine n s.pending }) ⟨hs.len, hs.tasks⟩ ht _
       · apply inv_schedule
         obtain ⟨c0, hc0, ho⟩ := (ht.caps c (nth?_mem hc)).2.2 n hn
-        exact inv_setTask hs (ht.setStatus (.waitingIrq n) ⟨c0, hc0, ho⟩ _)
+        exact inv_setTask hs (ht.setStatus (.waitingIrq n) ⟨c0, hc0, ho⟩ (fun _ => hmt) _)
     · exact inv_ret hs ht _
 
 theorem inv_sysIrqAck {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
@@ -675,11 +703,20 @@ theorem inv_irqFired {s : KState} (hs : Inv s) (n : Nat) : Inv (irqFired s n) :=
   · rename_i j hj
     split
     · rename_i u hu
-      exact inv_setTask hs ((hs.tasks j u hu).setStatus .ready trivial _)
+      obtain ⟨-, u0, hu0, hst⟩ := findIrqWaiter_spec hj
+      simp only [Nat.sub_zero] at hu0
+      rw [hu] at hu0; cases hu0
+      exact inv_setTask hs ((hs.tasks j u hu).setStatus .ready trivial
+        (fun _ => (hs.tasks j u hu).measured (by rw [hst]; trivial)) _)
     · exact hs
   · split
     · exact hs
     · exact ⟨hs.len, hs.tasks⟩
+
+theorem inv_sysBootInfo {s : KState} {t : Task} {i : Nat} (hs : Inv s)
+    (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysBootInfo s t i).state := by
+  unfold sysBootInfo
+  split <;> exact inv_ret hs ht _
 
 theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
     Inv (syscall s num a0 a1 a2 a3 a4).state := by
@@ -689,21 +726,27 @@ theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
   · rename_i t ht
     have hto := hs.tasks _ _ ht
     split
-    · exact inv_sysWrite hs hto
-    · exact inv_schedule (inv_setTask hs (hto.result _))
-    · exact inv_sysMap hs hto
-    · exact inv_sysUnmap hs hto
-    · exact inv_sysDerive hs hto
-    · exact inv_killCurrent hs
-    · exact inv_sysCapInfo hs hto
-    · exact inv_ret hs hto _
-    · exact inv_sysSend hs ht
-    · exact inv_sysRecv hs ht
-    · exact inv_sysSend hs ht
-    · exact inv_sysReply hs hto
-    · exact inv_sysIrqWait hs hto
-    · exact inv_sysIrqAck hs hto
-    · exact inv_ret hs hto _
+    · rename_i hrd
+      have hmt : t.hash = expectedHash s.cur := hto.measured (by rw [hrd]; trivial)
+      unfold runCall
+      split
+      · exact inv_sysWrite hs hto
+      · exact inv_schedule (inv_setTask hs (hto.result _))
+      · exact inv_sysMap hs hto
+      · exact inv_sysUnmap hs hto
+      · exact inv_sysDerive hs hto
+      · exact inv_killCurrent hs
+      · exact inv_sysCapInfo hs hto
+      · exact inv_ret hs hto _
+      · exact inv_sysSend hs ht hmt
+      · exact inv_sysRecv hs ht hmt
+      · exact inv_sysSend hs ht hmt
+      · exact inv_sysReply hs hto
+      · exact inv_sysIrqWait hs hto hmt
+      · exact inv_sysIrqAck hs hto
+      · exact inv_sysBootInfo hs hto
+      · exact inv_ret hs hto _
+    · exact hs
 
 /-! ## The boot manifest -/
 
@@ -745,7 +788,7 @@ theorem initCap_ok {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps 
     exact ⟨c, hc, hn⟩
 
 theorem mkTask_ok {fb : Bool} {j : Nat} (hj : j < numTasks) : TaskOK fb j (mkTask j) := by
-  refine ⟨?_, ?_, fun c hc => initCap_ok hj hc, trivial, ?_⟩
+  refine ⟨?_, ?_, fun c hc => initCap_ok hj hc, trivial, ?_, fun h => by simp [mkTask, Alive] at h⟩
   · intro m hm
     simp only [mkTask, initMaps] at hm
     have hcode : runCap (256 * j) 16 Rights.rx ∈ initCaps j := by
@@ -788,12 +831,38 @@ theorem inv_init (fb : Nat) : Inv (init fb) := by
     · simp at h; subst h; rename_i hj; exact mkTask_ok hj
     · simp at h
 
+/-! ## Verified boot -/
+
+theorem eqList_spec : ∀ {a b : List Nat}, eqList a b = true → a = b
+  | [], [], _ => rfl
+  | x :: xs, y :: ys, h => by
+    simp only [eqList, Bool.and_eq_true, beq_iff_eq] at h
+    rw [h.1, eqList_spec h.2]
+  | [], _ :: _, h => by simp [eqList] at h
+  | _ :: _, [], h => by simp [eqList] at h
+
+theorem inv_verify {s : KState} (hs : Inv s) (i : Nat) (h : List Nat) : Inv (verify s i h) := by
+  unfold verify
+  split
+  · rename_i t ht
+    split
+    · split
+      · rename_i heq
+        have hok := hs.tasks i t ht
+        exact inv_setTask hs ⟨hok.backed, hok.vpnOk, hok.caps, trivial, hok.fbMaps,
+          fun _ => eqList_spec heq⟩
+      · have hok := hs.tasks i t ht
+        exact inv_setTask hs ⟨hok.backed, hok.vpnOk, hok.caps, trivial, hok.fbMaps, fun h => h.elim⟩
+    · exact hs
+  · exact hs
+
 /-! ## Reachable states -/
 
 /-- The states the running kernel can be in: `init` (with whatever framebuffer address the
 firmware returned), then any sequence of system calls,
 timer ticks (`schedule`), faults (`killCurrent`), result loads (`clearResult`) and
-interrupts (`irqFired`). -/
+interrupts (`irqFired`), and the boot-time checks of each task's code (`verify`), with any
+measurement at all. -/
 inductive Reachable : KState → Prop
   | init (fb : Nat) : Reachable (init fb)
   | syscall {s} (num a0 a1 a2 a3 a4 : Nat) : Reachable s →
@@ -802,6 +871,7 @@ inductive Reachable : KState → Prop
   | fault {s} : Reachable s → Reachable (killCurrent s)
   | clear {s} (j : Nat) : Reachable s → Reachable (clearResult s j)
   | irq {s} (n : Nat) : Reachable s → Reachable (irqFired s n)
+  | verify {s} (i : Nat) (h : List Nat) : Reachable s → Reachable (verify s i h)
 
 theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   induction h with
@@ -811,6 +881,7 @@ theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   | fault _ ih => exact inv_killCurrent ih
   | clear j _ ih => exact inv_clearResult ih j
   | irq n _ ih => exact inv_irqFired ih n
+  | verify i h _ ih => exact inv_verify ih i h
 
 /-! ## The guarantees -/
 
@@ -876,16 +947,6 @@ theorem derive_never_amplifies (c : Cap) (bits off cnt : Nat) (o : Obj)
   ⟨fun _ hf => subObj_covers ho hf, fun _ he => subObj_endpoint ho he, rfl, meet_le _ _⟩
 
 /-! ## Replies -/
-
-theorem awaitsFrom_spec {ts : List Task} {j server : Nat} (h : awaitsFrom ts j server = true) :
-    ∃ u, nth? ts j = some u ∧ u.status = .awaiting server := by
-  unfold awaitsFrom at h
-  split at h
-  · rename_i u hu
-    split at h
-    · rename_i k hk; simp at h; subst h; exact ⟨u, hu, hk⟩
-    · simp at h
-  · simp at h
 
 /-- Every task has the same capabilities and mappings in `s'` as in `s`. -/
 def SameAuthority (s s' : KState) : Prop :=
@@ -1029,6 +1090,38 @@ theorem server_frames {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tas
   · exact Or.inl h
   · exact Or.inr h
 
+/-! ## Only verified code runs -/
+
+theorem isReady_task {ts : List Task} {j : Nat} (h : isReady ts j = true) :
+    ∃ t, nth? ts j = some t ∧ t.status = .ready := by
+  unfold isReady at h
+  split at h
+  · rename_i t ht
+    split at h
+    · rename_i hst; exact ⟨t, ht, hst⟩
+    · simp at h
+  · simp at h
+
+/-- **Only verified code runs.** In every reachable state, a task that can run was loaded
+with exactly the code and assets the boot manifest names: the machine layer measured them,
+and the measurement matched. Whatever the machine layer measures, a task whose measurement
+differs never becomes ready, and nothing ever makes it ready later. -/
+theorem only_verified_runs {s : KState} (h : Reachable s) {j : Nat} (hr : isReady s.tasks j = true) :
+    ∃ t, nth? s.tasks j = some t ∧ t.hash = expectedHash j := by
+  obtain ⟨t, ht, hst⟩ := isReady_task hr
+  exact ⟨t, ht, ((reachable_inv h).tasks j t ht).measured (by rw [hst]; trivial)⟩
+
+/-- A measurement that differs from the manifest refuses the task for good. -/
+theorem verify_refuses_mismatch (s : KState) (i : Nat) (hm : List Nat) (hne : hm ≠ expectedHash i)
+    {t : Task} (ht : nth? s.tasks i = some t) (hu : t.status = .unverified) :
+    ∃ t', nth? (verify s i hm).tasks i = some t' ∧ t'.status = .dead := by
+  have hneq : eqList hm (expectedHash i) = false := by
+    cases h : eqList hm (expectedHash i)
+    · rfl
+    · exact absurd (eqList_spec h) hne
+  refine ⟨{ t with status := .dead, hash := hm }, ?_, rfl⟩
+  simp [verify, ht, hu, hneq, setTask, nth?_setNth]
+
 /-! ## Interrupts and devices -/
 
 /-- Interrupt capabilities never move: a task holds one only if it held it at boot. -/
@@ -1119,6 +1212,10 @@ theorem outLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
   · rename_i t ht
     refine ⟨t, ht, ?_⟩
     split at *
+    rotate_left
+    · simp at h
+    unfold runCall at *
+    split at *
     · rfl
     all_goals exfalso
     all_goals first
@@ -1146,6 +1243,9 @@ theorem outLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
          all_goals simp at h
          done)
       | (unfold sysIrqAck at h; repeat' split at h
+         all_goals simp at h
+         done)
+      | (unfold sysBootInfo at h; repeat' split at h
          all_goals simp at h
          done)
 

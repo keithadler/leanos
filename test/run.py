@@ -71,7 +71,7 @@ def mouse(kind, x, y):
     return f"\x1bm{kind}{x:03d}{y:03d}".encode()
 
 
-def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None):
+def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None, image=None):
     """steps: bytes to type once the system is idle, each followed by a short pause.
     until: after the steps, wait for a serial line starting with this before the capture.
     snaps: {line prefix: file name}: also capture the screen, without stopping, when a line
@@ -79,7 +79,7 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
     sock = os.path.join(tempfile.mkdtemp(prefix="leanos-"), "qmp.sock")
     proc = subprocess.Popen(
         ["qemu-system-aarch64", "-M", "raspi4b", "-display", "none", "-serial", "stdio",
-         "-semihosting", "-qmp", f"unix:{sock},server,nowait", "-kernel", IMAGE],
+         "-semihosting", "-qmp", f"unix:{sock},server,nowait", "-kernel", image or IMAGE],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     qmp = Qmp(sock)
     deadline = time.monotonic() + timeout
@@ -150,6 +150,7 @@ DEMO_STEPS = [b"H", b"i", b"!", mouse("v", 120, 88), mouse("d", 120, 88), mouse(
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     demo = "--demo" in sys.argv
+    image = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--image=")), None)
     sys.exit(boot(float(args[0]) if args else 30,
                   steps=DEMO_STEPS if demo else (), until="display: moved" if demo else None,
-                  snaps={"display: boot logo drawn": "logo"} if demo else None))
+                  snaps={"display: boot logo drawn": "logo"}, image=image))

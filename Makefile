@@ -33,7 +33,7 @@ KERNEL_LEAN_C := .lake/build/ir/LeanOS/Kernel.c
 USER_PROGS := alice display mallory carol input
 USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
-ARCH_O := build/boot.o build/kmain.o build/runtime.o build/libc.o build/Kernel.o
+ARCH_O := build/boot.o build/kmain.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
 
 .PHONY: all run test mutants proofs clean
 all: build/assets/display.bin build/assets/alice.bin build/kernel8.img proofs
@@ -41,11 +41,25 @@ all: build/assets/display.bin build/assets/alice.bin build/kernel8.img proofs
 # The asset blobs are real outputs, not intermediates: a missing one must be rebuilt.
 .PRECIOUS: build/assets/%.bin
 
-proofs:
+proofs: LeanOS/Manifest.lean
 	lake build
 
-$(KERNEL_LEAN_C): LeanOS/Kernel.lean
+# The boot manifest: what each task must be loaded with (code, then assets), hashed.
+MANIFEST_INPUTS := build/user/alice.bin+build/assets/alice.bin build/user/display.bin+build/assets/display.bin \
+  build/user/mallory.bin build/user/carol.bin build/user/input.bin
+LeanOS/Manifest.lean: tools/mkmanifest.py $(USER_BINS) build/assets/display.bin build/assets/alice.bin
+	python3 tools/mkmanifest.py $@ $(MANIFEST_INPUTS)
+
+$(KERNEL_LEAN_C): LeanOS/Kernel.lean LeanOS/Manifest.lean
 	lake build LeanOS.Kernel:c
+
+MANIFEST_LEAN_C := .lake/build/ir/LeanOS/Manifest.c
+$(MANIFEST_LEAN_C): LeanOS/Manifest.lean
+	lake build LeanOS.Manifest:c
+
+build/Manifest.o: $(MANIFEST_LEAN_C)
+	@mkdir -p build
+	$(CC) $(LEANC_FLAGS) -c $< -o $@
 
 build/c/Init_%.c: $(LEAN_HOME)/src/lean/Init/%.lean
 	@mkdir -p build/c
@@ -115,6 +129,7 @@ run: build/kernel8.img
 
 test: all
 	./test/boot.sh
+	./test/tamper.sh
 
 # Break the kernel in known ways and check the proofs catch every one (slow).
 mutants:

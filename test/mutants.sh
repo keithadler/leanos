@@ -87,6 +87,13 @@ mutant "grant an interrupt capability" \
       | _ => none" "      | _ => some (some g)"
 mutant "accept a framebuffer that overlaps the peripherals" \
   "b + fbPages * pageSize ≤ 0xFE000000" "b + fbPages * pageSize ≤ 2 ^ 36"
+mutant "verify ignores the manifest" \
+  "      if eqList h (expectedHash i) then setTask s i { t with status := .ready, hash := h }" "      if true then setTask s i { t with status := .ready, hash := h }"
+mutant "tasks start ready, unchecked" \
+  "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .unverified, .nil, .nil, .nil⟩" "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil, .nil, .nil⟩"
+mutant "a stopped task may make system calls" \
+  "    | .ready => runCall s t num a0 a1 a2 a3 a4
+    | _ => ⟨s, 0, 0, false, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
 mutant "user pages always executable" \
   "privNoExec + (if m.rights.x then 0 else userNoExec)" "privNoExec + 0"
 mutant "read-only pages writable" \

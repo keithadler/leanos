@@ -14,6 +14,7 @@ system underneath it.
 -/
 prelude
 import Init.Core
+import LeanOS.Manifest
 
 namespace LeanOS
 
@@ -76,6 +77,8 @@ structure Msg where
   call : Bool
 
 inductive Status where
+  /-- loaded, not yet checked against the manifest: never runs -/
+  | unverified
   | ready
   /-- blocked until a task receives this message from endpoint `e` -/
   | sending (e : Nat) (m : Msg)
@@ -97,6 +100,9 @@ structure Task where
   /-- Tasks that called this one and wait for its reply, oldest first. A reply names one by
   its position here. -/
   callers : List Nat
+  /-- The SHA-256 the machine layer measured over what the task was loaded with, as eight
+  32-bit words; empty until measured. -/
+  hash : List Nat
 
 structure KState where
   tasks : List Task
@@ -233,13 +239,36 @@ def initMaps (i : Nat) : List Mapping :=
   app (runMaps 0 (256 * i) Rights.rx 16)
     (app (runMaps 16 (256 * i + 16) Rights.rw 8) (runMaps (userPages - 4) (256 * i + 24) Rights.rw 4))
 
-def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil, .nil⟩
+/-- Every task starts unverified: it cannot run until `verify` has checked it. -/
+def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .unverified, .nil, .nil, .nil⟩
 
 def mkTasksFrom (i : Nat) : Nat → List Task
   | 0 => .nil
   | k + 1 => mkTask i :: mkTasksFrom (i + 1) k
 
 def init (fbBase : Nat) : KState := ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil⟩
+
+def setTask (s : KState) (j : Nat) (t : Task) : KState := { s with tasks := setNth s.tasks j t }
+
+/-! ## Verified boot -/
+
+def eqList : List Nat → List Nat → Bool
+  | .nil, .nil => true
+  | a :: as, b :: bs => a == b && eqList as bs
+  | _, _ => false
+
+/-- The machine layer measured task `i`'s code and assets as hash `h`. If that is the
+manifest's hash, the task may run; otherwise it is refused for good. Only an unverified
+task is checked, so no task is ever checked twice. -/
+def verify (s : KState) (i : Nat) (h : List Nat) : KState :=
+  match nth? s.tasks i with
+  | some t =>
+    match t.status with
+    | .unverified =>
+      if eqList h (expectedHash i) then setTask s i { t with status := .ready, hash := h }
+      else setTask s i { t with status := .dead, hash := h }
+    | _ => s
+  | none => s
 
 /-! ## Scheduling -/
 
@@ -264,7 +293,6 @@ def schedule (s : KState) : KState :=
   | some j => { s with cur := j }
   | none => s
 
-def setTask (s : KState) (j : Nat) (t : Task) : KState := { s with tasks := setNth s.tasks j t }
 
 /-- Stop the current task (it exited or faulted) and move on. -/
 def killCurrent (s : KState) : KState :=
@@ -587,31 +615,56 @@ def irqFired (s : KState) (n : Nat) : KState :=
 /-- The interrupt lines the manifest hands out; the machine layer enables these at boot. -/
 def irqLines : List Nat := uartIrq :: .nil
 
+/-- Task number `i`'s boot check: x1 = 0 not measured yet, 1 matches the manifest, 2
+refused; x2 and x3 = the first two words of its measured hash. -/
+def sysBootInfo (s : KState) (t : Task) (i : Nat) : Reply :=
+  match nth? s.tasks i with
+  | none => ret s t (eBadArg :: .nil)
+  | some u =>
+    let w0 := match u.hash with
+      | a :: _ => a
+      | _ => 0
+    let w1 := match u.hash with
+      | _ :: b :: _ => b
+      | _ => 0
+    let st := match u.hash with
+      | .nil => 0
+      | _ => if eqList u.hash (expectedHash i) then 1 else 2
+    ret s t (0 :: st :: w0 :: w1 :: .nil)
+
+/-- The system calls of a running task. -/
+def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
+  match num with
+  | 0 => sysWrite s t a0 a1
+  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0⟩
+  | 2 => sysMap s t a0 a1
+  | 3 => sysUnmap s t a0 a1
+  | 4 => sysDerive s t a0 a1 a2 a3
+  | 5 => ⟨killCurrent s, 0, 0, false, 0⟩
+  | 6 => sysCapInfo s t a0
+  | 7 => ret s t (0 :: s.cur :: .nil)
+  | 8 => sysSend s t a0 a1 a2 a3 a4 false
+  | 9 => sysRecv s t a0
+  | 10 => sysSend s t a0 a1 a2 a3 a4 true
+  | 11 => sysReply s t a0 a1 a2 a3
+  | 12 => sysIrqWait s t a0
+  | 13 => sysIrqAck s t a0
+  | 14 => sysBootInfo s t a0
+  | _ => ret s t (eNoCall :: .nil)
+
 /-- System call `num` from the current task with arguments `a0` to `a4`:
   0 write(va, len) · 1 yield · 2 map(cap, vpn) · 3 unmap(vpn, count)
   4 derive(cap, rights, offset, count) · 5 exit · 6 capinfo(cap) · 7 whoami
   8 send(cap, w0, w1, w2, grant) · 9 recv(cap) · 10 call(cap, w0, w1, w2, grant)
-  11 reply(slot, w0, w1, w2) · 12 irqwait(cap) · 13 irqack(cap) -/
+  11 reply(slot, w0, w1, w2) · 12 irqwait(cap) · 13 irqack(cap) · 14 bootinfo(task)
+Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with
   | none => ⟨s, 0, 0, false, 0⟩
   | some t =>
-    match num with
-    | 0 => sysWrite s t a0 a1
-    | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0⟩
-    | 2 => sysMap s t a0 a1
-    | 3 => sysUnmap s t a0 a1
-    | 4 => sysDerive s t a0 a1 a2 a3
-    | 5 => ⟨killCurrent s, 0, 0, false, 0⟩
-    | 6 => sysCapInfo s t a0
-    | 7 => ret s t (0 :: s.cur :: .nil)
-    | 8 => sysSend s t a0 a1 a2 a3 a4 false
-    | 9 => sysRecv s t a0
-    | 10 => sysSend s t a0 a1 a2 a3 a4 true
-    | 11 => sysReply s t a0 a1 a2 a3
-    | 12 => sysIrqWait s t a0
-    | 13 => sysIrqAck s t a0
-    | _ => ret s t (eNoCall :: .nil)
+    match t.status with
+    | .ready => runCall s t num a0 a1 a2 a3 a4
+    | _ => ⟨s, 0, 0, false, 0⟩  -- only a running task makes system calls
 
 /-- The machine layer has loaded task `j`'s result registers; forget them. -/
 def clearResult (s : KState) (j : Nat) : KState :=
@@ -631,6 +684,8 @@ before passing it in. -/
 @[export leanos_tick] def exTick (s : KState) : KState := schedule s
 @[export leanos_fault] def exFault (s : KState) : KState := killCurrent s
 @[export leanos_clear_result] def exClearResult (s : KState) (j : Nat) : KState := clearResult s j
+@[export leanos_verify] def exVerify (s : KState) (i w0 w1 w2 w3 w4 w5 w6 w7 : Nat) : KState :=
+  verify s i (w0 :: w1 :: w2 :: w3 :: w4 :: w5 :: w6 :: w7 :: .nil)
 @[export leanos_irq] def exIrq (s : KState) (n : Nat) : KState := irqFired s n
 @[export leanos_irq_line_count] def exIrqLineCount (u : Nat) : Nat := len irqLines + u * 0
 @[export leanos_irq_line] def exIrqLine (k : Nat) : Nat :=

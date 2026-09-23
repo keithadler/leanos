@@ -30,3 +30,5 @@ open LeanOS
 #print axioms uart_confined
 #print axioms el0_uart_only_input
 #print axioms uart_irq_only_input
+#print axioms only_verified_runs
+#print axioms verify_refuses_mismatch

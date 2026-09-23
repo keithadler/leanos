@@ -50,13 +50,17 @@ screen, only the input driver the UART, an interrupt wakes only its holder, repl
 nothing. The desktop has a boot logo, rounded shadowed windows, a pointer, dragging, and
 typing into the focused window.
 
-## 5. Verified boot
+## 5. Verified boot — in the OS, done; on the chip, next
 
-Show on the boot screen, step by step, that nothing was tampered with. The Pi 4's bootloader
-can verify an RSA signature on the boot image against a key hash burned into the chip's
-OTP memory (Raspberry Pi secure boot); leanos then checks each program it starts against a
-hash in that signed image before running it, and the progress bar follows those checks.
-Proved: the kernel starts a program only if its hash matches the manifest.
+Done: every task starts unverified; the machine layer measures what it loaded (SHA-256 of
+code and assets) and the Lean kernel lets a task run only if that matches the boot
+manifest compiled into the kernel. Proved: `only_verified_runs`, `verify_refuses_mismatch`.
+The boot screen shows each program's verdict and hash; `make test` flips one bit of a
+program in the image and checks it is refused.
+
+Next, on real hardware: sign the boot image for the Pi 4 bootloader's secure-boot mode
+(RSA-2048, key hash in the chip's OTP memory, which cannot be undone), so the manifest
+itself is covered by the chip's root of trust.
 
 ## 6. Memory and processes from user space
 

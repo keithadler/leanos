@@ -36,6 +36,8 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `schedule_picks_ready` | If any task is ready, the scheduler picks a ready task. |
 | `reply_grants_nothing` | A reply changes no task's capabilities or mappings. |
 | `reply_wakes_only_caller` | A reply wakes only a task waiting for this replier. |
+| `only_verified_runs` | Every task that can run was loaded with exactly the code and assets the boot manifest names. |
+| `verify_refuses_mismatch` | A task whose measurement differs from the manifest is stopped for good. |
 | `irqs_fixed` | Interrupt capabilities never move: a task holds one only if it held it at boot. |
 | `irq_wakes_holder` | An interrupt wakes only a task given that interrupt's capability at boot. |
 | `uart_confined`, `uart_irq_only_input` | Only the input driver can ever hold the UART's registers or its interrupt. |
@@ -108,6 +110,10 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   fires, `handle_irq` masks it before telling Lean, and unmasks it only when a Reply says
   so (an acknowledge from the capability's holder).
 - The idle loop waits for interrupts with WFI when no task is ready.
+- Measurement: `measure_and_verify` hashes exactly the bytes each task will run from (its
+  code, then its assets, where they sit in its own frames) with SHA-256 (`arch/sha256.c`,
+  checked against the FIPS 180-4 test vector at every boot) and hands the digest to Lean.
+  Lean decides; `only_verified_runs` holds whatever digest it is given.
 - Assets: `load_programs` copies each task's asset blob (fonts and icons, built by
   `tools/mkassets.py`) into the start of that task's own spare run, next to its code. The
   blob is data the task reads; it grants nothing.
@@ -131,6 +137,13 @@ bounds still hold on the real MMU.
 QEMU's model of them, because leanos has only run under QEMU.
 
 ## Known gaps
+
+- **The manifest is only as trustworthy as the kernel image it is part of.** Verified boot
+  here proves that leanos runs only what its own image names. Proving the image itself is
+  genuine is the Raspberry Pi 4 bootloader's job in secure-boot mode (an RSA signature over
+  the boot image, checked against a key hash burned into the chip's one-time-programmable
+  memory). QEMU does not model that, so it is untested; and burning the key is permanent, so
+  it will only be done on purpose, on a board set aside for it.
 
 - The kernel maps the first GiB of RAM for itself, read-write and executable at EL1. User
   mode cannot touch it (proved), but a bug in the machine layer could.

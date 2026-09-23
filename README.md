@@ -28,6 +28,11 @@ leanos: Raspberry Pi 4, booting on EL1
 leanos: framebuffer 1024x600 at 0x3c100000
 leanos: MMU on
 leanos: Lean kernel initialized, 5 tasks
+leanos: alice verified, sha256 0x8cfef5a3...
+leanos: display verified, sha256 0xbdf8b6fe...
+leanos: mallory verified, sha256 0x982a4b6c...
+leanos: carol verified, sha256 0x1c54ae17...
+leanos: input verified, sha256 0x7b5792ff...
 alice: wrote secret 0x5ec12e7 to my data page
 mallory: I am task 2
 mallory: map capability 9 (not mine) at page 5 -> refused, no such capability
@@ -38,9 +43,10 @@ mallory: map the framebuffer (capability 5, which is the display's) -> refused, 
 mallory: map the endpoint as memory -> refused, not allowed
 mallory: asked for every right on the endpoint, got send
 carol: asked for write+execute on my data frame, got -w-
+input: listening on the UART
 carol: jumping into the instruction I wrote in my data page
 leanos: carol stopped: instruction fetch not allowed at 0x80010000
-input: listening on the UART
+display: boot checks shown: 5 verified, 0 refused
 display: boot logo drawn
 display: desktop drawn on the 1024x600 framebuffer
 display: alice opened a 300x200 window from a read-only capability to 59 pages
@@ -49,7 +55,7 @@ mallory: ask the display for a window without pixels -> ok
 mallory: writing to the screen's physical address 0x3c100000 directly
 leanos: mallory stopped: data access not allowed at 0x3c100000
 alice: opened a 300x200 window, read-only, 59 pages -> ok
-leanos: idle, 3 tasks waiting (47 system calls, 170 timer ticks, 0 device interrupts, kernel heap 109744 bytes live, 136368 peak)
+leanos: idle, 3 tasks waiting (53 system calls, 153 timer ticks, 0 device interrupts, kernel heap 112240 bytes live, 138864 peak)
 display: key 'H' to alice
 display: key 'i' to alice
 display: key '!' to alice
@@ -75,6 +81,10 @@ can reach, under any sequence of system calls with any arguments:
 - **`write` reads only memory the task may read.**
 - **The scheduler never runs a waiting or stopped task** while a ready one exists.
 - **Replies grant nothing** and wake only the task waiting for them.
+- **Only verified code runs**: every task starts unverified; the kernel lets it run only if
+  the SHA-256 of what it was loaded with matches the boot manifest, and nothing can make a
+  refused task run later. The boot screen shows each verdict. `make test` flips one bit of a
+  program in the image and checks it is refused.
 - **Devices and interrupts stay with their owners**: only the display server can reach the
   screen, only the input driver the UART and its interrupt, and an interrupt wakes only a
   holder of its capability.
@@ -102,7 +112,7 @@ make run      # boot it on QEMU's Pi 4, headless: serial here, screen in the bro
 ```
 
 ```bash
-make test     # proofs, axiom check, boot, the transcript, and the pixels on screen
+make test     # proofs, axiom check, boot, the transcript, the pixels on screen, and a tampered image
 ```
 
 To run it in a browser, start `python3 tools/serve.py` and open http://127.0.0.1:8796.
@@ -152,6 +162,7 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 | 11 | `reply(slot, w0, w1, w2)` | answers a caller; carries no capability and never blocks |
 | 12 | `irqwait(cap)` | waits for the interrupt an interrupt capability names |
 | 13 | `irqack(cap)` | lets that interrupt fire again |
+| 14 | `bootinfo(task)` | whether that task's code matched the boot manifest, and the start of its hash |
 
 Capabilities come in three kinds. Frame capabilities name a run of physical frames and carry read, write and execute rights.
 Each task starts with 64 frames (code, data, stack and 28 spare pages) and a 32 MiB

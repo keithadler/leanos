@@ -70,6 +70,7 @@ struct state {
     int px, py;                 /* pointer */
     int drag, grab_x, grab_y, drag_x0, drag_y0;
     int hover;                  /* dock icon under the pointer + 1, or 0 */
+    int verified;               /* how many programs the boot checks passed */
 };
 
 static void say(struct line *l) { put_s(l, "\n"); flush(l); }
@@ -123,6 +124,41 @@ static void splash_bar(struct state *st, int done /* 0..1000 */) {
     clip_all(s);
 }
 
+/* The boot checks: what the kernel decided about each task's code, from bootinfo. */
+#define NPROG 5
+static const char *const prog_names[NPROG] = {"Notes", "Display server", "Test: mallory", "Test: carol", "Input driver"};
+
+static void hex8(char *out, u64 v) {
+    for (int i = 0; i < 8; i++) out[i] = "0123456789abcdef"[(v >> (28 - 4 * i)) & 15];
+    out[8] = 0;
+}
+
+static void check_mark(struct surface *s, int x, int y, int ok) {
+    round_rect(s, x, y, 14, 14, 7, ok ? rgb(46, 180, 110) : rgb(220, 70, 70), 255);
+    if (ok) {
+        thick_line(s, (x + 3) * 16 + 8, (y + 7) * 16, (x + 6) * 16, (y + 10) * 16, 2, rgb(255, 255, 255));
+        thick_line(s, (x + 6) * 16, (y + 10) * 16, (x + 11) * 16, (y + 4) * 16, 2, rgb(255, 255, 255));
+    } else {
+        thick_line(s, (x + 4) * 16, (y + 4) * 16, (x + 10) * 16, (y + 10) * 16, 2, rgb(255, 255, 255));
+        thick_line(s, (x + 10) * 16, (y + 4) * 16, (x + 4) * 16, (y + 10) * 16, 2, rgb(255, 255, 255));
+    }
+}
+
+#define CHECK_Y 462
+#define CHECK_LINE 18
+
+static void boot_check_line(struct state *st, int k, u64 verdict_code, u64 word) {
+    struct surface *s = &st->screen;
+    int x = W / 2 - 130, y = CHECK_Y + k * CHECK_LINE;
+    check_mark(s, x, y, verdict_code == 1);
+    font_text(s, &st->small, x + 22, y + 11, prog_names[k], rgb(200, 206, 222));
+    char h[9];
+    hex8(h, word);
+    const char *verdict = verdict_code == 1 ? h : "refused";
+    font_text(s, &st->small, x + 260 - font_width(&st->small, verdict), y + 11, verdict,
+              verdict_code == 1 ? rgb(120, 132, 160) : rgb(236, 110, 110));
+}
+
 static void splash(struct state *st) {
     struct surface *s = &st->screen;
     clip_all(s);
@@ -133,15 +169,30 @@ static void splash(struct state *st) {
     const char *tag = "access control proved in Lean";
     font_text(s, &st->ui, W / 2 - font_width(&st->ui, tag) / 2, 396, tag, rgb(140, 152, 182));
     const char *who = "\xc2\xa9 2026 Keith Adler";
-    font_text(s, &st->small, W / 2 - font_width(&st->small, who) / 2, H - 28, who, rgb(104, 114, 142));
-    /* The bar fills over SPLASH_MS, eased, drawn as often as the time allows. Later it will
-       follow real work: checking each program against the signed boot image. */
+    font_text(s, &st->small, W / 2 - font_width(&st->small, who) / 2, H - 20, who, rgb(104, 114, 142));
+    /* The kernel has already measured every program against the boot manifest; the bar
+       walks through its verdicts, one program per step, eased. */
+    u64 code[NPROG], word[NPROG];
+    for (int k = 0; k < NPROG; k++) {
+        struct res r = sys1(SYS_BOOTINFO, (u64)k);
+        code[k] = r.x[0] == OK ? r.x[1] : 0;
+        word[k] = r.x[2];
+    }
     u64 start = millis();
+    int shown = 0;
     for (;;) {
         u64 t = millis() - start;
-        splash_bar(st, ease((int)(t * 1000 / SPLASH_MS)));
-        if (t >= SPLASH_MS) break;
+        int done = ease((int)(t * 1000 / SPLASH_MS));
+        splash_bar(st, done);
+        while (shown < NPROG && done >= (shown + 1) * 1000 / NPROG - 60) {
+            boot_check_line(st, shown, code[shown], word[shown]);
+            shown++;
+        }
+        if (t >= SPLASH_MS && shown == NPROG) break;
     }
+    int ok = 0;
+    for (int k = 0; k < NPROG; k++) ok += code[k] == 1;
+    st->verified = ok;
 }
 
 /* ---- the desktop ---- */
@@ -461,6 +512,12 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->px = W / 2;
     st->py = H / 2;
     splash(st);
+    put_s(&l, "display: boot checks shown: ");
+    put_dec(&l, (u64)st->verified);
+    put_s(&l, " verified, ");
+    put_dec(&l, (u64)(NPROG - st->verified));
+    put_s(&l, " refused");
+    say(&l);
     put_s(&l, "display: boot logo drawn");
     say(&l);
     for (u64 t = millis(); millis() - t < 400;) {} /* hold the full bar a moment */

@@ -19,6 +19,8 @@ lean_object *leanos_syscall(lean_object *s, lean_object *num, lean_object *a0, l
 lean_object *leanos_tick(lean_object *s);
 lean_object *leanos_fault(lean_object *s);
 lean_object *leanos_clear_result(lean_object *s, lean_object *j);
+lean_object *leanos_verify(lean_object *s, lean_object *i, lean_object *w0, lean_object *w1, lean_object *w2,
+                           lean_object *w3, lean_object *w4, lean_object *w5, lean_object *w6, lean_object *w7);
 lean_object *leanos_cur(lean_object *s);
 uint8_t leanos_ready(lean_object *s, lean_object *i);
 uint8_t leanos_dead(lean_object *s, lean_object *i);
@@ -279,6 +281,7 @@ static void irq_init(void) {
 /* ---- tasks ---- */
 
 static struct frame saved[MAX_TASKS];
+static uint64_t code_len[MAX_TASKS], asset_len[MAX_TASKS];
 static uint64_t ntasks;
 static uint64_t syscalls, ticks, device_irqs;
 
@@ -315,6 +318,7 @@ static void load_programs(void) {
     memset((void *)FRAME_BASE, 0, NFRAMES * PAGE_SIZE);
     for (uint64_t i = 0; i < ntasks; i++) {
         uint64_t len = user_prog_ends[i] - user_progs[i];
+        code_len[i] = len;
         if (len > CODE_PAGES * PAGE_SIZE) kpanic("user program larger than its code run");
         uint64_t code = FRAME_BASE + FRAMES_PER_TASK * i * PAGE_SIZE; /* frame 64i, as `frameCaps` says */
         memcpy((void *)code, (const void *)user_progs[i], len);
@@ -322,6 +326,7 @@ static void load_programs(void) {
         /* The task's assets (fonts, icons, pictures), if any, at the start of its spare run,
            where `frameCaps` in LeanOS/Kernel.lean puts capability 3. */
         uint64_t alen = user_asset_ends[i] - user_assets[i];
+        asset_len[i] = alen;
         if (alen > SPARE_PAGES * PAGE_SIZE) kpanic("assets larger than the spare run");
         memcpy((void *)(FRAME_BASE + (FRAMES_PER_TASK * i + SPARE_FIRST) * PAGE_SIZE),
                (const void *)user_assets[i], alen);
@@ -332,6 +337,41 @@ static void load_programs(void) {
 }
 
 static const char *const names[] = {"alice", "display", "mallory", "carol", "input"};
+
+/* SHA-256 of "abc", from FIPS 180-4: the hash must be right before anything relies on it. */
+static void sha256_self_test(void) {
+    static const uint32_t want[8] = {0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223,
+                                     0xb00361a3, 0x96177a9c, 0xb410ff61, 0xf20015ad};
+    struct sha256 h;
+    uint32_t got[8];
+    sha256_init(&h);
+    sha256_update(&h, "abc", 3);
+    sha256_final(&h, got);
+    for (int i = 0; i < 8; i++)
+        if (got[i] != want[i]) kpanic("SHA-256 self-test failed");
+}
+
+/* Measure exactly what task i was loaded with, its code then its assets, where they now sit
+   in its own frames, and let the Lean kernel decide whether it may run. */
+static void measure_and_verify(uint64_t i) {
+    struct sha256 h;
+    uint32_t d[8];
+    sha256_init(&h);
+    sha256_update(&h, (const void *)(FRAME_BASE + FRAMES_PER_TASK * i * PAGE_SIZE), code_len[i]);
+    sha256_update(&h, (const void *)(FRAME_BASE + (FRAMES_PER_TASK * i + SPARE_FIRST) * PAGE_SIZE), asset_len[i]);
+    sha256_final(&h, d);
+    K = leanos_verify(K, lean_box(i), lean_box(d[0]), lean_box(d[1]), lean_box(d[2]), lean_box(d[3]),
+                      lean_box(d[4]), lean_box(d[5]), lean_box(d[6]), lean_box(d[7]));
+    kputs("leanos: ");
+    kputs(names[i]);
+    if (ready(i)) {
+        kputs(" verified, sha256 ");
+        kputhex(d[0]);
+        kputs("...\n");
+    } else {
+        kputs(" refused: what was loaded does not match the boot manifest\n");
+    }
+}
 
 static void do_syscall(uint64_t cur) {
     struct frame *f = &saved[cur];
@@ -497,13 +537,16 @@ void kmain(void) {
     kputs(" tasks\n");
 
     load_programs();
+    sha256_self_test();
+    for (uint64_t i = 0; i < ntasks; i++) measure_and_verify(i);
     for (uint64_t i = 0; i < ntasks; i++) {
         tables_init(i);
         build_user_pages(i);
     }
     irq_init();
 
-    uint64_t first = cur_task();
+    if (!ready(cur_task())) K = leanos_tick(K);
+    uint64_t first = idle_until_ready();
     switch_to(first);
     enter_user(&saved[first]);
 }
