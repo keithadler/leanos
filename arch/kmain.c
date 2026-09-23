@@ -33,6 +33,10 @@ lean_object *leanos_reply_out_va(lean_object *r);
 lean_object *leanos_reply_out_len(lean_object *r);
 uint8_t leanos_reply_remap(lean_object *r);
 lean_object *leanos_reply_state(lean_object *r);
+lean_object *leanos_reply_unmask(lean_object *r);
+lean_object *leanos_irq(lean_object *s, lean_object *n);
+lean_object *leanos_irq_line_count(lean_object *unused);
+lean_object *leanos_irq_line(lean_object *k);
 
 uint64_t rt_heap_live(void);
 uint64_t rt_heap_peak(void);
@@ -245,10 +249,22 @@ static void timer_rearm(void) {
     SYSREG_WRITE(cntp_ctl_el0, 1);
 }
 
+static void gic_enable(uint32_t id) { mmio_w32(GICD + 0x100 + 4 * (id / 32), 1u << (id % 32)); }
+static void gic_disable(uint32_t id) { mmio_w32(GICD + 0x180 + 4 * (id / 32), 1u << (id % 32)); }
+
 static void irq_init(void) {
     mmio_w32(GICD + 0x000, 1);                          /* distributor on */
     mmio_w8(GICD + 0x400 + TIMER_IRQ, 0x80);            /* priority */
-    mmio_w32(GICD + 0x100, 1u << TIMER_IRQ);            /* enable the timer interrupt */
+    gic_enable(TIMER_IRQ);
+    /* The lines the manifest hands to tasks as interrupt capabilities. */
+    uint64_t lines = nat(leanos_irq_line_count(lean_box(0)));
+    for (uint64_t k = 0; k < lines; k++) {
+        uint32_t id = (uint32_t)nat(leanos_irq_line(lean_box(k)));
+        if (id < 32 || id >= 1020) kpanic("interrupt line out of range");
+        mmio_w8(GICD + 0x400 + id, 0x80);               /* priority */
+        mmio_w8(GICD + 0x800 + id, 1);                  /* deliver to core 0 */
+        gic_enable(id);
+    }
     mmio_w32(GICC + 0x004, 0xff);                       /* accept every priority */
     mmio_w32(GICC + 0x000, 1);                          /* CPU interface on */
     uint64_t freq = SYSREG_READ(cntfrq_el0);
@@ -261,7 +277,24 @@ static void irq_init(void) {
 
 static struct frame saved[MAX_TASKS];
 static uint64_t ntasks;
-static uint64_t syscalls, ticks;
+static uint64_t syscalls, ticks, device_irqs;
+
+/* Take one interrupt from the controller. The timer ends a time slice; any other line is
+   masked until its holder acknowledges it, and the Lean kernel decides who to wake. */
+static void handle_irq(void) {
+    uint32_t iar = mmio_r32(GICC + 0x00c);
+    uint32_t id = iar & 0x3ff;
+    if (id == TIMER_IRQ) {
+        ticks++;
+        timer_rearm();
+        K = leanos_tick(K);
+    } else if (id < 1020) {
+        device_irqs++;
+        gic_disable(id);
+        K = leanos_irq(K, lean_box(id));
+    }
+    if (id < 1020) mmio_w32(GICC + 0x010, iar);
+}
 
 extern const uint64_t user_progs[], user_prog_ends[];
 
@@ -288,7 +321,7 @@ static void load_programs(void) {
     }
 }
 
-static const char *const names[] = {"alice", "display", "mallory", "carol"};
+static const char *const names[] = {"alice", "display", "mallory", "carol", "input"};
 
 static void do_syscall(uint64_t cur) {
     struct frame *f = &saved[cur];
@@ -298,7 +331,9 @@ static void do_syscall(uint64_t cur) {
     uint64_t out_va = nat(leanos_reply_out_va((lean_inc(r), r)));
     uint64_t out_len = nat(leanos_reply_out_len((lean_inc(r), r)));
     int remap = leanos_reply_remap((lean_inc(r), r));
+    uint64_t unmask = nat(leanos_reply_unmask((lean_inc(r), r)));
     K = leanos_reply_state(r);
+    if (unmask) gic_enable((uint32_t)(unmask - 1));
 
     /* Still in `cur`'s address space, so the range the kernel checked is readable here. */
     for (uint64_t k = 0; k < out_len; k++) {
@@ -319,29 +354,46 @@ static void load_result(uint64_t j) {
     K = leanos_clear_result(K, lean_box(j));
 }
 
-static void finish(void) {
-    uint64_t waiting = 0;
-    for (uint64_t i = 0; i < ntasks; i++)
-        if (!leanos_dead(K1, lean_box(i))) waiting++;
-    if (waiting == 0) kputs("leanos: every task has finished (");
-    else {
-        kputs("leanos: idle, ");
-        kputdec(waiting);
-        kputs(waiting == 1 ? " task waiting for a message (" : " tasks waiting for messages (");
-    }
+static void report(const char *what) {
+    kputs(what);
+    kputs(" (");
     kputdec(syscalls);
     kputs(" system calls, ");
     kputdec(ticks);
-    kputs(" timer ticks, kernel heap ");
+    kputs(" timer ticks, ");
+    kputdec(device_irqs);
+    kputs(" device interrupts, kernel heap ");
     kputdec(rt_heap_live());
     kputs(" bytes live, ");
     kputdec(rt_heap_peak());
     kputs(" peak)\n");
-    if (waiting == 0) poweroff();
-    /* Nothing can run until a message arrives, and only tasks send messages: the screen
-       stays as it is. Timer off, interrupts masked, wait. */
-    SYSREG_WRITE(cntp_ctl_el0, 0);
-    for (;;) __asm__ volatile("wfi");
+}
+
+/* No task is ready. If every task has stopped, power off. Otherwise wait for an interrupt:
+   the timer, or a device whose holder is waiting for it. WFI wakes on a pending interrupt
+   even though the kernel runs with interrupts masked. */
+static uint64_t idle_until_ready(void) {
+    static int reported;
+    uint64_t next = cur_task();
+    while (!ready(next)) {
+        uint64_t waiting = 0;
+        for (uint64_t i = 0; i < ntasks; i++)
+            if (!leanos_dead(K1, lean_box(i))) waiting++;
+        if (waiting == 0) {
+            report("leanos: every task has finished");
+            poweroff();
+        }
+        if (!reported) {
+            reported = 1;
+            kputs("leanos: idle, ");
+            kputdec(waiting);
+            report(waiting == 1 ? " task waiting" : " tasks waiting");
+        }
+        __asm__ volatile("wfi");
+        handle_irq();
+        next = cur_task();
+    }
+    return next;
 }
 
 static const char *fault_name(uint64_t ec) {
@@ -378,7 +430,7 @@ void trap(struct frame *f, uint64_t kind) {
             do_syscall(cur);
         } else {
             kputs("leanos: ");
-            kputs(cur < 4 ? names[cur] : "task");
+            kputs(cur < 5 ? names[cur] : "task");
             kputs(" stopped: ");
             kputs(fault_name(ec));
             kputs(" at ");
@@ -387,17 +439,10 @@ void trap(struct frame *f, uint64_t kind) {
             K = leanos_fault(K);
         }
     } else {
-        uint32_t iar = mmio_r32(GICC + 0x00c);
-        if ((iar & 0x3ff) == TIMER_IRQ) {
-            ticks++;
-            timer_rearm();
-            K = leanos_tick(K);
-        }
-        mmio_w32(GICC + 0x010, iar);
+        handle_irq();
     }
 
-    uint64_t next = cur_task();
-    if (!ready(next)) finish(); /* schedule found no ready task */
+    uint64_t next = idle_until_ready();
     load_result(next);
     switch_to(next);
     *f = saved[next];
@@ -427,7 +472,7 @@ void kmain(void) {
 
     K = leanos_init(lean_box(fb));
     ntasks = nat(leanos_ntasks(K1));
-    if (ntasks > MAX_TASKS || ntasks > 4) kpanic("the manifest has more tasks than the machine layer supports");
+    if (ntasks > MAX_TASKS || ntasks > sizeof names / sizeof names[0]) kpanic("the manifest has more tasks than the machine layer supports");
     kputs("leanos: Lean kernel initialized, ");
     kputdec(ntasks);
     kputs(" tasks\n");

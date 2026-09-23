@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Boots leanos on QEMU's Raspberry Pi 4 and prints its serial console.
+"""Boots leanos on QEMU's Raspberry Pi 4 (headless) and prints its serial console.
 
-When the kernel reports it is idle (tasks waiting, nothing to run), the screen is captured
-through QEMU's control socket to build/screen.ppm and build/screen.png, and QEMU is told to
-quit. If the machine powers itself off instead, there is no screen to capture.
+When the kernel reports it is idle (tasks waiting, nothing to run), the optional input is
+typed into the Pi's serial line, one step at a time; after the last step the runner waits
+for the line it names. Then the screen is captured through QEMU's control socket to
+build/screen.ppm and build/screen.png, and QEMU is told to quit. If the machine powers
+itself off instead, there is no screen to capture.
 
 Usage: test/run.py [timeout-seconds]    (exit status: QEMU's, or 124 on timeout)
 """
@@ -64,20 +66,60 @@ class Qmp:
                 return reply
 
 
-def boot(timeout=30, on_line=print, on_screen=None):
+def mouse(kind, x, y):
+    """A mouse report for the input driver: kind is 'd' (down), 'u' (up) or 'v' (moved)."""
+    return f"\x1bm{kind}{x:03d}{y:03d}".encode()
+
+
+def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None):
+    """steps: bytes to type once the system is idle, each followed by a short pause.
+    until: after the steps, wait for a serial line starting with this before the capture.
+    snaps: {line prefix: file name}: also capture the screen, without stopping, when a line
+    starting with that prefix appears."""
     sock = os.path.join(tempfile.mkdtemp(prefix="leanos-"), "qmp.sock")
     proc = subprocess.Popen(
         ["qemu-system-aarch64", "-M", "raspi4b", "-display", "none", "-serial", "stdio",
          "-semihosting", "-qmp", f"unix:{sock},server,nowait", "-kernel", IMAGE],
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     qmp = Qmp(sock)
     deadline = time.monotonic() + timeout
     status = None
+    waiting_for = None
+
+    def capture():
+        ppm = os.path.join(ROOT, "build", "screen.ppm")
+        qmp.cmd("screendump", filename=ppm)
+        png = os.path.join(ROOT, "build", "screen.png")
+        ppm_to_png(ppm, png)
+        if on_screen:
+            on_screen(png)
+        qmp.cmd("quit")
+
     try:
         for raw in proc.stdout:
             line = raw.decode(errors="replace").rstrip("\r\n")
             if line:
                 on_line(line)
+            for prefix, name in (snaps or {}).items():
+                if line.startswith(prefix):
+                    ppm = os.path.join(ROOT, "build", name + ".ppm")
+                    qmp.cmd("screendump", filename=ppm)
+                    ppm_to_png(ppm, os.path.join(ROOT, "build", name + ".png"))
+            if waiting_for and line.startswith(waiting_for):
+                time.sleep(0.3)
+                capture()
+                status = 0
+                break
+            if line.startswith("leanos: idle") and steps:
+                def type_steps():
+                    for chunk in steps:
+                        proc.stdin.write(chunk)
+                        proc.stdin.flush()
+                        time.sleep(0.15)
+                import threading
+                threading.Thread(target=type_steps, daemon=True).start()
+                waiting_for = until or "\0"
+                continue
             if line.startswith("leanos: idle"):
                 ppm = os.path.join(ROOT, "build", "screen.ppm")
                 qmp.cmd("screendump", filename=ppm)
@@ -100,5 +142,14 @@ def boot(timeout=30, on_line=print, on_screen=None):
     return proc.returncode if status is None else status
 
 
+# The interaction `make test` performs: type into the focused Notes window, then drag it by
+# its title bar.
+DEMO_STEPS = [b"H", b"i", b"!", mouse("v", 120, 88), mouse("d", 120, 88), mouse("v", 200, 150),
+              mouse("v", 300, 220), mouse("u", 300, 220)]
+
 if __name__ == "__main__":
-    sys.exit(boot(float(sys.argv[1]) if len(sys.argv) > 1 else 30))
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    demo = "--demo" in sys.argv
+    sys.exit(boot(float(args[0]) if args else 30,
+                  steps=DEMO_STEPS if demo else (), until="display: moved" if demo else None,
+                  snaps={"display: boot logo drawn": "logo"} if demo else None))

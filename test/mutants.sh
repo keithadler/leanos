@@ -54,9 +54,10 @@ mutant "receive without the receive right" \
 mutant "grant without the grant right" \
   "else if ep.rights.x then" "else if true then"
 mutant "grant an endpoint capability" \
-  "      | .endpoint _ => none
-    | none => none" "      | .endpoint _ => some (some g)
-    | none => none"
+  "      | .frames _ _ => some (some g)
+      | _ => none" "      | .frames _ _ => some (some g)
+      | .endpoint _ => some (some g)
+      | _ => none"
 mutant "sender picks its own badge" \
   "let m : Msg := ⟨c.badge, w0, w1, w2, g, call⟩" "let m : Msg := ⟨w0, w0, w1, w2, g, call⟩"
 mutant "reply wakes a task that is not waiting for it" \
@@ -68,13 +69,24 @@ mutant "manifest gives mallory the grant right" \
 mutant "manifest gives mallory the receive right" \
   "epCap 0 false true false 2" "epCap 0 true true false 2"
 mutant "map framebuffer frames without checking the firmware's address" \
-  "(base + count ≤ poolFrames || fbSane s.fbBase)" "true"
+  "(fbSane s.fbBase && base + count ≤ devBase)" "(base + count ≤ devBase)"
 mutant "accept a framebuffer that overlaps the frame pool" \
   "b % pageSize == 0 && frameBase + poolFrames * pageSize ≤ b" "b % pageSize == 0 && frameBase ≤ b"
 mutant "manifest gives mallory the framebuffer" \
   "| 2 => snoc (frameCaps 2) (epCap 0 false true false 2)" "| 2 => snoc (snoc (frameCaps 2) (epCap 0 false true false 2)) (runCap poolFrames fbPages Rights.rw)"
 mutant "framebuffer frames count as alice's" \
-  "def owner (f : Nat) : Nat := if f < poolFrames then f / framesPerTask else displayTask" "def owner (f : Nat) : Nat := if f < poolFrames then f / framesPerTask else 0"
+  "if f < poolFrames then f / framesPerTask else if f < devBase then displayTask else inputTask" "if f < poolFrames then f / framesPerTask else if f < devBase then 0 else inputTask"
+mutant "an interrupt wakes whoever waits on any line" \
+  "    | .waitingIrq k => if k == n then some j else findIrqWaiter n ts (j + 1)" "    | .waitingIrq _ => some j"
+mutant "manifest gives mallory the UART" \
+  "| 2 => snoc (frameCaps 2) (epCap 0 false true false 2)" "| 2 => snoc (snoc (frameCaps 2) (epCap 0 false true false 2)) (runCap devBase devPages Rights.rw)"
+mutant "manifest gives mallory the UART's interrupt" \
+  "| 2 => snoc (frameCaps 2) (epCap 0 false true false 2)" "| 2 => snoc (snoc (frameCaps 2) (epCap 0 false true false 2)) (irqCap uartIrq)"
+mutant "grant an interrupt capability" \
+  "      | .frames _ _ => some (some g)
+      | _ => none" "      | _ => some (some g)"
+mutant "accept a framebuffer that overlaps the peripherals" \
+  "b + fbPages * pageSize ≤ 0xFE000000" "b + fbPages * pageSize ≤ 2 ^ 36"
 mutant "user pages always executable" \
   "privNoExec + (if m.rights.x then 0 else userNoExec)" "privNoExec + 0"
 mutant "read-only pages writable" \

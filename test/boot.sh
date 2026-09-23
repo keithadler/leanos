@@ -13,11 +13,13 @@ echo "$axioms" | grep -v "depends on axioms: \[\(propext\|Classical.choice\|Quot
   | grep -q . && fail "unexpected axiom: $axioms"
 echo "ok: $(echo "$axioms" | wc -l | tr -d ' ') theorems rest only on Lean's standard axioms"
 
-rm -f build/screen.ppm build/screen.png
-out=$(python3 test/run.py 30)
+rm -f build/screen.ppm build/screen.png build/logo.ppm build/logo.png
+# Boot, wait for the desktop to settle, type "Hi!" into the Notes window, drag it by its
+# title bar, then capture the screen (test/run.py, DEMO_STEPS).
+out=$(python3 test/run.py 40 --demo)
 status=$?
 echo "$out" | sed 's/^/  | /'
-[ $status -eq 0 ] || fail "the run did not reach idle (status $status)"
+[ $status -eq 0 ] || fail "the run did not finish the interaction (status $status)"
 
 # Each task's lines must appear in this order; tasks may interleave with each other.
 check_order() {
@@ -31,8 +33,7 @@ check_order() {
 
 check_order alice \
   "alice: wrote secret 0x5ec12e7 to my data page" \
-  "alice: sent the display a 240x100 window, read-only, 24 pages -> ok" \
-  "alice: secret intact, exiting"
+  "alice: opened a 240x150 window, read-only, 36 pages -> ok"
 
 check_order mallory \
   "mallory: I am task 2" \
@@ -52,42 +53,52 @@ check_order carol \
   "carol: jumping into the instruction I wrote in my data page" \
   "leanos: carol stopped: instruction fetch not allowed at 0x80010000"
 
-# The display's messages may arrive in any order; each must arrive exactly once.
+check_order input \
+  "input: listening on the UART"
+
+# The display: logo, desktop, the two window requests in either order, then the keys and
+# the drag, in order.
 display=$(echo "$out" | grep -E "^display: ")
-[ "$(echo "$display" | head -1)" = "display: desktop drawn on the 640x480 framebuffer" ] || fail "display did not draw the desktop"
+expected_head=$(printf '%s\n' "display: boot logo drawn" "display: desktop drawn on the 640x480 framebuffer")
+[ "$(echo "$display" | head -2)" = "$expected_head" ] || fail "display did not draw the logo and desktop"
 for line in \
-  "display: alice's window, 240x100 from a read-only capability to 24 pages, drawn at (60, 70)" \
+  "display: alice opened a 240x150 window from a read-only capability to 36 pages" \
   "display: mallory asked for a window but sent no pixels; ignored"; do
   [ "$(echo "$display" | grep -cxF "$line")" = 1 ] || fail "display line missing or repeated: $line"
 done
-[ "$(echo "$display" | wc -l | tr -d ' ')" = 3 ] || fail "display printed unexpected lines"
+expected_tail=$(printf '%s\n' "display: key 'H' to alice" "display: key 'i' to alice" "display: key '!' to alice" \
+  "display: moved alice's window to (250, 208)")
+[ "$(echo "$display" | tail -4)" = "$expected_tail" ] || fail "keys or drag not handled"
+[ "$(echo "$display" | wc -l | tr -d ' ')" = 8 ] || fail "display printed unexpected lines"
 
 echo "$out" | grep -q "^leanos: framebuffer 640x480 at 0x3c100000$" || fail "no framebuffer"
-echo "$out" | grep -q "^leanos: idle, 1 task waiting for a message" || fail "did not settle with the display waiting"
+echo "$out" | grep -q "^leanos: idle, 3 tasks waiting" || fail "did not settle with three tasks waiting"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 echo "$out" | grep -qE "SHOULD NOT|CHANGED" && fail "a protection failed"
 echo "ok: boot transcript matches"
 
-# The screen itself.
+# The screens themselves.
 python3 - <<'PY' || fail "the screen is not what the display drew"
-data = open("build/screen.ppm", "rb").read()
-_, dims, _, px = data.split(b"\n", 3)
-w, h = map(int, dims.split())
-assert (w, h) == (640, 480), (w, h)
+def load(path):
+    data = open(path, "rb").read()
+    _, dims, _, px = data.split(b"\n", 3)
+    w, h = map(int, dims.split())
+    assert (w, h) == (640, 480), (w, h)
+    return lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
 
-def at(x, y):
-    i = (y * w + x) * 3
-    return tuple(px[i:i + 3])
+logo = load("build/logo.ppm")
+r, g, b = logo(362, 150)          # the logo tile, off the lambda: indigo to teal
+assert b > r + 40 and b > 120, ("logo", (r, g, b))
+assert logo(320, 360)[1] > 150, ("progress bar", logo(320, 360))
 
-exact = {
-    (0, 0): (245, 243, 236),     # menu bar, where mallory tried to write 0xbad
-    (1, 0): (245, 243, 236),
-    (100, 80): (58, 96, 150),    # alice's title bar
-    (272, 104): (58, 150, 96),   # the green square alice drew
-}
-for (x, y), want in exact.items():
-    assert at(x, y) == want, ((x, y), at(x, y), want)
-r, g, b = at(320, 400)           # the desktop gradient
-assert 20 < r < 40 and 80 < g < 110 and 90 < b < 120, (r, g, b)
-print("ok: the screen shows the desktop and alice's window; mallory's write never landed")
+at = load("build/screen.ppm")
+for x in (0, 1):                  # the menu bar, where mallory tried to write 0xbad
+    assert min(at(x, 0)) > 200, ("menu bar", x, at(x, 0))
+r, g, b = at(320, 214)            # the Notes title bar after the drag: focused, blue
+assert b > r + 60, ("title bar", (r, g, b))
+r, g, b = at(90, 110)             # where the window was: desktop again
+assert r < 60 and b > g, ("old place", (r, g, b))
+dark = sum(1 for y in range(272, 290) for x in range(264, 304) if max(at(x, y)) < 90)
+assert dark > 20, ("typed text", dark)
+print("ok: the boot logo, the desktop, the typed note and the moved window are on screen; mallory's write never landed")
 PY

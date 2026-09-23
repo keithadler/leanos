@@ -17,7 +17,7 @@ open LeanOS
 #print axioms write_reads_only_readable
 #print axioms schedule_picks_ready
 #print axioms walk_eq_view
-#print axioms el0_only_pool_or_fb
+#print axioms el0_only_pool_fb_uart
 #print axioms physOf_inj
 #print axioms el0_no_write_execute
 #print axioms el0_flow
@@ -25,3 +25,8 @@ open LeanOS
 #print axioms el0_mallory_isolated
 #print axioms reply_grants_nothing
 #print axioms reply_wakes_only_caller
+#print axioms irqs_fixed
+#print axioms irq_wakes_holder
+#print axioms uart_confined
+#print axioms el0_uart_only_input
+#print axioms uart_irq_only_input

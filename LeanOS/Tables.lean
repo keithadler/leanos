@@ -28,50 +28,61 @@ def el0View (s : KState) (i va : Nat) : Option (Nat × Arm.Perm) :=
     | none => none
   else none
 
-/-- In a reachable state every mapped frame is in the pool, or in the framebuffer and the
-framebuffer is sane. -/
+/-- Frame `f` may be mapped: it is in the pool, in a sane framebuffer, or a device page. -/
+def Valid (s : KState) (f : Nat) : Prop :=
+  f < poolFrames ∨ (fbSane s.fbBase = true ∧ f < devBase) ∨ (devBase ≤ f ∧ f < devBase + devPages)
+
+/-- In a reachable state every mapped frame may be mapped. -/
 theorem reachable_frames {s : KState} (h : Reachable s) (i : Nat) :
-    ∀ m ∈ mapsOf s i, m.frame < poolFrames ∨ (fbSane s.fbBase = true ∧ m.frame < poolFrames + fbPages) := by
+    ∀ m ∈ mapsOf s i, Valid s m.frame := by
   intro m hm
   unfold mapsOf at hm
   split at hm
   · rename_i t ht
-    rcases ((reachable_inv h).tasks i t ht).fbMaps m hm with h1 | h1
+    have hb := (maps_in_range h ht m hm).2
+    rcases ((reachable_inv h).tasks i t ht).fbMaps m hm with h1 | h1 | h1
     · exact Or.inl h1
-    · exact Or.inr ⟨h1, (maps_in_range h ht m hm).2⟩
+    · exact Or.inr (Or.inl h1)
+    · exact Or.inr (Or.inr ⟨h1, hb⟩)
   · simp at hm
+
+theorem poolFrames_eq : poolFrames = 512 := rfl
+theorem fbPages_eq : fbPages = 300 := rfl
+theorem devBase_eq : devBase = 812 := rfl
+theorem devPages_eq : devPages = 1 := rfl
 
 theorem physOf_pool {s : KState} {f : Nat} (hf : f < poolFrames) :
     physOf s f = 67108864 + f * 4096 := by
   unfold physOf; rw [if_pos hf]; rfl
 
-theorem physOf_fb {s : KState} {f : Nat} (hf : ¬ f < poolFrames) :
+theorem physOf_fb {s : KState} {f : Nat} (hf : ¬ f < poolFrames) (hd : f < devBase) :
     physOf s f = s.fbBase + (f - 512) * 4096 := by
-  unfold physOf; rw [if_neg hf]; rfl
+  unfold physOf; rw [if_neg hf, if_pos hd]; rfl
+
+theorem physOf_dev {s : KState} {f : Nat} (hd : devBase ≤ f) :
+    physOf s f = 0xFE201000 := by
+  have h1 : ¬ f < poolFrames := by rw [devBase_eq] at hd; rw [poolFrames_eq]; omega
+  have h2 : ¬ f < devBase := by omega
+  unfold physOf; rw [if_neg h1, if_neg h2]; simp [devicePA]
 
 theorem fbSane_spec {b : Nat} (h : fbSane b = true) :
-    b % 4096 = 0 ∧ 69206016 ≤ b ∧ b + 1228800 ≤ 68719476736 := by
+    b % 4096 = 0 ∧ 69206016 ≤ b ∧ b + 1228800 ≤ 0xFE000000 := by
   unfold fbSane at h
   simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at h
   simp only [pageSize, frameBase, poolFrames, framesPerTask, maxTasks, fbPages] at h
   omega
 
-theorem poolFrames_eq : poolFrames = 512 := rfl
-theorem fbPages_eq : fbPages = 300 := rfl
-
 /-- The physical address of a frame that may be mapped: page-aligned and below 2^36. -/
-theorem physOf_ok {s : KState} {f : Nat}
-    (hf : f < poolFrames ∨ (fbSane s.fbBase = true ∧ f < poolFrames + fbPages)) :
+theorem physOf_ok {s : KState} {f : Nat} (hf : Valid s f) :
     physOf s f % 4096 = 0 ∧ physOf s f + 4096 ≤ 2 ^ 36 := by
   simp only [Nat.reducePow]
-  by_cases hp : f < poolFrames
+  rcases hf with hp | ⟨hs, hd⟩ | ⟨hd, -⟩
   · rw [physOf_pool hp]; rw [poolFrames_eq] at hp; omega
-  · rw [physOf_fb hp]
-    rcases hf with hf | ⟨hs, hf⟩
-    · exact absurd hf hp
+  · by_cases hp : f < poolFrames
+    · rw [physOf_pool hp]; rw [poolFrames_eq] at hp; omega
     · have := fbSane_spec hs
-      simp only [poolFrames_eq, fbPages_eq] at hf hp
-      omega
+      rw [physOf_fb hp hd]; simp only [poolFrames_eq, devBase_eq] at hp hd; omega
+  · rw [physOf_dev hd]; decide
 
 theorem findVpn_mem : ∀ {ms : List Mapping} {v : Nat} {m : Mapping},
     findVpn ms v = some m → m ∈ ms ∧ m.vpn = v
@@ -86,17 +97,18 @@ theorem findVpn_mem : ∀ {ms : List Mapping} {v : Nat} {m : Mapping},
 
 /-- The descriptor for a readable mapping, with its choices spelled out. -/
 theorem pageDesc_read (s : KState) (m : Mapping) (hr : m.rights.r = true) :
-    pageDesc s m = physOf s m.frame + 3 + (if m.frame < poolFrames then 4 else 8) +
+    pageDesc s m = physOf s m.frame + 3 +
+      (if m.frame < poolFrames then 4 else if m.frame < devBase then 8 else 0) +
       (if m.rights.w then 64 else 192) + 768 + 1024 + 2048 + 9007199254740992 +
       (if m.rights.x then 0 else 18014398509481984) := by
-  simp only [pageDesc, hr, if_true, dValid, dTableOrPage, attrNormal, attrNoCache, apUserRW,
-    apUserRO, shInner, accessFlag, notGlobal, privNoExec, userNoExec]
+  simp only [pageDesc, hr, if_true, dValid, dTableOrPage, attrNormal, attrNoCache, attrDevice,
+    apUserRW, apUserRO, shInner, accessFlag, notGlobal, privNoExec, userNoExec]
   all_goals omega
 
 /-- Every field of such a descriptor, for any page-aligned address `P` below 2^36 and any
 choice of memory type (`a`), AP (`w`) and UXN (`u`). -/
 theorem desc_fields (P a w u : Nat) (hP : P % 4096 = 0) (hlt : P + 4096 ≤ 2 ^ 36)
-    (ha : a = 4 ∨ a = 8) (hw : w = 64 ∨ w = 192) (hu : u = 0 ∨ u = 18014398509481984) :
+    (ha : a = 4 ∨ a = 8 ∨ a = 0) (hw : w = 64 ∨ w = 192) (hu : u = 0 ∨ u = 18014398509481984) :
     Arm.field (P + 3 + a + w + 768 + 1024 + 2048 + 9007199254740992 + u) 0 2 = 3 ∧
     Arm.field (P + 3 + a + w + 768 + 1024 + 2048 + 9007199254740992 + u) 10 1 = 1 ∧
     Arm.field (P + 3 + a + w + 768 + 1024 + 2048 + 9007199254740992 + u) 6 2 = w / 64 ∧
@@ -107,8 +119,7 @@ theorem desc_fields (P a w u : Nat) (hP : P % 4096 = 0) (hlt : P + 4096 ≤ 2 ^ 
   omega
 
 /-- A readable page descriptor, read back field by field. -/
-theorem leaf_pageDesc (s : KState) (m : Mapping) (hr : m.rights.r = true)
-    (hf : m.frame < poolFrames ∨ (fbSane s.fbBase = true ∧ m.frame < poolFrames + fbPages))
+theorem leaf_pageDesc (s : KState) (m : Mapping) (hr : m.rights.r = true) (hf : Valid s m.frame)
     (va : Nat) :
     Arm.field (pageDesc s m) 0 2 = 3 ∧
     Arm.leaf (pageDesc s m) 12 va =
@@ -116,9 +127,11 @@ theorem leaf_pageDesc (s : KState) (m : Mapping) (hr : m.rights.r = true)
   rw [pageDesc_read s m hr]
   obtain ⟨hal, hlt⟩ := physOf_ok hf
   obtain ⟨hty, haf, hap, hux, hout⟩ := desc_fields (physOf s m.frame)
-    (if m.frame < poolFrames then 4 else 8) (if m.rights.w then 64 else 192)
+    (if m.frame < poolFrames then 4 else if m.frame < devBase then 8 else 0)
+    (if m.rights.w then 64 else 192)
     (if m.rights.x then 0 else 18014398509481984) hal hlt
-    (by split <;> simp) (by split <;> simp) (by split <;> simp)
+    (by repeat' split
+        all_goals simp) (by split <;> simp) (by split <;> simp)
   refine ⟨hty, ?_⟩
   unfold Arm.leaf
   rw [haf, hap, hux, hout]
@@ -261,26 +274,27 @@ theorem Installed.walk {s : KState} {i : Nat} {mem : Arm.Mem} {l1 l2 l3 : Nat}
   walk_eq_view h i mem l1 l2 l3 hi.l2_aligned hi.l3_aligned hi.l2_lt hi.l3_lt
     hi.l1_words hi.l2_words hi.l3_words va
 
-/-- User mode can only ever reach physical addresses inside the frame pool or, if the
-firmware gave a sane one, the framebuffer: never the kernel image, its heap, its tables,
-or the peripherals. -/
-theorem el0_only_pool_or_fb {s : KState} (h : Reachable s) {i : Nat} {mem : Arm.Mem}
+/-- User mode can only ever reach the frame pool, the framebuffer (if the firmware's address
+for it is sane), and the UART's register page: never the kernel image, its heap, its
+tables, or any other peripheral. -/
+theorem el0_only_pool_fb_uart {s : KState} (h : Reachable s) {i : Nat} {mem : Arm.Mem}
     {l1 l2 l3 : Nat} (hi : Installed s i mem l1 l2 l3)
     {va pa : Nat} {p : Arm.Perm} (hw : Arm.walkEL0 mem l1 va = some (pa, p)) :
     (frameBase ≤ pa ∧ pa < frameBase + poolFrames * pageSize) ∨
-    (fbSane s.fbBase = true ∧ s.fbBase ≤ pa ∧ pa < s.fbBase + fbPages * pageSize) := by
+    (fbSane s.fbBase = true ∧ s.fbBase ≤ pa ∧ pa < s.fbBase + fbPages * pageSize) ∨
+    (0xFE201000 ≤ pa ∧ pa < 0xFE201000 + pageSize) := by
   rw [hi.walk h] at hw
   obtain ⟨t, m, ht, hm, -, rfl, -⟩ := el0View_some hw
   have hmm : m ∈ mapsOf s i := by simp [mapsOf, ht]; exact hm
   have hva : va % 4096 < 4096 := Nat.mod_lt _ (by decide)
   simp only [frameBase, pageSize, poolFrames_eq, fbPages_eq]
-  by_cases hp : m.frame < poolFrames
+  rcases reachable_frames h i m hmm with hp | ⟨hs, hd⟩ | ⟨hd, -⟩
   · left; rw [physOf_pool hp]; rw [poolFrames_eq] at hp; omega
-  · rcases reachable_frames h i m hmm with hf | ⟨hs, hf⟩
-    · exact absurd hf hp
-    · right; refine ⟨hs, ?_⟩
-      have := fbSane_spec hs
-      rw [physOf_fb hp]; simp only [poolFrames_eq, fbPages_eq] at hf hp; omega
+  · by_cases hp : m.frame < poolFrames
+    · left; rw [physOf_pool hp]; rw [poolFrames_eq] at hp; omega
+    · right; left; refine ⟨hs, ?_⟩
+      rw [physOf_fb hp hd]; simp only [poolFrames_eq, devBase_eq] at hp hd; omega
+  · right; right; rw [physOf_dev hd]; omega
 
 /-- No address user mode can reach is both writable and executable. -/
 theorem el0_no_write_execute {s : KState} (h : Reachable s) {i : Nat} {mem : Arm.Mem}
@@ -296,8 +310,7 @@ address, it lies in a frame whose owner at boot can pass frames to `i` along gra
 theorem el0_flow {s : KState} (h : Reachable s) {i : Nat} {mem : Arm.Mem}
     {l1 l2 l3 : Nat} (hi : Installed s i mem l1 l2 l3)
     {va pa : Nat} {p : Arm.Perm} (hw : Arm.walkEL0 mem l1 va = some (pa, p)) :
-    ∃ f, (f < poolFrames ∨ (fbSane s.fbBase = true ∧ f < poolFrames + fbPages)) ∧
-      pa / pageSize = physOf s f / pageSize ∧ Reach (owner f) i := by
+    ∃ f, Valid s f ∧ pa / pageSize = physOf s f / pageSize ∧ Reach (owner f) i := by
   rw [hi.walk h] at hw
   obtain ⟨t, m, ht, hm, -, rfl, -⟩ := el0View_some hw
   have hmm : m ∈ mapsOf s i := by simp [mapsOf, ht]; exact hm
@@ -307,26 +320,29 @@ theorem el0_flow {s : KState} (h : Reachable s) {i : Nat} {mem : Arm.Mem}
   simp only [pageSize]; omega
 
 /-- Different frames that may be mapped live in different physical pages: the framebuffer
-lies past the pool, so the two never overlap. -/
-theorem physOf_inj {s : KState} {f g : Nat}
-    (hf : f < poolFrames ∨ (fbSane s.fbBase = true ∧ f < poolFrames + fbPages))
-    (hg : g < poolFrames ∨ (fbSane s.fbBase = true ∧ g < poolFrames + fbPages))
+lies past the pool and below the peripherals, so none of the three regions overlap. -/
+theorem physOf_inj {s : KState} {f g : Nat} (hf : Valid s f) (hg : Valid s g)
     (h : physOf s f / pageSize = physOf s g / pageSize) : f = g := by
   simp only [pageSize] at h
-  by_cases hfp : f < poolFrames <;> by_cases hgp : g < poolFrames
-  · rw [physOf_pool hfp, physOf_pool hgp] at h; omega
-  · rw [physOf_pool hfp, physOf_fb hgp] at h
-    rcases hg with hg | ⟨hs, _⟩
-    · exact absurd hg hgp
-    · have := fbSane_spec hs; simp only [poolFrames_eq] at hfp hgp; omega
-  · rw [physOf_fb hfp, physOf_pool hgp] at h
-    rcases hf with hf | ⟨hs, _⟩
-    · exact absurd hf hfp
-    · have := fbSane_spec hs; simp only [poolFrames_eq] at hfp hgp; omega
-  · rw [physOf_fb hfp, physOf_fb hgp] at h
-    rcases hf with hf | ⟨hs, _⟩
-    · exact absurd hf hfp
-    · have := fbSane_spec hs; simp only [poolFrames_eq] at hfp hgp; omega
+  have region : ∀ {x : Nat}, Valid s x →
+      (x < 512 ∧ physOf s x = 67108864 + x * 4096) ∨
+      (512 ≤ x ∧ x < 812 ∧ fbSane s.fbBase = true ∧ physOf s x = s.fbBase + (x - 512) * 4096) ∨
+      (x = 812 ∧ physOf s x = 0xFE201000) := by
+    intro x hx
+    rcases hx with hp | ⟨hs, hd⟩ | ⟨hd, hd2⟩
+    · left; exact ⟨by rwa [poolFrames_eq] at hp, physOf_pool hp⟩
+    · by_cases hp : x < poolFrames
+      · left; exact ⟨by rwa [poolFrames_eq] at hp, physOf_pool hp⟩
+      · right; left
+        refine ⟨by rw [poolFrames_eq] at hp; omega, by rwa [devBase_eq] at hd, hs, physOf_fb hp hd⟩
+    · right; right
+      refine ⟨by rw [devBase_eq] at hd; rw [devBase_eq, devPages_eq] at hd2; omega, physOf_dev hd⟩
+  rcases region hf with ⟨a1, e1⟩ | ⟨a1, a2, hs, e1⟩ | ⟨a1, e1⟩ <;>
+    rcases region hg with ⟨b1, e2⟩ | ⟨b1, b2, hs', e2⟩ | ⟨b1, e2⟩ <;>
+    rw [e1, e2] at h
+  all_goals first
+    | omega
+    | (have := fbSane_spec (by assumption); omega)
 
 /-- **Shared pages need a grant path.** Two tasks reach the same physical page only if that
 page's owner at boot can reach both of them. -/
@@ -357,5 +373,21 @@ theorem el0_mallory_isolated {s : KState} (h : Reachable s) {j : Nat} (hj2 : j �
     · exact hj2 h3.symm
     · cases h0
   · cases h2
+
+/-- **Only the input driver touches the UART.** If a task's user mode can reach the UART's
+register page, that task is the input driver. -/
+theorem el0_uart_only_input {s : KState} (h : Reachable s) {i : Nat} {mem : Arm.Mem}
+    {l1 l2 l3 : Nat} (hi : Installed s i mem l1 l2 l3)
+    {va pa : Nat} {p : Arm.Perm} (hw : Arm.walkEL0 mem l1 va = some (pa, p))
+    (huart : pa / pageSize = 0xFE201000 / pageSize) : i = inputTask := by
+  obtain ⟨f, hf, hpf, hr⟩ := el0_flow h hi hw
+  have hdv : Valid s devBase := Or.inr (Or.inr ⟨Nat.le_refl _, by decide⟩)
+  have : f = devBase := physOf_inj hf hdv (by rw [← hpf, huart, physOf_dev (Nat.le_refl _)])
+  subst this
+  have : owner devBase = inputTask := by decide
+  rw [this] at hr
+  rcases reach_iff hr with h1 | ⟨h0, _⟩
+  · exact h1.symm
+  · cases h0
 
 end LeanOS

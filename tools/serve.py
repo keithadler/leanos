@@ -3,9 +3,10 @@
 
 Serves a page on http://127.0.0.1:8796. "Boot" starts QEMU's Raspberry Pi 4 on this
 machine with no window of its own (`-display none`); its screen is published over VNC on a
-localhost-only WebSocket and drawn live in the page by noVNC, keyboard and mouse included,
-while the serial console streams alongside. QEMU keeps running until "Stop", the next
-"Boot", or the page going away.
+localhost-only WebSocket and drawn live in the page by noVNC, while the serial console
+streams alongside. Keys and mouse on the screen are sent into the Pi's serial line, where
+leanos's input driver reads them (the emulated Pi 4 has no USB). QEMU keeps running until
+"Stop", the next "Boot", or the page going away.
 """
 import http.server
 import json
@@ -25,7 +26,7 @@ QEMU = ["qemu-system-aarch64", "-M", "raspi4b", "-display", "none",
         "-serial", "stdio", "-semihosting", "-kernel", IMAGE]
 
 lock = threading.Lock()
-current = {"proc": None}
+current = {"proc": None, "id": 0}
 
 
 def stop_qemu():
@@ -65,6 +66,8 @@ button:disabled { opacity: .5; cursor: default; }
 .screen { background: #000; border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
           aspect-ratio: 4 / 3; position: relative; }
 #vnc { position: absolute; inset: 0; }
+#input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
+         resize: none; outline: none; cursor: none; opacity: 0; caret-color: transparent; }
 .screen .off { position: absolute; inset: 0; display: grid; place-items: center; color: #9b998f; font-size: 14px; }
 .screen .off[hidden] { display: none; }
 pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0;
@@ -76,10 +79,10 @@ pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8p
 <body><main>
 <h1>leanos</h1>
 <p class="sub">QEMU's Raspberry Pi 4 running build/kernel8.img on this Mac, with no window of its own.
-The screen is live, and keys and clicks go to the machine. The serial console streams alongside.</p>
+The screen is live: click it, then type or drag windows. The serial console streams alongside.</p>
 <div class="bar"><button id="boot">Boot</button><button id="stop" disabled>Stop</button><span id="status">Ready</span></div>
 <div class="panes">
-  <div class="screen"><div id="vnc"></div><div class="off" id="off">Not running</div></div>
+  <div class="screen"><div id="vnc"></div><textarea id="input" aria-label="The Pi's screen: click it to type" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea><div class="off" id="off">Not running</div></div>
   <pre id="out"></pre>
 </div>
 </main>
@@ -88,7 +91,7 @@ import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.7.0/core/rfb.js';
 const out = document.getElementById('out'), status = document.getElementById('status');
 const bootBtn = document.getElementById('boot'), stopBtn = document.getElementById('stop');
 const off = document.getElementById('off'), vncEl = document.getElementById('vnc');
-let es = null, rfb = null;
+let es = null, rfb = null, bootId = 0;
 
 function cls(line) {
   if (/PANIC|SHOULD NOT|CHANGED/.test(line)) return 'bad';
@@ -99,6 +102,7 @@ function connectScreen(tries) {
   if (rfb) { try { rfb.disconnect(); } catch (e) {} rfb = null; }
   const r = new RFB(vncEl, 'ws://127.0.0.1:%WS_PORT%');
   r.scaleViewport = true;
+  r.viewOnly = true;       /* input goes over the serial line instead: see below */
   r.addEventListener('connect', () => { off.hidden = true; });
   r.addEventListener('disconnect', () => {
     if (rfb !== r) return;
@@ -120,7 +124,7 @@ function boot() {
   es = new EventSource('/boot');
   es.onmessage = (e) => {
     const d = JSON.parse(e.data);
-    if (d.started) { status.textContent = 'Running'; setTimeout(() => connectScreen(20), 200); return; }
+    if (d.started) { bootId = d.id; status.textContent = 'Running'; setTimeout(() => connectScreen(20), 200); return; }
     if (d.done) { finish(d.code === 0 ? 'The machine powered itself off' : 'Stopped'); return; }
     const row = document.createElement('div');
     const t = document.createElement('span'); t.className = 't';
@@ -131,9 +135,43 @@ function boot() {
   };
   es.onerror = () => finish('Stopped');
 }
+/* Keys and mouse on the screen become bytes on the Pi's serial line: plain bytes for keys,
+   ESC 'm' kind xxx yyy for the mouse (see user/input.c). Sent in order, one request at a time. */
+const inputEl = document.getElementById('input');
+let sendQueue = Promise.resolve();
+function sendBytes(str) {
+  const id = bootId;
+  sendQueue = sendQueue.then(() => fetch('/input?id=' + id, {method: 'POST', body: str}).catch(() => {}));
+}
+function pad3(n) { return String(Math.max(0, Math.min(999, n))).padStart(3, '0'); }
+function mouse(kind, e) {
+  const r = inputEl.getBoundingClientRect();
+  const x = Math.round((e.clientX - r.left) * 640 / r.width), y = Math.round((e.clientY - r.top) * 480 / r.height);
+  sendBytes('\x1bm' + kind + pad3(Math.min(639, x)) + pad3(Math.min(479, y)));
+}
+let lastMove = 0, pendingMove = null;
+inputEl.addEventListener('mousedown', (e) => { inputEl.focus(); mouse('d', e); e.preventDefault(); });
+inputEl.addEventListener('mouseup', (e) => mouse('u', e));
+inputEl.addEventListener('mousemove', (e) => {
+  const now = performance.now();
+  if (now - lastMove >= 30) { lastMove = now; mouse('v', e); }
+  else { clearTimeout(pendingMove); pendingMove = setTimeout(() => { lastMove = performance.now(); mouse('v', e); }, 30); }
+});
+/* Text arrives through the field's input events, so typing, pasting and input methods all
+   work; Enter and Backspace come from the key events. */
+inputEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { sendBytes('\r'); e.preventDefault(); }
+  else if (e.key === 'Backspace') { sendBytes('\x7f'); e.preventDefault(); }
+});
+inputEl.addEventListener('input', () => {
+  const text = [...inputEl.value].filter(c => c >= ' ' && c.charCodeAt(0) < 127).join('');
+  inputEl.value = '';
+  if (text) sendBytes(text);
+});
 bootBtn.onclick = boot;
-stopBtn.onclick = () => { fetch('/stop', {method: 'POST'}); finish('Stopped'); };
-window.addEventListener('pagehide', () => navigator.sendBeacon('/stop'));
+stopBtn.onclick = () => { fetch('/stop?id=' + bootId, {method: 'POST'}); finish('Stopped'); };
+/* A stop from a page that is going away names its own boot, so it can never stop a newer one. */
+window.addEventListener('pagehide', () => { if (bootId) navigator.sendBeacon('/stop?id=' + bootId); });
 boot();
 </script></body></html>
 """.replace("%WS_PORT%", str(WS_PORT))
@@ -160,10 +198,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def boot_id(self):
+        query = self.path.partition("?")[2]
+        for part in query.split("&"):
+            key, _, value = part.partition("=")
+            if key == "id" and value.isdigit():
+                return int(value)
+        return -1
+
     def do_POST(self):
-        if self.path == "/stop":
+        path = self.path.partition("?")[0]
+        if path == "/input":
+            data = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
             with lock:
-                stop_qemu()
+                proc = current["proc"]
+                if proc and proc.poll() is None and proc.stdin and self.boot_id() == current["id"]:
+                    try:
+                        proc.stdin.write(data)
+                        proc.stdin.flush()
+                    except OSError:
+                        pass
+            self.send_response(204)
+            self.end_headers()
+        elif path == "/stop":
+            self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+            with lock:
+                if self.boot_id() == current["id"]:
+                    stop_qemu()
             self.send_response(204)
             self.end_headers()
         else:
@@ -176,12 +237,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def stream_boot(self):
         with lock:
             stop_qemu()
-            proc = subprocess.Popen(QEMU, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            proc = subprocess.Popen(QEMU, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT)
             current["proc"] = proc
+            current["id"] += 1
+            my_id = current["id"]
         start = time.monotonic()
         try:
-            self.send_event({"started": True})
+            self.send_event({"started": True, "id": my_id})
             for raw in proc.stdout:
                 line = raw.decode(errors="replace").rstrip("\r\n")
                 if line:
