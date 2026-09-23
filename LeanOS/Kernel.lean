@@ -91,6 +91,9 @@ structure Task where
 structure KState where
   tasks : List Task
   cur : Nat
+  /-- The physical address of the framebuffer the firmware allocated at boot. It never
+  changes. Framebuffer frames can only be mapped if it is sane (`fbSane`). -/
+  fbBase : Nat
 
 /-! ## List helpers
 
@@ -162,6 +165,19 @@ def framesPerTask : Nat := 64
 def poolFrames : Nat := framesPerTask * maxTasks
 
 def runCap (base count : Nat) (r : Rights) : Cap := ⟨.frames base count, r, 0⟩
+
+/-- The framebuffer: 640 × 480 pixels of 4 bytes, 300 pages. Its pages are frames
+`poolFrames` to `poolFrames + fbPages - 1`. -/
+def fbWidth : Nat := 640
+def fbHeight : Nat := 480
+def fbPages : Nat := 300
+
+/-- The task that owns the framebuffer at boot: the display server. -/
+def displayTask : Nat := 1
+
+/-- Who owns frame `f` at boot: pool frames belong to task `f / 64`, framebuffer frames to
+the display server. -/
+def owner (f : Nat) : Nat := if f < poolFrames then f / framesPerTask else displayTask
 def epCap (e : Nat) (recv send grant : Bool) (badge : Nat) : Cap := ⟨.endpoint e, ⟨recv, send, grant⟩, badge⟩
 
 /-- Task `i`'s frames, as four runs: 16 pages of code (read/execute), 16 of data, 4 of
@@ -170,13 +186,13 @@ def frameCaps (i : Nat) : List Cap :=
   runCap (64 * i) 16 Rights.rx :: runCap (64 * i + 16) 16 Rights.rw ::
     runCap (64 * i + 32) 4 Rights.rw :: runCap (64 * i + 36) 28 Rights.rw :: .nil
 
-/-- Endpoint 0 is the server's inbox. Task 0 (alice) may send to it and grant frames, with
-badge 1. Task 1 (the server) receives from it. Task 2 (mallory) may send to it, without
-grant, with badge 2. Task 3 (carol) holds no endpoint. Each endpoint capability is
-capability 4 of its task. -/
+/-- Endpoint 0 is the display server's inbox. Task 0 (alice) may send to it and grant
+frames, with badge 1. Task 1 (the display server) receives from it, and holds the
+framebuffer as capability 5. Task 2 (mallory) may send to it, without grant, with badge 2.
+Task 3 (carol) holds no endpoint. Each endpoint capability is capability 4 of its task. -/
 def initCaps : Nat → List Cap
   | 0 => snoc (frameCaps 0) (epCap 0 false true true 1)
-  | 1 => snoc (frameCaps 1) (epCap 0 true false false 0)
+  | 1 => snoc (snoc (frameCaps 1) (epCap 0 true false false 0)) (runCap poolFrames fbPages Rights.rw)
   | 2 => snoc (frameCaps 2) (epCap 0 false true false 2)
   | i => frameCaps i
 
@@ -191,7 +207,7 @@ def mkTasksFrom (i : Nat) : Nat → List Task
   | 0 => .nil
   | k + 1 => mkTask i :: mkTasksFrom (i + 1) k
 
-def init : KState := ⟨mkTasksFrom 0 numTasks, 0⟩
+def init (fbBase : Nat) : KState := ⟨mkTasksFrom 0 numTasks, 0, fbBase⟩
 
 /-! ## Scheduling -/
 
@@ -278,6 +294,14 @@ structure Reply where
 def ret (s : KState) (t : Task) (r : List Nat) : Reply :=
   ⟨setTask s s.cur { t with result := r }, 0, 0, false⟩
 
+/-- Where the frame pool starts: frame `f < poolFrames` is at `frameBase + f * pageSize`. -/
+def frameBase : Nat := 0x04000000
+
+/-- The framebuffer address is usable: page-aligned, past the end of the frame pool (so it
+overlaps neither the pool nor the kernel below it), and inside the 36-bit physical space. -/
+def fbSane (b : Nat) : Bool :=
+  b % pageSize == 0 && frameBase + poolFrames * pageSize ≤ b && b + fbPages * pageSize ≤ 2 ^ 36
+
 /-- Status codes in x0. -/
 def eNoCap : Nat := 1        -- no such capability
 def eBadArg : Nat := 2       -- wrong kind of capability, missing right, or bad argument
@@ -293,7 +317,7 @@ def sysMap (s : KState) (t : Task) (ci vpn : Nat) : Reply :=
     match c.obj with
     | .endpoint _ => ret s t (eBadArg :: .nil)
     | .frames base count =>
-      if vpn + count ≤ userPages && c.rights.r then
+      if vpn + count ≤ userPages && c.rights.r && (base + count ≤ poolFrames || fbSane s.fbBase) then
         ⟨setTask s s.cur { t with maps := app (runMaps vpn base c.rights count)
                                                (dropRange vpn count t.maps),
                                   result := 0 :: .nil }, 0, 0, true⟩
@@ -454,7 +478,7 @@ Exported functions take every argument owned (Lean does not allow borrowed argum
 `@[export]`), so the C caller increments the reference count of anything it wants to keep
 before passing it in. -/
 
-@[export leanos_init] def exInit (u : Nat) : KState := if u = 0 then init else init
+@[export leanos_init] def exInit (fbBase : Nat) : KState := init fbBase
 @[export leanos_syscall] def exSyscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   syscall s num a0 a1 a2 a3 a4
 @[export leanos_tick] def exTick (s : KState) : KState := schedule s
@@ -506,15 +530,16 @@ MMU reads these words, and `LeanOS/Tables.lean` proves what user mode can then r
 Physical memory on the Pi 4: the first GiB of RAM holds the kernel, its heap and the
 frame pool; the peripherals sit in the fourth GiB. -/
 
-/-- Where the frame pool starts: frame `f` is at `framePA f`. -/
-def frameBase : Nat := 0x04000000
-def framePA (f : Nat) : Nat := frameBase + f * pageSize
+/-- The physical address of frame `f`: in the pool, or in the framebuffer. -/
+def physOf (s : KState) (f : Nat) : Nat :=
+  if f < poolFrames then frameBase + f * pageSize else s.fbBase + (f - poolFrames) * pageSize
 
 /-- Descriptor fields. Every descriptor is a sum of these, each in its own bits. -/
 def dValid : Nat := 1                   -- bit 0
 def dTableOrPage : Nat := 2             -- bit 1: a table (levels 1–2) or a page (level 3)
 def attrNormal : Nat := 1 * 4           -- AttrIndx = 1: normal write-back memory
 def attrDevice : Nat := 0 * 4           -- AttrIndx = 0: device memory
+def attrNoCache : Nat := 2 * 4          -- AttrIndx = 2: normal memory, not cached (framebuffer)
 def apUserRW : Nat := 1 * 64            -- AP = 01: user read-write
 def apUserRO : Nat := 3 * 64            -- AP = 11: user read-only
 def shInner : Nat := 3 * 256            -- inner shareable
@@ -524,10 +549,11 @@ def privNoExec : Nat := 9007199254740992   -- PXN, bit 53: the kernel never runs
 def userNoExec : Nat := 18014398509481984  -- UXN, bit 54: user mode never runs it
 
 /-- The page descriptor for a mapping. A mapping without read rights is left unmapped:
-the MMU cannot give user mode write or execute access without read. -/
-def pageDesc (m : Mapping) : Nat :=
+the MMU cannot give user mode write or execute access without read. Framebuffer pages are
+not cached, so what user mode draws reaches the display. -/
+def pageDesc (s : KState) (m : Mapping) : Nat :=
   if m.rights.r then
-    framePA m.frame + dValid + dTableOrPage + attrNormal +
+    physOf s m.frame + dValid + dTableOrPage + (if m.frame < poolFrames then attrNormal else attrNoCache) +
       (if m.rights.w then apUserRW else apUserRO) + shInner + accessFlag + notGlobal +
       privNoExec + (if m.rights.x then 0 else userNoExec)
   else 0
@@ -541,7 +567,7 @@ def findVpn : List Mapping → Nat → Option Mapping
 8192 words, table `k / 512` covering virtual pages `k` to `k + 511` of the window. -/
 def l3Word (s : KState) (i k : Nat) : Nat :=
   match findVpn (mapsOf s i) k with
-  | some m => pageDesc m
+  | some m => pageDesc s m
   | none => 0
 
 /-- The number of level-3 tables per task: the window is 16 × 2 MiB. -/

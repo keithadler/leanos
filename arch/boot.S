@@ -159,7 +159,7 @@ user_prog_ends:
 prog0: .incbin "build/user/alice.bin"
 prog0_end:
 .balign 16
-prog1: .incbin "build/user/server.bin"
+prog1: .incbin "build/user/display.bin"
 prog1_end:
 .balign 16
 prog2: .incbin "build/user/mallory.bin"

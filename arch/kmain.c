@@ -13,7 +13,7 @@
 
 /* ---- the Lean kernel (LeanOS/Kernel.lean) ---- */
 lean_object *initialize_leanos_LeanOS_Kernel(uint8_t builtin);
-lean_object *leanos_init(lean_object *unused);
+lean_object *leanos_init(lean_object *fb_base);
 lean_object *leanos_syscall(lean_object *s, lean_object *num, lean_object *a0, lean_object *a1,
                             lean_object *a2, lean_object *a3, lean_object *a4);
 lean_object *leanos_tick(lean_object *s);
@@ -118,6 +118,54 @@ void kpanic(const char *msg) {
     poweroff();
 }
 
+/* ---- framebuffer ----
+ * Asked of the VideoCore firmware through the mailbox, once, at boot, before anything
+ * else runs. The mailbox is a DMA path (the firmware writes wherever the request says), so
+ * it never leaves this layer: user space only ever sees the resulting pages, as frame
+ * capabilities the Lean kernel hands out. The request is fixed: 640 x 480, 32 bits per
+ * pixel, which is `fbWidth`, `fbHeight` and `fbPages` in LeanOS/Kernel.lean. */
+
+#define MBOX (PERIPHERAL_BASE + 0xB880)
+#define FB_W 640
+#define FB_H 480
+#define FB_PAGES 300
+
+static volatile uint32_t mbox_buf[36] __attribute__((aligned(16)));
+
+static uint64_t fb_alloc(void) {
+    int i = 0;
+    mbox_buf[i++] = 0;                  /* size, set below */
+    mbox_buf[i++] = 0;                  /* request */
+    mbox_buf[i++] = 0x48003; mbox_buf[i++] = 8; mbox_buf[i++] = 0;  /* physical size */
+    mbox_buf[i++] = FB_W; mbox_buf[i++] = FB_H;
+    mbox_buf[i++] = 0x48004; mbox_buf[i++] = 8; mbox_buf[i++] = 0;  /* virtual size */
+    mbox_buf[i++] = FB_W; mbox_buf[i++] = FB_H;
+    mbox_buf[i++] = 0x48005; mbox_buf[i++] = 4; mbox_buf[i++] = 0;  /* depth */
+    mbox_buf[i++] = 32;
+    mbox_buf[i++] = 0x48006; mbox_buf[i++] = 4; mbox_buf[i++] = 0;  /* pixel order: BGR, */
+    mbox_buf[i++] = 0;                                              /* so 0x00RRGGBB words */
+    mbox_buf[i++] = 0x40001; mbox_buf[i++] = 8; mbox_buf[i++] = 0;  /* allocate */
+    mbox_buf[i++] = 4096; mbox_buf[i++] = 0;
+    mbox_buf[i++] = 0x40008; mbox_buf[i++] = 4; mbox_buf[i++] = 0;  /* pitch */
+    mbox_buf[i++] = 0;
+    mbox_buf[i++] = 0;                  /* end tag */
+    mbox_buf[0] = i * 4;
+
+    uint32_t msg = (uint32_t)(uint64_t)mbox_buf | 8; /* channel 8: properties */
+    while (mmio_r32(MBOX + 0x38) & 0x80000000) {}    /* write mailbox full */
+    mmio_w32(MBOX + 0x20, msg);
+    for (;;) {
+        while (mmio_r32(MBOX + 0x18) & 0x40000000) {} /* read mailbox empty */
+        if (mmio_r32(MBOX) == msg) break;
+    }
+    uint64_t base = mbox_buf[23] & 0x3FFFFFFF;       /* bus address to physical */
+    if (mbox_buf[1] != 0x80000000 || mbox_buf[5] != FB_W || mbox_buf[6] != FB_H ||
+        mbox_buf[15] != 32 || mbox_buf[24] < FB_PAGES * PAGE_SIZE || mbox_buf[28] != FB_W * 4 ||
+        base == 0 || (base & (PAGE_SIZE - 1)))
+        return 0;
+    return base;
+}
+
 /* ---- memory management unit ----
  * The Lean kernel computes every translation-table word (`l1Word`, `l2Word`, `l3Word` in
  * LeanOS/Kernel.lean); this layer only stores them. LeanOS/Tables.lean proves that, stored
@@ -147,8 +195,8 @@ static void tlb_flush_all(void) {
 static void mmu_init(void) {
     for (uint64_t k = 0; k < 512; k++) kl1[k] = word(leanos_kernel_l1(lean_box(k)));
 
-    /* Memory attribute 0: device nGnRE. Attribute 1: normal, write-back. */
-    SYSREG_WRITE(mair_el1, (0x04UL << 0) | (0xffUL << 8));
+    /* Memory attribute 0: device nGnRE. 1: normal, write-back. 2: normal, not cached. */
+    SYSREG_WRITE(mair_el1, (0x04UL << 0) | (0xffUL << 8) | (0x44UL << 16));
     uint64_t tcr = 25                /* T0SZ: 39-bit addresses */
                  | (1UL << 8)        /* inner write-back walks */
                  | (1UL << 10)       /* outer write-back walks */
@@ -240,7 +288,7 @@ static void load_programs(void) {
     }
 }
 
-static const char *const names[] = {"alice", "server", "mallory", "carol"};
+static const char *const names[] = {"alice", "display", "mallory", "carol"};
 
 static void do_syscall(uint64_t cur) {
     struct frame *f = &saved[cur];
@@ -277,9 +325,9 @@ static void finish(void) {
         if (!leanos_dead(K1, lean_box(i))) waiting++;
     if (waiting == 0) kputs("leanos: every task has finished (");
     else {
-        kputs("leanos: no task can run: ");
+        kputs("leanos: idle, ");
         kputdec(waiting);
-        kputs(" waiting for a message that will not come (");
+        kputs(waiting == 1 ? " task waiting for a message (" : " tasks waiting for messages (");
     }
     kputdec(syscalls);
     kputs(" system calls, ");
@@ -289,7 +337,11 @@ static void finish(void) {
     kputs(" bytes live, ");
     kputdec(rt_heap_peak());
     kputs(" peak)\n");
-    poweroff();
+    if (waiting == 0) poweroff();
+    /* Nothing can run until a message arrives, and only tasks send messages: the screen
+       stays as it is. Timer off, interrupts masked, wait. */
+    SYSREG_WRITE(cntp_ctl_el0, 0);
+    for (;;) __asm__ volatile("wfi");
 }
 
 static const char *fault_name(uint64_t ec) {
@@ -358,7 +410,14 @@ void kmain(void) {
     kputs(el == 1 ? "EL1" : "EL?");
     kputs("\n");
 
-    /* The Lean kernel comes up first: it computes the tables the MMU is turned on with. */
+    uint64_t fb = fb_alloc();
+    if (fb) {
+        kputs("leanos: framebuffer 640x480 at ");
+        kputhex(fb);
+        kputs("\n");
+    } else kputs("leanos: no framebuffer\n");
+
+    /* The Lean kernel comes up next: it computes the tables the MMU is turned on with. */
     lean_object *res = initialize_leanos_LeanOS_Kernel(1);
     if (!lean_io_result_is_ok(res)) kpanic("Lean module initialization failed");
     lean_dec(res);
@@ -366,7 +425,7 @@ void kmain(void) {
     mmu_init();
     kputs("leanos: MMU on\n");
 
-    K = leanos_init(lean_box(0));
+    K = leanos_init(lean_box(fb));
     ntasks = nat(leanos_ntasks(K1));
     if (ntasks > MAX_TASKS || ntasks > 4) kpanic("the manifest has more tasks than the machine layer supports");
     kputs("leanos: Lean kernel initialized, ");

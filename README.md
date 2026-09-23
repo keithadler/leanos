@@ -10,43 +10,46 @@ theorems in `LeanOS/Proofs.lean` are about that same code, so there is no separa
 specification that could drift from what runs. Underneath, about 1,000 lines of C and
 assembly boot the board, write page tables and switch tasks, but make no access decisions.
 
-Today it boots the Pi 4 (tested on QEMU's `raspi4b` machine) and runs four user tasks,
-preempted by the timer, each in its own address space, passing messages through the
-kernel.
+Today it boots the Pi 4 (tested on QEMU's `raspi4b` machine) into a small graphical
+desktop. A display server owns the framebuffer; alice draws a window in her own memory
+and hands the server a read-only capability to exactly those pages; mallory tries to reach
+the screen and everyone else's memory, and cannot.
+
+![The leanos desktop on QEMU's Raspberry Pi 4](docs/screen.png)
+
+The serial console of the same boot:
 
 ```
 leanos: Raspberry Pi 4, booting on EL1
+leanos: framebuffer 640x480 at 0x3c100000
 leanos: MMU on
 leanos: Lean kernel initialized, 4 tasks
 alice: wrote secret 0x5ec12e7 to my data page
-server: waiting for messages
-server: from badge 1: 44 0 0, with a capability to 1 page (r--); mapped at page 100, it says: a page alice drew into and shared, read-only
 mallory: I am task 2
+mallory: map capability 9 (not mine) at page 5 -> refused, no such capability
+mallory: print 16 bytes of kernel memory at 0x80000 -> refused, not allowed
+mallory: receive on the display's endpoint -> refused, not allowed
+mallory: send the display a window of my pixels -> refused, not allowed
+mallory: map the framebuffer (capability 5, which is the display's) -> refused, no such capability
+mallory: map the endpoint as memory -> refused, not allowed
+mallory: asked for every right on the endpoint, got send
 carol: asked for write+execute on my data frame, got -w-
 carol: jumping into the instruction I wrote in my data page
 leanos: carol stopped: instruction fetch not allowed at 0x80010000
-alice: granted the server read-only capability 5 to one page of my memory -> ok
-alice: sent the words 7 8 9 -> ok
-server: from badge 1: 7 8 9
-mallory: map capability 9 (not mine) at page 5 -> refused, no such capability
-mallory: print 16 bytes of kernel memory at 0x80000 -> refused, not allowed
-mallory: receive on the server's endpoint -> refused, not allowed
-mallory: grant my data page to the server -> refused, not allowed
-mallory: map the endpoint as memory -> refused, not allowed
-mallory: asked for every right on the endpoint, got send
-mallory: send 666 to the server -> ok
-mallory: reading page 64 directly, which nobody mapped for me
-leanos: mallory stopped: data access not allowed at 0x80040000
+display: desktop drawn on the 640x480 framebuffer
+alice: sent the display a 240x100 window, read-only, 24 pages -> ok
 alice: secret intact, exiting
-server: from badge 2: 666 0 0
-server: done
-leanos: every task has finished (42 system calls, 2 timer ticks, kernel heap 23296 bytes live, 23568 peak)
+display: alice's window, 240x100 from a read-only capability to 24 pages, drawn at (60, 70)
+display: mallory asked for a window but sent no pixels; ignored
+mallory: ask the display for a window without pixels -> ok
+mallory: writing to the screen's physical address 0x3c100000 directly
+leanos: mallory stopped: data access not allowed at 0x3c100000
+leanos: idle, 1 task waiting for a message (40 system calls, 2 timer ticks, kernel heap 49296 bytes live, 60160 peak)
 ```
 
-alice draws into a page and grants the server read-only access to just that page, the way a GUI client
-will hand the display server a buffer. mallory may talk to the server but has no right to
-receive, grant or read anyone's memory, and the kernel stamps her messages with her badge,
-so she cannot pass for alice.
+The kernel stamps every message with the sender's badge, so mallory cannot pass for
+alice. Her direct write to the screen's physical address faults, and the pixel she aimed
+at still shows the menu bar. `make test` checks that pixel.
 
 ## What is proved
 
@@ -55,8 +58,8 @@ can reach, under any sequence of system calls with any arguments:
 
 - **Authority flow**: a task holds a frame only if a chain of grants from its original
   owner could have given it, never with more rights. For the demo: mallory and carol can
-  never hold anyone's memory but their own; alice can share with the server and nobody
-  else.
+  never hold anyone's memory but their own; alice can share with the display server and
+  nobody else; only the display server can ever reach the framebuffer.
 - **No forged identity**: endpoint rights never grow and badges never change.
 - **W^X**: no page is ever both writable and executable.
 - **Every mapping is backed** by a capability the task holds, with the same rights.
@@ -64,9 +67,10 @@ can reach, under any sequence of system calls with any arguments:
 - **The scheduler never runs a waiting or stopped task** while a ready one exists.
 
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
-MMU proves that user mode reaches exactly its own mappings, nothing of the kernel or the
-peripherals, and shares a physical page with another task only along a grant path.
-`make mutants` breaks the kernel in 19 ways and checks the proofs catch each one.
+MMU proves that user mode reaches exactly its own mappings, only the frame pool and the
+framebuffer (never the kernel or the peripherals), and shares a physical page with another
+task only along a grant path. `make mutants` breaks the kernel in 24 ways and checks the
+proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
 Lean compiler, the runtime shim, the machine layer, the MMU model, the hardware).
@@ -81,16 +85,16 @@ make          # build build/kernel8.img and check every proof
 ```
 
 ```bash
-make run      # boot it on QEMU's Pi 4 (Ctrl-A X quits)
+make run      # boot it on QEMU's Pi 4 in a window (close it to quit)
 ```
 
 ```bash
-make test     # proofs, axiom check, boot, and a check of the transcript
+make test     # proofs, axiom check, boot, the transcript, and the pixels on screen
 ```
 
 To watch a boot from a browser, run `python3 tools/serve.py` and open
-http://127.0.0.1:8796. Each press of Boot starts a real QEMU run on your machine and
-streams its serial console to the page as it happens.
+http://127.0.0.1:8796. Each press of Boot starts a real QEMU run on your machine, streams
+its serial console as it happens, and shows the screen when the system settles.
 
 ## How it fits together
 
@@ -103,8 +107,8 @@ streams its serial console to the page as it happens.
 | `rt/runtime.c` | The bare-metal slice of Lean's runtime: allocator, reference counts, closures. |
 | `arch/boot.S` | Entry, exception vectors, entering and leaving user mode. |
 | `arch/kmain.c` | Boot, MMU, interrupt controller, timer; carries out what the Lean kernel returns. |
-| `user/` | The three demo programs. |
-| `test/` | The boot transcript check and the axiom check. |
+| `user/` | The demo programs: the display server, alice, mallory, carol; `gfx.h` draws, `font5x7.txt` is the font. |
+| `test/` | The boot check (transcript and screen), the axiom check, and the mutants. |
 | `tools/serve.py` | The browser console: runs QEMU and streams its serial output. |
 
 A trap works like this: the machine layer saves the task's registers and passes the Lean

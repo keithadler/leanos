@@ -38,11 +38,13 @@ frame only if a chain of explicit grants gave it one. (Done with endpoint capabi
 fixed by the boot manifest; creating and passing endpoints waits for stage 5.) A GUI needs this: clients talk to
 the display server over IPC and hand it the memory they draw into.
 
-## 4. Drivers in user space
+## 4. Drivers in user space — framebuffer done
 
-Groundwork done: capabilities name runs of frames (so one capability can cover a window
-buffer or the framebuffer), `derive` cuts out sub-runs, each task has 64 frames and a
-32 MiB window through 16 level-3 tables, all with the proofs carried over.
+Done: capabilities name runs of frames, `derive` cuts out sub-runs, each task has 64
+frames and a 32 MiB window through 16 level-3 tables. The framebuffer is allocated at boot
+through the mailbox (kept in trusted C, since it is a DMA path) and handed to the display
+server as a capability; only it can ever reach the screen (proved). Remaining: interrupt
+capabilities, and moving the UART driver out of the kernel.
 
 Device-frame and interrupt capabilities. The framebuffer (allocated through the VideoCore
 mailbox) goes to a display-server task as a device capability; the UART driver moves out

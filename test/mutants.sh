@@ -11,14 +11,17 @@ survived=0
 mutant() {
   local name=$1 from=$2 to=$3
   cp "$backup" LeanOS/Kernel.lean
-  python3 - "$from" "$to" <<'PY'
+  if ! python3 - "$from" "$to" <<'PY'
 import sys
 p = 'LeanOS/Kernel.lean'
 s = open(p).read()
 if sys.argv[1] not in s:
-    sys.exit('mutation target not found: ' + sys.argv[1])
+    sys.exit(1)
 open(p, 'w').write(s.replace(sys.argv[1], sys.argv[2], 1))
 PY
+  then
+    echo "BROKEN: $name (its target is no longer in Kernel.lean)"; survived=1; return
+  fi
   if lake build >/dev/null 2>&1; then
     echo "SURVIVED: $name"; survived=1
   else
@@ -37,7 +40,7 @@ mutant "map ignores the capability's frames" \
 mutant "derive cuts a piece past the end of the run" \
   "else if offset + count ≤ n then some (.frames (base + offset) count) else none" "else some (.frames (base + offset) count)"
 mutant "map outside the user window" \
-  "if vpn + count ≤ userPages && c.rights.r then" "if c.rights.r then"
+  "if vpn + count ≤ userPages && c.rights.r &&" "if c.rights.r &&"
 mutant "write skips the page check" \
   "allReadable t.maps ((va - userBase) / pageSize)" "true || allReadable t.maps ((va - userBase) / pageSize)"
 mutant "send without the send right" \
@@ -60,6 +63,14 @@ mutant "manifest gives mallory the grant right" \
   "epCap 0 false true false 2" "epCap 0 false true true 2"
 mutant "manifest gives mallory the receive right" \
   "epCap 0 false true false 2" "epCap 0 true true false 2"
+mutant "map framebuffer frames without checking the firmware's address" \
+  "(base + count ≤ poolFrames || fbSane s.fbBase)" "true"
+mutant "accept a framebuffer that overlaps the frame pool" \
+  "b % pageSize == 0 && frameBase + poolFrames * pageSize ≤ b" "b % pageSize == 0 && frameBase ≤ b"
+mutant "manifest gives mallory the framebuffer" \
+  "| 2 => snoc (frameCaps 2) (epCap 0 false true false 2)" "| 2 => snoc (snoc (frameCaps 2) (epCap 0 false true false 2)) (runCap poolFrames fbPages Rights.rw)"
+mutant "framebuffer frames count as alice's" \
+  "def owner (f : Nat) : Nat := if f < poolFrames then f / framesPerTask else displayTask" "def owner (f : Nat) : Nat := if f < poolFrames then f / framesPerTask else 0"
 mutant "user pages always executable" \
   "privNoExec + (if m.rights.x then 0 else userNoExec)" "privNoExec + 0"
 mutant "read-only pages writable" \

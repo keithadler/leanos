@@ -1,6 +1,6 @@
 #!/bin/bash
-# Boots leanos in QEMU and checks the transcript: every line below must appear, in order
-# within each task, and the machine must power itself off.
+# Boots leanos on QEMU's Raspberry Pi 4 and checks what it did: the axioms every proof rests
+# on, the serial transcript, and the pixels on the screen.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -13,11 +13,11 @@ echo "$axioms" | grep -v "depends on axioms: \[\(propext\|Classical.choice\|Quot
   | grep -q . && fail "unexpected axiom: $axioms"
 echo "ok: $(echo "$axioms" | wc -l | tr -d ' ') theorems rest only on Lean's standard axioms"
 
-out=$(timeout 30 qemu-system-aarch64 -M raspi4b \
-  -nographic -semihosting -kernel build/kernel8.img 2>&1 | tr -d '\r')
+rm -f build/screen.ppm build/screen.png
+out=$(python3 test/run.py 30)
 status=$?
 echo "$out" | sed 's/^/  | /'
-[ $status -eq 0 ] || fail "QEMU did not power off cleanly (status $status)"
+[ $status -eq 0 ] || fail "the run did not reach idle (status $status)"
 
 # Each task's lines must appear in this order; tasks may interleave with each other.
 check_order() {
@@ -31,40 +31,63 @@ check_order() {
 
 check_order alice \
   "alice: wrote secret 0x5ec12e7 to my data page" \
-  "alice: granted the server read-only capability 5 to one page of my memory -> ok" \
-  "alice: sent the words 7 8 9 -> ok" \
+  "alice: sent the display a 240x100 window, read-only, 24 pages -> ok" \
   "alice: secret intact, exiting"
 
 check_order mallory \
   "mallory: I am task 2" \
   "mallory: map capability 9 (not mine) at page 5 -> refused, no such capability" \
   "mallory: print 16 bytes of kernel memory at 0x80000 -> refused, not allowed" \
-  "mallory: receive on the server's endpoint -> refused, not allowed" \
-  "mallory: grant my data page to the server -> refused, not allowed" \
+  "mallory: receive on the display's endpoint -> refused, not allowed" \
+  "mallory: send the display a window of my pixels -> refused, not allowed" \
+  "mallory: map the framebuffer (capability 5, which is the display's) -> refused, no such capability" \
   "mallory: map the endpoint as memory -> refused, not allowed" \
   "mallory: asked for every right on the endpoint, got send" \
-  "mallory: send 666 to the server -> ok" \
-  "mallory: reading page 64 directly, which nobody mapped for me" \
-  "leanos: mallory stopped: data access not allowed at 0x80040000"
+  "mallory: ask the display for a window without pixels -> ok" \
+  "mallory: writing to the screen's physical address 0x3c100000 directly" \
+  "leanos: mallory stopped: data access not allowed at 0x3c100000"
 
 check_order carol \
   "carol: asked for write+execute on my data frame, got -w-" \
   "carol: jumping into the instruction I wrote in my data page" \
   "leanos: carol stopped: instruction fetch not allowed at 0x80010000"
 
-# The server's three messages may arrive in any order; each must arrive exactly once.
-server=$(echo "$out" | grep -E "^server: ")
-[ "$(echo "$server" | head -1)" = "server: waiting for messages" ] || fail "server did not start"
-[ "$(echo "$server" | tail -1)" = "server: done" ] || fail "server did not finish"
+# The display's messages may arrive in any order; each must arrive exactly once.
+display=$(echo "$out" | grep -E "^display: ")
+[ "$(echo "$display" | head -1)" = "display: desktop drawn on the 640x480 framebuffer" ] || fail "display did not draw the desktop"
 for line in \
-  "server: from badge 1: 44 0 0, with a capability to 1 page (r--); mapped at page 100, it says: a page alice drew into and shared, read-only" \
-  "server: from badge 2: 666 0 0" \
-  "server: from badge 1: 7 8 9"; do
-  [ "$(echo "$server" | grep -cxF "$line")" = 1 ] || fail "server line missing or repeated: $line"
+  "display: alice's window, 240x100 from a read-only capability to 24 pages, drawn at (60, 70)" \
+  "display: mallory asked for a window but sent no pixels; ignored"; do
+  [ "$(echo "$display" | grep -cxF "$line")" = 1 ] || fail "display line missing or repeated: $line"
 done
-[ "$(echo "$server" | wc -l | tr -d ' ')" = 5 ] || fail "server printed unexpected lines"
+[ "$(echo "$display" | wc -l | tr -d ' ')" = 3 ] || fail "display printed unexpected lines"
 
-echo "$out" | grep -q "^leanos: every task has finished" || fail "did not finish"
+echo "$out" | grep -q "^leanos: framebuffer 640x480 at 0x3c100000$" || fail "no framebuffer"
+echo "$out" | grep -q "^leanos: idle, 1 task waiting for a message" || fail "did not settle with the display waiting"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 echo "$out" | grep -qE "SHOULD NOT|CHANGED" && fail "a protection failed"
 echo "ok: boot transcript matches"
+
+# The screen itself.
+python3 - <<'PY' || fail "the screen is not what the display drew"
+data = open("build/screen.ppm", "rb").read()
+_, dims, _, px = data.split(b"\n", 3)
+w, h = map(int, dims.split())
+assert (w, h) == (640, 480), (w, h)
+
+def at(x, y):
+    i = (y * w + x) * 3
+    return tuple(px[i:i + 3])
+
+exact = {
+    (0, 0): (245, 243, 236),     # menu bar, where mallory tried to write 0xbad
+    (1, 0): (245, 243, 236),
+    (100, 80): (58, 96, 150),    # alice's title bar
+    (272, 104): (58, 150, 96),   # the green square alice drew
+}
+for (x, y), want in exact.items():
+    assert at(x, y) == want, ((x, y), at(x, y), want)
+r, g, b = at(320, 400)           # the desktop gradient
+assert 20 < r < 40 and 80 < g < 110 and 90 < b < 120, (r, g, b)
+print("ok: the screen shows the desktop and alice's window; mallory's write never landed")
+PY

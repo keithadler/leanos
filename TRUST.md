@@ -27,7 +27,7 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `endpoints_fixed` | Endpoint capabilities never gain rights and keep their badge, so no task can forge who it is. |
 | `edge_iff` | In the demo manifest the only grant edge is alice to the server. |
 | `mallory_confined`, `carol_confined`, `alice_confined` | Each of these tasks only ever holds its own 64 frames. |
-| `server_frames` | The server holds only its own frames and alice's. |
+| `server_frames` | The display server holds only its own frames, the framebuffer, and alice's. |
 | `maps_backed` | Every page a task can see comes from one of its own capabilities, with that capability's rights. |
 | `no_write_execute` | No page is ever both writable and executable. |
 | `maps_in_range` | Every mapping is inside the 8192-page user window and the frame pool. |
@@ -42,15 +42,16 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | Theorem | Statement |
 |---|---|
 | `walk_eq_view` | For every virtual address, what user mode may do there is exactly what the task's mappings say, and nothing outside the 32 MiB user window. |
-| `el0_only_frame_pool` | User mode can reach only the frame pool: never the kernel image, heap, tables or peripherals. |
+| `el0_only_pool_or_fb` | User mode can reach only the frame pool and, if the firmware's address for it is sane, the framebuffer: never the kernel image, heap, tables or peripherals. |
+| `physOf_inj` | Different frames are different physical pages: the framebuffer never overlaps the pool. |
 | `el0_no_write_execute` | No address user mode can reach is both writable and executable. |
 | `el0_flow`, `el0_shared` | A physical page user mode can reach came along grant edges from its owner; two tasks share a page only if one owner reaches both. |
 | `el0_mallory_isolated` | mallory's user mode never reaches a page any other task can reach. |
 
-`make mutants` breaks the kernel in 19 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 24 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
-gives mallory one more right, a kernel page-table entry missing its execute-never bit, and
-so on) and checks that the proofs reject every one.
+gives mallory one more right or the framebuffer, a framebuffer address that overlaps the
+pool, a kernel page-table entry missing its execute-never bit, and so on) and checks that the proofs reject every one.
 
 `make test` checks that each theorem rests only on Lean's standard axioms (`propext`,
 `Classical.choice`, `Quot.sound`) and never on `sorry`.
@@ -98,6 +99,13 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   argued here, not proved.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.
 
+- The framebuffer: `fb_alloc` asks the firmware for 640 x 480 x 32 through the mailbox,
+  once at boot, and passes the address to Lean only if the reply matches the request.
+  The mailbox is a DMA path, so it never leaves this layer. Lean checks the address is
+  aligned and past the frame pool before any framebuffer page can be mapped (proved), but
+  that the firmware really reserved those pages for the screen, and nothing else uses
+  them, is trusted.
+
 **`LeanOS/Arm.lean`**, the model of the MMU. It is about 90 lines, written to be checked
 against the Arm Architecture Reference Manual (DDI 0487, chapter D8). Where it simplifies,
 it claims more access for user mode than the hardware gives, never less, so the proved
@@ -114,7 +122,11 @@ QEMU's model of them, because leanos has only run under QEMU.
   mode's is.
 - No protection against timing or cache side channels.
 - Only one scheduling property is proved (a live task is always picked). Fairness is not.
-- No devices are given to user tasks, so DMA isolation is not addressed yet.
+- The framebuffer is the only device memory given to a user task, and it cannot start
+  DMA. Devices that can (USB, SD) will need an IOMMU-free answer on the Pi, which has
+  none: their drivers will have to stay trusted or be confined by other means.
+- Colors: the pixel order is set so QEMU shows 0x00RRGGBB correctly. A real Pi 4 may
+  swap red and blue; that needs checking on hardware.
 - Endpoint capabilities are fixed by the boot manifest; tasks cannot create or pass them
   yet (stage 5). Granted frames cannot be revoked yet.
 - Confinement is about capabilities. A task that holds a frame can still copy its bytes

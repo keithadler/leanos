@@ -29,7 +29,7 @@ INIT_C := $(patsubst %,build/c/Init_%.c,$(INIT_MODULES))
 INIT_O := $(INIT_C:.c=.o)
 
 KERNEL_LEAN_C := .lake/build/ir/LeanOS/Kernel.c
-USER_PROGS := alice server mallory carol
+USER_PROGS := alice display mallory carol
 USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
 ARCH_O := build/boot.o build/kmain.o build/runtime.o build/libc.o build/Kernel.o
@@ -66,9 +66,13 @@ build/boot.o: arch/boot.S $(USER_BINS)
 	@mkdir -p build
 	$(CC) $(TARGET) -c $< -o $@
 
-build/user/%.elf: user/%.c user/lib.h user/user.ld
+build/user/font.h: user/font5x7.txt tools/mkfont.py
 	@mkdir -p build/user
-	$(CC) $(UCFLAGS) -c $< -o build/user/$*.o
+	python3 tools/mkfont.py $< $@
+
+build/user/%.elf: user/%.c user/lib.h user/gfx.h user/user.ld build/user/font.h
+	@mkdir -p build/user
+	$(CC) $(UCFLAGS) -Ibuild/user -c $< -o build/user/$*.o
 	$(LD) -T user/user.ld --gc-sections build/user/$*.o -o $@
 
 build/user/%.bin: build/user/%.elf
@@ -82,7 +86,7 @@ build/leanos.elf: $(ARCH_O) $(INIT_O) arch/kernel.ld
 build/kernel8.img: build/leanos.elf
 	$(OBJCOPY) -O binary $< $@
 
-QEMU_ARGS := -M raspi4b -nographic -semihosting -kernel build/kernel8.img
+QEMU_ARGS := -M raspi4b -serial stdio -semihosting -kernel build/kernel8.img
 
 run: build/kernel8.img
 	$(QEMU) $(QEMU_ARGS)

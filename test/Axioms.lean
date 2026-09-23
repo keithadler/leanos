@@ -17,7 +17,8 @@ open LeanOS
 #print axioms write_reads_only_readable
 #print axioms schedule_picks_ready
 #print axioms walk_eq_view
-#print axioms el0_only_frame_pool
+#print axioms el0_only_pool_or_fb
+#print axioms physOf_inj
 #print axioms el0_no_write_execute
 #print axioms el0_flow
 #print axioms el0_shared
