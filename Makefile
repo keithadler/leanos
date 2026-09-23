@@ -38,7 +38,7 @@ ARCH_O := build/boot.o build/kmain.o build/sd.o build/sha256.o build/runtime.o b
 .PHONY: all run test mutants proofs clean
 ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files)
 
-all: $(ASSET_BLOBS) build/kernel8.img proofs
+all: $(ASSET_BLOBS) build/kernel8.img build/sd-template.img proofs
 
 # The asset blobs are real outputs, not intermediates: a missing one must be rebuilt.
 .PRECIOUS: build/assets/%.bin
@@ -133,10 +133,23 @@ build/user/font.h: user/font5x7.txt tools/mkfont.py
 	@mkdir -p build/user
 	python3 tools/mkfont.py $< $@
 
-build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/fs.h user/user.ld build/user/font.h
+build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/fs.h user/elf.h user/user.ld build/user/font.h
 	@mkdir -p build/user
 	$(CC) $(UCFLAGS) -Ibuild/user -c $< -o build/user/$*.o
 	$(LD) -T user/user.ld --gc-sections build/user/$*.o -o $@
+
+# Programs that live on the SD card, not in the kernel image: stripped ELF files.
+DISK_PROGS := hello
+DISK_ELFS := $(patsubst %,build/progs/%.elf,$(DISK_PROGS))
+build/progs/%.elf: user/progs/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/user.ld build/user/font.h
+	@mkdir -p build/progs
+	$(CC) $(UCFLAGS) -Ibuild/user -c $< -o build/progs/$*.o
+	$(LD) -T user/user.ld --gc-sections -z max-page-size=4096 -z common-page-size=4096 build/progs/$*.o -o $@
+	$(LLVM)/llvm-strip $@
+
+# A card with welcome.txt and the programs, the way the tests boot (tools/mksd.py).
+build/sd-template.img: tools/mksd.py $(DISK_ELFS)
+	python3 tools/mksd.py $@ $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf)
 
 build/user/%.bin: build/user/%.elf
 	$(OBJCOPY) -O binary $< $@
@@ -151,9 +164,8 @@ build/kernel8.img: build/leanos.elf
 
 # The SD card: an 8 MiB image, made once and kept, so files survive a reboot.
 SD_IMAGE := build/sd.img
-$(SD_IMAGE):
-	@mkdir -p build
-	qemu-img create -f raw $@ 8M
+$(SD_IMAGE): build/sd-template.img
+	cp build/sd-template.img $@
 
 QEMU_ARGS := -M raspi4b -display none -serial stdio -semihosting -kernel build/kernel8.img \
   -drive if=sd,format=raw,file=$(SD_IMAGE)

@@ -4,6 +4,13 @@
    send + grant to the display server and the file server. */
 #include "app.h"
 #include "fs.h"
+#include "elf.h"
+
+/* Terminal's launch capabilities for the open slots, which run programs from the SD card. */
+#define LAUNCH_OPEN 6
+#define OPEN_FIRST 10
+#define OPEN_SLOTS 2
+#define IMAGE_OFFSET 192   /* the program image, in the spare run: pages 192-207 */
 
 #define TW 460
 #define TH 272
@@ -215,13 +222,72 @@ static void cmd_rm(struct term *t, struct line *l, const char *args) {
     fs_log(l, "rm", name, st == FS_OK ? "ok" : fs_error(st));
 }
 
+/* Every program slot and what the kernel says about it. */
+static void cmd_ps(struct term *t, struct line *l) {
+    int running = 0;
+    for (u64 k = 0; k < NSLOTS; k++) {
+        struct res r = sys1(SYS_BOOTINFO, k);
+        if (r.status != OK) break;
+        put_dec(l, k);
+        pad_to(l, 4);
+        put_s(l, slot_name(k));
+        pad_to(l, 20);
+        put_s(l, r.x[4] == 1 ? "running" : r.x[4] == 2 ? "stopped" : "-");
+        if (r.x[1] == 3) put_s(l, "  (from the SD card)");
+        out(t, l);
+        running += r.x[4] == 1;
+    }
+    put_s(l, "terminal: ps -> ");
+    put_dec(l, (u64)running);
+    put_s(l, " running\n");
+    flush(l);
+}
+
+/* Read a program from the SD card, make its image, and start it in a free open slot. */
+static void cmd_run(struct term *t, struct line *l, const char *args) {
+    char name[FS_NAME_MAX + 1];
+    word_of(args, name, FS_NAME_MAX);
+    long n = fs_read(&t->fs, name);
+    if (n < 0) { say(t, "no such file"); fs_log(l, "run", name, "no such file"); return; }
+    unsigned char *image = (unsigned char *)PAGE(SPARE_PAGE + IMAGE_OFFSET);
+    u64 len = 0;
+    const char *why = elf_image((const unsigned char *)fs_data(&t->fs), (u64)n, image, &len);
+    if (why) {
+        put_s(l, name);
+        put_s(l, ": ");
+        put_s(l, why);
+        out(t, l);
+        fs_log(l, "run", name, why);
+        return;
+    }
+    for (int i = 0; i < OPEN_SLOTS; i++) {
+        if (sys1(SYS_BOOTINFO, OPEN_FIRST + (u64)i).x[4] == 1) continue;   /* in use */
+        struct res r = sys(SYS_EXEC, LAUNCH_OPEN + (u64)i, (u64)image, len, 0, 0);
+        if (r.status != OK) continue;
+        put_s(l, "started ");
+        put_s(l, name);
+        put_s(l, " in slot ");
+        put_dec(l, OPEN_FIRST + (u64)i);
+        out(t, l);
+        put_s(l, "terminal: run ");
+        put_s(l, name);
+        put_s(l, " -> slot ");
+        put_dec(l, OPEN_FIRST + (u64)i);
+        put_s(l, "\n");
+        flush(l);
+        return;
+    }
+    say(t, "no free slot: close a program first");
+    fs_log(l, "run", name, "no free slot");
+}
+
 static void run(struct term *t, struct line *l) {
     const char *c = t->cmd;
     while (*c == ' ') c++;
     if (!*c) return;
     if (starts(c, "help")) {
-        say(t, "whoami caps boot uptime echo clear exit");
-        say(t, "ls, cat FILE, write FILE TEXT, rm FILE");
+        say(t, "whoami caps boot ps uptime echo clear exit");
+        say(t, "ls, cat FILE, write FILE TEXT, rm FILE, run PROGRAM");
     } else if (starts(c, "whoami")) {
         u64 me = sys0(SYS_WHOAMI).x[1];
         put_s(l, "task ");
@@ -234,6 +300,10 @@ static void run(struct term *t, struct line *l) {
         cmd_caps(t, l);
     } else if (starts(c, "boot")) {
         cmd_boot(t, l);
+    } else if (starts(c, "ps")) {
+        cmd_ps(t, l);
+    } else if (starts(c, "run")) {
+        cmd_run(t, l, c + 3);
     } else if (starts(c, "ls")) {
         cmd_ls(t, l);
     } else if (starts(c, "cat")) {

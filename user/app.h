@@ -20,7 +20,7 @@ enum { SET_BACKGROUND = 1 };
 
 struct event { u64 kind, a, b; };
 
-#define NSLOTS 10  /* program slots in the manifest */
+#define NSLOTS 12  /* program slots in the manifest */
 
 /* Map the spare run (read-write, the app's own) and return its assets. */
 static inline const unsigned char *app_assets(void) {
@@ -53,6 +53,6 @@ static inline struct event app_wait(int dirty) {
 static inline const char *slot_name(u64 k) {
     static const char *const names[NSLOTS] = {"Notes", "Display server", "Test: mallory", "Test: carol",
                                               "Input driver", "Terminal", "Settings", "Security",
-                                              "File server", "Files"};
+                                              "File server", "Files", "Open slot 10", "Open slot 11"};
     return k < NSLOTS ? names[k] : "?";
 }

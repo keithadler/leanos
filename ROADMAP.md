@@ -139,5 +139,14 @@ caller has mapped with the right permission. The file server keeps its table and
 the card and reads them back at boot, so files and the note survive a restart; with no
 card it keeps them in memory.
 
-Next: a journal (so a power cut cannot lose a change halfway), the SD card on real Pi 4
-hardware (EMMC2), a loader for ELF programs, multiple cores, and the Pi 5.
+Done too: programs from the SD card. They are ELF files on the card (`tools/mksd.py`
+writes a card with them, the way programs are copied onto any computer's disk); Terminal's
+`run` reads one, checks and flattens it in user space, and starts it with `exec` in one of
+two open slots. The manifest fixes what an open slot may hold (its own memory, a window),
+not what code it runs, so a program nobody vetted is still confined by every theorem; the
+kernel proves the image comes only from memory the loader can read. `ps` lists the slots.
+
+Next: a journal (so a power cut cannot lose a change halfway), a timer call so programs can
+sleep (a clock, animations), more open slots and a way to give a program more authority on
+purpose (a file server endpoint, say) with the user's consent, the SD card on real Pi 4
+hardware (EMMC2), multiple cores, and the Pi 5.

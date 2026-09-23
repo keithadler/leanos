@@ -283,8 +283,9 @@ if __name__ == "__main__":
     if not os.path.exists(IMAGE):
         raise SystemExit("build/kernel8.img is missing: run `make` first")
     if not os.path.exists(SD_IMAGE):
-        with open(SD_IMAGE, "wb") as f:
-            f.truncate(8 * 1024 * 1024)   # a blank 8 MiB card; the file server formats it
+        # the card `make` builds: welcome.txt and the programs Terminal can run
+        import shutil
+        shutil.copyfile(os.path.join(ROOT, "build", "sd-template.img"), SD_IMAGE)
     print(f"leanos in the browser on http://127.0.0.1:{PORT}", flush=True)
     try:
         Server(("127.0.0.1", PORT), Handler).serve_forever()

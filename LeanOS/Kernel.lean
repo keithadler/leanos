@@ -179,7 +179,7 @@ without bound by deriving or being granted capabilities. -/
 def maxCaps : Nat := 64
 
 /-- The number of program slots in the manifest, and the most the frame pool has room for. -/
-def numTasks : Nat := 10
+def numTasks : Nat := 12
 def maxTasks : Nat := 16
 
 /-- Each task owns 256 frames (1 MiB) of the pool: task `i` owns frames `256i` to `256i+255`. -/
@@ -240,6 +240,10 @@ registers (capability 5) and its interrupt (capability 6). Tasks 5 (Terminal), 6
 (Settings), 7 (Security) and 9 (Files) may send and grant with badges 5, 6, 7 and 9.
 Each of these endpoint capabilities is capability 4 of its task.
 
+Terminal also holds the launch capabilities for the open slots, 10 and 11 (its
+capabilities 6 and 7), which run programs from the SD card; they may send and grant to the
+display server with badges 10 and 11.
+
 Endpoint 1 is the file server's inbox. Task 8 (the file server) receives from it, and
 Notes, Terminal and Files may send to it and grant (a buffer, for one request), with
 badges 1, 5 and 9, as their capability 5. The file server alone holds the SD card's first
@@ -252,12 +256,23 @@ def initCaps : Nat → List Cap
   | 2 => snoc (frameCaps 2) (epCap 0 false true false 2)
   | 4 => snoc (snoc (snoc (frameCaps 4) (epCap 0 false true false 3)) (runCap devBase devPages Rights.rw))
            (irqCap uartIrq)
-  | 5 => snoc (snoc (frameCaps 5) (epCap 0 false true true 5)) (epCap 1 false true true 5)
+  | 5 => snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5)) (epCap 1 false true true 5))
+           (launchCap 10)) (launchCap 11)
   | 6 => snoc (frameCaps 6) (epCap 0 false true true 6)
   | 7 => snoc (frameCaps 7) (epCap 0 false true true 7)
   | 8 => snoc (snoc (frameCaps 8) (epCap 1 true false false 0)) (blocksCap 0 diskBlocks)
   | 9 => snoc (snoc (frameCaps 9) (epCap 0 false true true 9)) (epCap 1 false true true 9)
+  | 10 => snoc (frameCaps 10) (epCap 0 false true true 10)
+  | 11 => snoc (frameCaps 11) (epCap 0 false true true 11)
   | i => frameCaps i
+
+/-- The open slots, 10 and 11: they run whatever program they are started with (Terminal
+loads one from the SD card), not a program the manifest names. What such a program may do
+is fixed here all the same: its own frames, and a window from the display server. -/
+def openSlot (i : Nat) : Bool := i == 10 || i == 11
+
+/-- The largest program an open slot can be started with: its code run. -/
+def maxImage : Nat := 16 * 4096
 
 /-- The programs the machine layer loads and checks at boot. The apps in slots 5 (Terminal),
 6 (Settings), 7 (Security) and 9 (Files) wait until the display server launches them. -/
@@ -294,7 +309,7 @@ def verify (s : KState) (i : Nat) (h : List Nat) : KState :=
   | some t =>
     match t.status with
     | .unverified =>
-      if eqList h (expectedHash i) then setTask s i { t with status := .ready, hash := h }
+      if openSlot i || eqList h (expectedHash i) then setTask s i { t with status := .ready, hash := h }
       else setTask s i { t with status := .dead, hash := h }
     | _ => s
   | none => s
@@ -418,10 +433,15 @@ structure Reply where
   page it has mapped writable (for a read) or readable (for a write). -/
   io : Nat
   ioBlock : Nat
+  /-- with `load`: copy the `loadLen` bytes at the calling task's user address `outVa` into
+  the slot's code frames, as its program (0 = load the program the kernel image has for
+  the slot). Only returned after checking every page of that range is mapped readable in
+  the calling task's address space as it is after the start. -/
+  loadLen : Nat
 
 /-- The call returns to the caller with result registers `r`. -/
 def ret (s : KState) (t : Task) (r : List Nat) : Reply :=
-  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0, 0, 0, 0⟩
+  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0, 0, 0, 0, 0⟩
 
 /-- Where the frame pool starts: frame `f < poolFrames` is at `frameBase + f * pageSize`. -/
 def frameBase : Nat := 0x04000000
@@ -454,13 +474,13 @@ def sysMap (s : KState) (t : Task) (ci vpn : Nat) : Reply :=
       if vpn + count ≤ userPages && c.rights.r && validRun s base count then
         ⟨setTask s s.cur { t with maps := app (runMaps vpn base c.rights count)
                                                (dropRange vpn count t.maps),
-                                  result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0⟩
+                                  result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
 /-- Unmap pages `vpn` to `vpn + count - 1`. -/
 def sysUnmap (s : KState) (t : Task) (vpn count : Nat) : Reply :=
-  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0⟩
+  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0⟩
 
 /-- The object a derived capability names: for a run of frames, the `count` frames from
 `offset` on (`count = 0`: all of them from `offset` on), if they lie inside the run. -/
@@ -516,7 +536,7 @@ def sysWrite (s : KState) (t : Task) (va n : Nat) : Reply :=
   else if n ≤ maxWrite ∧ userBase ≤ va ∧
       allReadable t.maps ((va - userBase) / pageSize)
         ((va + n - 1 - userBase) / pageSize + 1 - (va - userBase) / pageSize) = true then
-    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0, 0, 0, 0⟩
+    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0, 0, 0, 0, 0⟩
   else ret s t (eBadArg :: .nil)
 
 /-- The capability a send carries: none if `gi = 0`, else capability `gi - 1`, which must be
@@ -555,12 +575,12 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply
               | some u' =>
                 if call then
                   ⟨schedule (setTask (setTask s j u') s.cur { t with status := .awaiting j, result := .nil }),
-                    0, 0, false, 0, 0, 0, 0⟩
+                    0, 0, false, 0, 0, 0, 0, 0⟩
                 else ret (setTask s j u') t (0 :: .nil)
               | none => ret s t (eFull :: .nil)
             | none => ret s t (eBadArg :: .nil)
           | none =>
-            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0, 0, 0, 0⟩
+            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -581,11 +601,11 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) : Reply :=
             | some t' =>
               let u' : Task := if m.call then { u with status := .awaiting s.cur, result := .nil }
                                else { u with status := .ready, result := 0 :: .nil }
-              ⟨setTask (setTask s j u') s.cur t', 0, 0, false, 0, 0, 0, 0⟩
+              ⟨setTask (setTask s j u') s.cur t', 0, 0, false, 0, 0, 0, 0, 0⟩
             | none => ret s t (eFull :: .nil)
           | none => ret s t (eBadArg :: .nil)
         | none =>
-          ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false, 0, 0, 0, 0⟩
+          ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -622,7 +642,7 @@ def sysIrqWait (s : KState) (t : Task) (ci : Nat) : Reply :=
     match c.obj with
     | .irq n =>
       if hasLine n s.pending then ret { s with pending := dropLine n s.pending } t (0 :: .nil)
-      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0, 0, 0, 0⟩
+      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0⟩
     | _ => ret s t (eBadArg :: .nil)
 
 /-- The holder of an interrupt has dealt with it: let it fire again. -/
@@ -671,7 +691,7 @@ def sysBlock (s : KState) (t : Task) (ci idx va : Nat) (write : Bool) : Reply :=
     match c.obj with
     | .blocks b n =>
       if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then
-        ⟨setTask s s.cur { t with result := 0 :: .nil }, va, 0, false, 0, 0, ioCode write, b + idx⟩
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, va, 0, false, 0, 0, ioCode write, b + idx, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -715,7 +735,7 @@ def sysDrop (s : KState) (t : Task) (ci : Nat) : Reply :=
   | some _ =>
     let cs := removeNth t.caps ci
     ⟨setTask s s.cur { t with caps := cs, maps := keepBacked cs t.maps, result := 0 :: .nil },
-      0, 0, true, 0, 0, 0, 0⟩
+      0, 0, true, 0, 0, 0, 0, 0⟩
 
 /-! ## Starting programs, and taking back what they shared -/
 
@@ -768,11 +788,22 @@ def revokeAll (k : Nat) : List Task → List Task
   | .nil => .nil
   | t :: ts => revokeTask k t :: revokeAll k ts
 
+/-- The program a start names: none for a manifest slot (the kernel image has it), and for
+an open slot `len` bytes at `src`, at most `maxImage`, every page readable in `ms` (the
+caller's mappings, as they are once the slot's memory is taken back). -/
+def imageOk (ms : List Mapping) (k src len : Nat) : Bool :=
+  if openSlot k then
+    Nat.ble 1 len && Nat.ble len maxImage && Nat.ble userBase src &&
+      allReadable ms ((src - userBase) / pageSize)
+        ((src + len - 1 - userBase) / pageSize + 1 - (src - userBase) / pageSize)
+  else len == 0
+
 /-- Start (or restart) the program in slot `k`, named by launch capability `ci`. First every
 task loses whatever reaches into slot `k`'s frames, so nothing its previous run shared
 survives; then the slot gets the manifest's fresh task, unverified. The machine layer
-clears the frames, loads the program, measures it, and it runs only if it verifies. -/
-def sysStart (s : KState) (t : Task) (ci : Nat) : Reply :=
+clears the frames, loads the program (the kernel image's, or for an open slot the `len`
+bytes at `src` in the caller's memory), measures it, and it runs only if it verifies. -/
+def sysStart (s : KState) (t : Task) (ci src len : Nat) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
   | some c =>
@@ -780,10 +811,10 @@ def sysStart (s : KState) (t : Task) (ci : Nat) : Reply :=
     | .launch k =>
       match nth? s.tasks k with
       | some u =>
-        if startable u.status && !(k == s.cur) then
+        if startable u.status && !(k == s.cur) && imageOk (dropMaps k t.maps) k src len then
           let s1 : KState := setTask { s with tasks := revokeAll k s.tasks } k (mkTask k)
           match nth? s1.tasks s.cur with
-          | some t1 => ⟨setTask s1 s.cur { t1 with result := 0 :: .nil }, 0, 0, true, 0, k + 1, 0, 0⟩
+          | some t1 => ⟨setTask s1 s.cur { t1 with result := 0 :: .nil }, src, 0, true, 0, k + 1, 0, 0, len⟩
           | none => ret s t (eBadArg :: .nil)
         else ret s t (eBadArg :: .nil)
       | none => ret s t (eBadArg :: .nil)
@@ -811,7 +842,7 @@ def irqFired (s : KState) (n : Nat) : KState :=
 def irqLines : List Nat := uartIrq :: .nil
 
 /-- Task number `i`'s boot check: x1 = 0 not measured yet, 1 matches the manifest, 2
-refused; x2 and x3 = the first two words of its measured hash; x4 = 0 not started, 1
+refused, 3 an open slot's program (measured, not in the manifest); x2 and x3 = the first two words of its measured hash; x4 = 0 not started, 1
 running, 2 stopped. -/
 def sysBootInfo (s : KState) (t : Task) (i : Nat) : Reply :=
   match nth? s.tasks i with
@@ -825,7 +856,7 @@ def sysBootInfo (s : KState) (t : Task) (i : Nat) : Reply :=
       | _ => 0
     let st := match u.hash with
       | .nil => 0
-      | _ => if eqList u.hash (expectedHash i) then 1 else 2
+      | _ => if openSlot i then 3 else if eqList u.hash (expectedHash i) then 1 else 2
     let run := match u.status with
       | .unverified => 0
       | .dead => 2
@@ -836,11 +867,11 @@ def sysBootInfo (s : KState) (t : Task) (i : Nat) : Reply :=
 def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match num with
   | 0 => sysWrite s t a0 a1
-  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0⟩
+  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0⟩
   | 2 => sysMap s t a0 a1
   | 3 => sysUnmap s t a0 a1
   | 4 => sysDerive s t a0 a1 a2 a3
-  | 5 => ⟨killCurrent s, 0, 0, false, 0, 0, 0, 0⟩
+  | 5 => ⟨killCurrent s, 0, 0, false, 0, 0, 0, 0, 0⟩
   | 6 => sysCapInfo s t a0
   | 7 => ret s t (0 :: s.cur :: .nil)
   | 8 => sysSend s t a0 a1 a2 a3 a4 false
@@ -850,10 +881,11 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 12 => sysIrqWait s t a0
   | 13 => sysIrqAck s t a0
   | 14 => sysBootInfo s t a0
-  | 15 => sysStart s t a0
+  | 15 => sysStart s t a0 0 0
   | 16 => sysDrop s t a0
   | 17 => sysBlock s t a0 a1 a2 false
   | 18 => sysBlock s t a0 a1 a2 true
+  | 19 => sysStart s t a0 a1 a2
   | _ => ret s t (eNoCall :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
@@ -862,14 +894,15 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   8 send(cap, w0, w1, w2, grant) · 9 recv(cap) · 10 call(cap, w0, w1, w2, grant)
   11 reply(slot, w0, w1, w2) · 12 irqwait(cap) · 13 irqack(cap) · 14 bootinfo(task)
   15 start(cap) · 16 drop(cap) · 17 blockread(cap, index, va) · 18 blockwrite(cap, index, va)
+  19 exec(cap, va, len): start an open slot with the program at va
 Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with
-  | none => ⟨s, 0, 0, false, 0, 0, 0, 0⟩
+  | none => ⟨s, 0, 0, false, 0, 0, 0, 0, 0⟩
   | some t =>
     match t.status with
     | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0⟩  -- only a running task makes system calls
+    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0⟩  -- only a running task makes system calls
 
 /-- The machine layer has loaded task `j`'s result registers; forget them. -/
 def clearResult (s : KState) (j : Nat) : KState :=
@@ -900,6 +933,8 @@ before passing it in. -/
 @[export leanos_reply_unmask] def exRUnmask (r : Reply) : Nat := r.unmask
 @[export leanos_reply_load] def exRLoad (r : Reply) : Nat := r.load
 @[export leanos_reply_io] def exRIo (r : Reply) : Nat := r.io
+@[export leanos_reply_load_len] def exRLoadLen (r : Reply) : Nat := r.loadLen
+@[export leanos_open_slot] def exOpenSlot (i : Nat) : Bool := openSlot i
 @[export leanos_reply_io_block] def exRIoBlock (r : Reply) : Nat := r.ioBlock
 @[export leanos_io_failed] def exIoFailed (s : KState) : KState := ioFailed s
 @[export leanos_autostart] def exAutostart (i : Nat) : Bool := autostart i

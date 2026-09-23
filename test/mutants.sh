@@ -88,12 +88,12 @@ mutant "grant an interrupt capability" \
 mutant "accept a framebuffer that overlaps the peripherals" \
   "b + fbPages * pageSize ≤ 0xFE000000" "b + fbPages * pageSize ≤ 2 ^ 36"
 mutant "verify ignores the manifest" \
-  "      if eqList h (expectedHash i) then setTask s i { t with status := .ready, hash := h }" "      if true then setTask s i { t with status := .ready, hash := h }"
+  "if openSlot i || eqList h (expectedHash i) then" "if true then"
 mutant "tasks start ready, unchecked" \
   "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .unverified, .nil, .nil, .nil⟩" "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil, .nil, .nil⟩"
 mutant "a stopped task may make system calls" \
   "    | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
+    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
 mutant "user pages always executable" \
   "privNoExec + (if m.rights.x then 0 else userNoExec)" "privNoExec + 0"
 mutant "read-only pages writable" \
@@ -113,13 +113,13 @@ mutant "start leaves grants of the slot's frames in waiting messages" \
 mutant "start leaves reply slots for the old run" \
   "(if x == k then noTask else x) :: forgetCaller k xs" "x :: forgetCaller k xs"
 mutant "a task may restart itself" \
-  "if startable u.status && !(k == s.cur) then" "if startable u.status then"
+  "if startable u.status && !(k == s.cur) && imageOk" "if startable u.status && imageOk"
 mutant "manifest lets mallory start programs" \
   "| 2 => snoc (frameCaps 2) (epCap 0 false true false 2)" "| 2 => snoc (snoc (frameCaps 2) (epCap 0 false true false 2)) (launchCap 0)"
 mutant "manifest lets the display restart the input driver" \
   "(launchCap 0)) (launchCap 5)" "(launchCap 4)) (launchCap 5)"
 mutant "manifest lets Terminal receive on the display's endpoint" \
-  "| 5 => snoc (snoc (frameCaps 5) (epCap 0 false true true 5))" "| 5 => snoc (snoc (frameCaps 5) (epCap 0 true true true 5))"
+  "| 5 => snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5))" "| 5 => snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 true true true 5))"
 mutant "drop keeps the pages it can no longer back" \
   "⟨setTask s s.cur { t with caps := cs, maps := keepBacked cs t.maps, result := 0 :: .nil }," "⟨setTask s s.cur { t with caps := cs, maps := t.maps, result := 0 :: .nil },"
 mutant "drop lets a task keep the capability and gain another" \
@@ -145,6 +145,20 @@ mutant "grant a block capability" \
       | _ => none" "      | .frames _ _ => some (some g)
       | .blocks _ _ => some (some g)
       | _ => none"
+mutant "exec skips the page check" \
+  "    Nat.ble 1 len && Nat.ble len maxImage && Nat.ble userBase src &&
+      allReadable ms" "    Nat.ble 1 len && Nat.ble len maxImage && Nat.ble userBase src &&
+      true || allReadable ms"
+mutant "exec takes images larger than the code run" \
+  "Nat.ble 1 len && Nat.ble len maxImage &&" "Nat.ble 1 len &&"
+mutant "exec loads a program into a manifest slot" \
+  "  else len == 0" "  else true"
+mutant "Notes' slot counts as open" \
+  "def openSlot (i : Nat) : Bool := i == 10 || i == 11" "def openSlot (i : Nat) : Bool := i == 10 || i == 11 || i == 0"
+mutant "manifest lets Notes start programs from the SD card" \
+  "  | 0 => snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)" "  | 0 => snoc (snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)) (launchCap 10)"
+mutant "an open slot's program may use the file server" \
+  "  | 10 => snoc (frameCaps 10) (epCap 0 false true true 10)" "  | 10 => snoc (snoc (frameCaps 10) (epCap 0 false true true 10)) (epCap 1 false true true 10)"
 
 cp "$backup" LeanOS/Kernel.lean
 lake build >/dev/null 2>&1 || { echo "FAIL: the unmutated kernel no longer builds"; exit 1; }

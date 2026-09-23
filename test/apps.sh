@@ -33,30 +33,35 @@ check_order alice \
 
 check_order terminal \
   "terminal: opened a window -> ok" \
-  "terminal: caps -> 7 capabilities" \
+  "terminal: caps -> 9 capabilities" \
   "terminal: boot -> 7 verified" \
   "terminal: write hello.txt -> ok" \
-  "terminal: ls -> 3 files" \
+  "terminal: ls -> 4 files" \
   "terminal: window closed, exiting" \
   "terminal: opened a window -> ok" \
-  "terminal: caps -> 7 capabilities" \
+  "terminal: caps -> 9 capabilities" \
   "terminal: write fast.txt -> ok" \
-  "terminal: cat fast.txt -> 36 bytes"
+  "terminal: cat fast.txt -> 36 bytes" \
+  "terminal: run welcome.txt -> not an ELF file" \
+  "terminal: run hello -> slot 10"
+
+check_order hello \
+  "hello: opened a window -> ok"
 
 check_order settings \
   "settings: opened a window -> ok" \
   "settings: background set to Graphite -> ok"
 
 check_order files \
-  "files: listed 4 files" \
+  "files: listed 5 files" \
   "files: showing welcome.txt (169 bytes)" \
   "files: opened a window -> ok" \
-  "files: listed 4 files" \
+  "files: listed 5 files" \
   "files: showing hello.txt (19 bytes)"
 
 check_order security \
   "security: opened a window -> ok" \
-  "security: 10 verified, 0 refused, 0 not loaded"
+  "security: 11 verified, 0 refused, 1 not loaded"
 
 # The kernel loads and checks an app each time it is started, and only then.
 [ "$(echo "$out" | grep -c "^leanos: terminal started$")" = 2 ] || fail "Terminal was not started twice"
@@ -74,6 +79,8 @@ expected=$(printf '%s\n' "display: closed alice's window" "display: start Notes 
   "display: start Terminal -> ok" "display: start Settings -> ok" \
   "display: background 1, as Settings asked" "display: closed Terminal's window" \
   "display: start Terminal -> ok" "display: start Files -> ok" "display: start Security -> ok")
+echo "$out" | grep -qE "^leanos: slot 10 runs a program from its starter, not the manifest; sha256 " \
+  || fail "the kernel did not load hello into slot 10"
 [ "$display" = "$expected" ] || { echo "got:"; echo "$display"; fail "display did not start, close and restart as asked"; }
 
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
@@ -89,11 +96,17 @@ at = lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
 # Graphite: gray, not the default indigo
 r, g, b = at(1000, 300)
 assert b - r < 20 and max(r, g, b) < 90, ("graphite background", (r, g, b))
-# Security's report: a green check beside each of the ten programs
+# Security's report: a green check beside each of the ten manifest programs, a blue one
+# beside hello (slot 10, from the SD card), a gray dot for the empty slot 11
 green = lambda r, g, b: g > 150 and r < 120 and b < 140
+blue = lambda r, g, b: b > 180 and r < 100
+def count(k, pred):
+    y0 = 154 + 40 + 16 * k
+    return sum(1 for y in range(y0, y0 + 16) for x in range(316, 332) if pred(*at(x, y)))
 for k in range(10):
-    y0 = 156 + 42 + 18 * k
-    assert sum(1 for y in range(y0, y0 + 16) for x in range(276, 292) if green(*at(x, y))) > 60, ("check", k)
+    assert count(k, green) > 60, ("check", k)
+assert count(10, blue) > 60 and count(10, green) == 0, ("slot 10", count(10, blue))
+assert count(11, green) == 0 and count(11, blue) == 0, "slot 11"
 # the note came back after Notes started again: dark text where "Hi" is
 assert sum(1 for y in range(160, 180) for x in range(114, 132) if max(at(x, y)) < 100) > 20, "the saved note"
 # Terminal's dark window, below Security's
@@ -105,7 +118,7 @@ PY
 again=$(python3 test/run.py 40 --keep-sd)
 [ $? -eq 0 ] || fail "the second boot did not reach idle"
 echo "$again" | grep -E "^(fs|alice): " | sed 's/^/  | /'
-echo "$again" | grep -qx "fs: ready, 4 files on the SD card" || fail "the files did not survive a restart"
+echo "$again" | grep -qx "fs: ready, 5 files on the SD card" || fail "the files did not survive a restart"
 echo "$again" | grep -qx "alice: loaded notes.txt, 2 bytes" || fail "Notes did not get its note back after a restart"
 
 # And with no card at all, the system still comes up, with files in memory only.
@@ -113,4 +126,8 @@ nocard=$(python3 test/run.py 40 --no-sd)
 [ $? -eq 0 ] || fail "the boot with no SD card did not reach idle"
 echo "$nocard" | grep -qx "leanos: no SD card" || fail "the kernel did not notice the missing card"
 echo "$nocard" | grep -qx "fs: no SD card; files are kept in memory only; ready, 1 file" || fail "the file server did not fall back to memory"
-echo "ok: the files and the note survive a restart on the SD card, and the system runs without one"
+# A blank card is formatted on first boot.
+blank=$(python3 test/run.py 40 --blank-sd)
+[ $? -eq 0 ] || fail "the boot with a blank card did not reach idle"
+echo "$blank" | grep -qx "fs: made a new file system on the SD card; ready, 1 file" || fail "a blank card was not formatted"
+echo "ok: the files and the note survive a restart on the SD card, a blank card is formatted, and the system runs without one"

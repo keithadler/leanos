@@ -36,6 +36,8 @@ lean_object *leanos_reply_out_len(lean_object *r);
 uint8_t leanos_reply_remap(lean_object *r);
 lean_object *leanos_reply_load(lean_object *r);
 lean_object *leanos_reply_io(lean_object *r);
+lean_object *leanos_reply_load_len(lean_object *r);
+uint8_t leanos_open_slot(lean_object *i);
 lean_object *leanos_reply_io_block(lean_object *r);
 lean_object *leanos_io_failed(lean_object *s);
 int sd_init(void);
@@ -323,6 +325,24 @@ static void sync_icache(uint64_t start, uint64_t len) {
     ISB();
 }
 
+/* Load an open slot with the `len` bytes at `va` in the current task's memory (the task
+   that started it): the Lean kernel checked every page of them is mapped readable there,
+   in the address space as rebuilt after the start. Frames cleared first, as for any start. */
+static void load_image(uint64_t i, uint64_t va, uint64_t len) {
+    uint64_t base = FRAME_BASE + FRAMES_PER_TASK * i * PAGE_SIZE;
+    memset((void *)base, 0, FRAMES_PER_TASK * PAGE_SIZE);
+    if (len > CODE_PAGES * PAGE_SIZE) kpanic("program image larger than the code run");
+    memcpy((void *)base, (const void *)va, len);
+    sync_icache(base, len);
+    code_len[i] = len;
+    asset_len[i] = 0;
+    memset(&saved[i], 0, sizeof saved[i]);
+    saved[i].elr = USER_BASE;
+    saved[i].sp = USER_BASE + USER_PAGES * PAGE_SIZE;
+    saved[i].spsr = 0;
+    started[i] = 1;
+}
+
 /* Load slot i's program into its frames, fresh: every frame cleared (nothing of a previous
    run survives), the code, the assets, and registers that start at the program's entry. */
 static void load_program(uint64_t i) {
@@ -347,7 +367,9 @@ static void load_program(uint64_t i) {
 }
 
 static const char *const names[] = {"alice", "display", "mallory", "carol", "input",
-                                    "terminal", "settings", "security", "fs", "files"};
+                                    "terminal", "settings", "security", "fs", "files",
+                                    "slot 10", "slot 11"};
+#define NPROGS 10   /* the programs in the kernel image, for slots 0-9 */
 
 /* SHA-256 of "abc", from FIPS 180-4: the hash must be right before anything relies on it. */
 static void sha256_self_test(void) {
@@ -375,7 +397,11 @@ static void measure_and_verify(uint64_t i) {
                       lean_box(d[4]), lean_box(d[5]), lean_box(d[6]), lean_box(d[7]));
     kputs("leanos: ");
     kputs(names[i]);
-    if (ready(i)) {
+    if (ready(i) && leanos_open_slot(lean_box(i))) {
+        kputs(" runs a program from its starter, not the manifest; sha256 ");
+        kputhex(d[0]);
+        kputs("...\n");
+    } else if (ready(i)) {
         kputs(" verified, sha256 ");
         kputhex(d[0]);
         kputs("...\n");
@@ -394,6 +420,7 @@ static void do_syscall(uint64_t cur) {
     int remap = leanos_reply_remap((lean_inc(r), r));
     uint64_t unmask = nat(leanos_reply_unmask((lean_inc(r), r)));
     uint64_t load = nat(leanos_reply_load((lean_inc(r), r)));
+    uint64_t load_len = nat(leanos_reply_load_len((lean_inc(r), r)));
     uint64_t io = nat(leanos_reply_io((lean_inc(r), r)));
     uint64_t io_block = nat(leanos_reply_io_block((lean_inc(r), r)));
     K = leanos_reply_state(r);
@@ -418,7 +445,9 @@ static void do_syscall(uint64_t cur) {
         uint64_t k = load - 1;
         if (k >= ntasks || k == cur) kpanic("start of a slot the kernel should have refused");
         for (uint64_t i = 0; i < ntasks; i++) build_user_pages(i);
-        load_program(k);
+        if (load_len) load_image(k, out_va, load_len);
+        else if (k < NPROGS) load_program(k);
+        else kpanic("start of an open slot without a program");
         kputs("leanos: ");
         kputs(names[k]);
         kputs(" started\n");

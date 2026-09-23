@@ -17,8 +17,8 @@ alice's Notes app draws in her own memory and lends the display a read-only view
 mallory tries to reach the screen, the keyboard and everyone's memory, and cannot.
 
 The dock starts apps: **Files** lists and shows what the file server holds, **Terminal**
-answers from the kernel (`whoami`, `caps`, `boot`, `uptime`) and the file server (`ls`,
-`cat`, `write`, `rm`), **Settings** changes the background, and **Security** shows every
+answers from the kernel (`whoami`, `caps`, `boot`, `ps`, `uptime`), the file server (`ls`,
+`cat`, `write`, `rm`), and runs programs from the SD card (`run hello`), **Settings** changes the background, and **Security** shows every
 program's boot check and what is proved. Notes saves its note to the file server, so it
 is back when Notes starts again. An app is loaded and checked against the manifest each
 time it starts; closing its window stops it, and starting it again first takes back
@@ -38,9 +38,9 @@ leanos: Raspberry Pi 4, booting on EL1
 leanos: framebuffer 1024x600 at 0x3c100000
 leanos: MMU on
 leanos: SD card ready
-leanos: Lean kernel initialized, 10 tasks
-leanos: alice verified, sha256 0x9fffc938...
-leanos: display verified, sha256 0x8383eed9...
+leanos: Lean kernel initialized, 12 tasks
+leanos: alice verified, sha256 0xc1670aec...
+leanos: display verified, sha256 0x8176bec6...
 leanos: mallory verified, sha256 0x2dbdf014...
 leanos: carol verified, sha256 0x1c54ae17...
 leanos: input verified, sha256 0x7b5792ff...
@@ -60,47 +60,51 @@ carol: asked for write+execute on my data frame, got -w-
 carol: jumping into the instruction I wrote in my data page
 leanos: carol stopped: instruction fetch not allowed at 0x80010000
 input: listening on the UART
-fs: made a new file system on the SD card; ready, 1 file
+fs: ready, 2 files on the SD card
 alice: no saved note yet
 display: boot checks shown: 6 verified, 0 refused
 display: boot logo drawn
 display: desktop drawn on the 1024x600 framebuffer
+display: a full redraw took 5.8 ms
 display: alice opened a 300x200 window from a read-only capability to 59 pages
 display: mallory asked for a window but sent no pixels; ignored
 mallory: ask the display for a window without pixels -> ok
 mallory: writing to the screen's physical address 0x3c100000 directly
 leanos: mallory stopped: data access not allowed at 0x3c100000
 alice: opened a 300x200 window, read-only, 59 pages -> ok
-leanos: idle, 4 tasks waiting (100 system calls, 155 timer ticks, 0 device interrupts, kernel heap 148960 bytes live, 175584 peak, stack 66976 bytes peak)
+leanos: idle, 4 tasks waiting (111 system calls, 171 timer ticks, 0 device interrupts, kernel heap 155328 bytes live, 181952 peak, stack 67008 bytes peak)
 display: key 'H' to alice
 display: key 'i' to alice
 display: key '!' to alice
+display: a click on a window redrew in 1.6 ms
 display: moved alice's window to (276, 208)
+display: the drag drew 2 frames, 1.5 ms each
 ```
 
 And `make test` using the apps: typing into Notes, closing it and starting it again (the
 note comes back from the file server), Terminal (`caps`, `boot`, `write`, `ls`), Settings,
-closing Terminal and starting it again, Files, then Security. Keystrokes are left out.
+closing Terminal and starting it again, running a program from the SD card, Files, then
+Security. Keystrokes are left out.
 
 ```
 display: closed alice's window
 alice: window closed, exiting
 leanos: alice started
-leanos: alice verified, sha256 0x9fffc938...
+leanos: alice verified, sha256 0xc1670aec...
 alice: wrote secret 0x5ec12e7 to my data page
 display: start Notes -> ok
 alice: loaded notes.txt, 2 bytes
 alice: opened a 300x200 window, read-only, 59 pages -> ok
 leanos: terminal started
-leanos: terminal verified, sha256 0xc817d2c5...
+leanos: terminal verified, sha256 0x904f0e12...
 display: start Terminal -> ok
 terminal: opened a window -> ok
-terminal: caps -> 7 capabilities
+terminal: caps -> 9 capabilities
 terminal: boot -> 7 verified
 terminal: write hello.txt -> ok
-terminal: ls -> 3 files
+terminal: ls -> 4 files
 leanos: settings started
-leanos: settings verified, sha256 0xac41809c...
+leanos: settings verified, sha256 0xda05ac8e...
 display: start Settings -> ok
 settings: opened a window -> ok
 display: background 1, as Settings asked
@@ -108,25 +112,30 @@ settings: background set to Graphite -> ok
 display: closed Terminal's window
 terminal: window closed, exiting
 leanos: terminal started
-leanos: terminal verified, sha256 0xc817d2c5...
+leanos: terminal verified, sha256 0x904f0e12...
 display: start Terminal -> ok
 terminal: opened a window -> ok
-terminal: caps -> 7 capabilities
+terminal: caps -> 9 capabilities
 terminal: write fast.txt -> ok
 terminal: cat fast.txt -> 36 bytes
+terminal: run welcome.txt -> not an ELF file
+leanos: slot 10 started
+leanos: slot 10 runs a program from its starter, not the manifest; sha256 0x180db880...
+terminal: run hello -> slot 10
+hello: opened a window -> ok
 leanos: files started
-leanos: files verified, sha256 0x8e4f96ff...
+leanos: files verified, sha256 0x2b5be7b1...
 display: start Files -> ok
-files: listed 4 files
+files: listed 5 files
 files: showing welcome.txt (169 bytes)
 files: opened a window -> ok
-files: listed 4 files
+files: listed 5 files
 files: showing hello.txt (19 bytes)
 leanos: security started
-leanos: security verified, sha256 0x5de181c6...
+leanos: security verified, sha256 0x399f1f79...
 display: start Security -> ok
 security: opened a window -> ok
-security: 10 verified, 0 refused, 0 not loaded
+security: 11 verified, 0 refused, 1 not loaded
 ```
 
 alice, mallory and carol are test personas: a legitimate app, an attacker, and a program
@@ -152,6 +161,11 @@ can reach, under any sequence of system calls with any arguments:
   the SHA-256 of what it was loaded with matches the boot manifest, and nothing can make a
   refused task run later. The boot screen shows each verdict. `make test` flips one bit of a
   program in the image and checks it is refused, at boot and when an app is started.
+- **Programs from the SD card are confined**: Terminal reads an ELF file, makes its image
+  in its own memory, and starts it in one of two open slots. The kernel copies the image
+  only from pages Terminal can read, and the program gets only what the manifest gives an
+  open slot: its own memory and a window. The manifest's own slots still run only the code
+  it names; an open slot's program is measured and shown, not trusted.
 - **The disk belongs to the file server**: no other task can ever hold a capability to
   any block of the SD card. Block I/O touches only blocks the caller holds, with the right
   it needs, and only 512 bytes in one page the caller has mapped writable (for a read) or
@@ -170,7 +184,7 @@ can reach, under any sequence of system calls with any arguments:
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
 MMU proves that user mode reaches exactly its own mappings, only the frame pool and the
 framebuffer (never the kernel or the peripherals), and shares a physical page with another
-task only along a grant path. `make mutants` breaks the kernel in 52 ways and checks the
+task only along a grant path. `make mutants` breaks the kernel in 58 ways and checks the
 proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
@@ -245,6 +259,7 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 | 16 | `drop(cap)` | lets go of a capability, and of every page seen only through it; later capabilities move down one place |
 | 17 | `blockread(cap, index, va)` | reads one 512-byte block of the SD card, from a block capability, into the task's own writable memory |
 | 18 | `blockwrite(cap, index, va)` | writes 512 bytes of the task's own readable memory to one block |
+| 19 | `exec(cap, va, len)` | starts an open slot with the program image at `va` (up to 64 KiB of the caller's readable memory) |
 
 Capabilities come in four kinds. Frame capabilities name a run of physical frames and carry read, write and execute rights.
 Each task starts with 256 frames (16 code, 8 data, 4 stack and 228 spare pages) and a 32 MiB

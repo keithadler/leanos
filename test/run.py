@@ -76,18 +76,29 @@ def wait_for(prefix):
     return ("wait", prefix)
 
 
-def blank_card(path=os.path.join(ROOT, "build", "sd-test.img"), size=8 * 1024 * 1024):
+TEST_CARD = os.path.join(ROOT, "build", "sd-test.img")
+
+
+def blank_card(path=TEST_CARD, size=8 * 1024 * 1024):
     """A blank SD card image (the file server formats it on first boot)."""
     with open(path, "wb") as f:
         f.truncate(size)
     return path
 
 
+def fresh_card(path=TEST_CARD):
+    """A copy of the card `make` builds: welcome.txt and the programs (tools/mksd.py)."""
+    import shutil
+    shutil.copyfile(os.path.join(ROOT, "build", "sd-template.img"), path)
+    return path
+
+
 def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None, image=None,
          settle=0.3, sd=None):
-    """sd: the SD card image to boot with (a fresh blank one if None; "" for no card)."""
+    """sd: the SD card image to boot with (a fresh copy of the programs card if None; ""
+    for no card)."""
     if sd is None:
-        sd = blank_card()
+        sd = fresh_card()
     """steps: bytes to type once the system is idle, each followed by a short pause, or
     wait_for(prefix) steps, which wait for a serial line.
     until: after the steps, wait for a serial line starting with this before the capture.
@@ -201,9 +212,12 @@ APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
              *keys("caps\r"), wait_for("terminal: caps"),
              b"write fast.txt 0123456789abcdefghijklmnopqrstuvwxyz\r", wait_for("terminal: write fast.txt"),
              b"cat fast.txt\r", wait_for("terminal: cat fast.txt"),
+             b"run welcome.txt\r", wait_for("terminal: run welcome.txt"),
+             b"run hello\r", wait_for("hello: opened"),
+             *keys("abc"),
              *click(444, 548), wait_for("files: opened"),
-             *click(306, 311), wait_for("files: showing hello.txt"),
-             *click(648, 548), wait_for("security: 10")]
+             *click(346, 337), wait_for("files: showing hello.txt"),
+             *click(648, 548), wait_for("security: 11")]
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -212,7 +226,8 @@ if __name__ == "__main__":
     image = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--image=")), None)
     steps = DEMO_STEPS if demo else APP_STEPS if apps else ()
     # --keep-sd: boot with the card the last run left (build/sd-test.img); --no-sd: no card
-    sd = os.path.join(ROOT, "build", "sd-test.img") if "--keep-sd" in sys.argv else "" if "--no-sd" in sys.argv else None
-    until = "display: the drag drew" if demo else "security: 10" if apps else None
+    sd = (TEST_CARD if "--keep-sd" in sys.argv else "" if "--no-sd" in sys.argv
+          else blank_card() if "--blank-sd" in sys.argv else None)
+    until = "display: the drag drew" if demo else "security: 11" if apps else None
     sys.exit(boot(float(args[0]) if args else 30, steps=steps, until=until,
                   snaps={"display: boot logo drawn": "logo"}, image=image, settle=2 if apps else 0.3, sd=sd))

@@ -40,13 +40,14 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `schedule_picks_ready` | If any task is ready, the scheduler picks a ready task. |
 | `reply_grants_nothing` | A reply changes no task's capabilities or mappings. |
 | `reply_wakes_only_caller` | A reply wakes only a task waiting for this replier. |
-| `only_verified_runs` | Every task that can run was loaded with exactly the code and assets the boot manifest names. |
-| `verify_refuses_mismatch` | A task whose measurement differs from the manifest is stopped for good. |
+| `only_verified_runs` | Every task that can run in a manifest slot was loaded with exactly the code and assets the manifest names. The two open slots (10, 11) run whatever program Terminal starts them with; that program is measured and shown, and holds only what the manifest gives the slot. |
+| `verify_refuses_mismatch` | A task in a manifest slot whose measurement differs from the manifest is stopped for good. |
+| `exec_reads_only_readable` | When a program image is loaded, the slot is an open slot, the image is at most 64 KiB, and every byte comes from a page the loader has mapped readable (in its address space as it is after the start). |
 | `irqs_fixed` | Interrupt capabilities never move: a task holds one only if it held it at boot. |
 | `irq_wakes_holder` | An interrupt wakes only a task given that interrupt's capability at boot. |
 | `uart_confined`, `uart_irq_only_input` | Only the input driver can ever hold the UART's registers or its interrupt. |
 | `start_revokes` | When `start` has the machine layer load slot `k`, the slot holds the manifest's fresh, unverified task, and no other task holds a capability to or a mapping of any of the slot's frames, is waiting to send a message granting one, or holds a reply slot for the old run. |
-| `launch_fixed`, `only_display_launches` | Launch capabilities never move: only the display server can start programs, and only the apps. Nothing can restart the display server, the input driver or the tests. |
+| `launch_fixed`, `only_display_launches` | Launch capabilities never move: only the display server starts the manifest's apps, and only Terminal starts the open slots. Nothing can restart the display server, the input driver, the file server or the tests. |
 
 Revocation rests on one more invariant: every run of frames a task holds stays inside one
 slot's memory (`RunOK`), so taking back the runs that start in a slot takes back exactly
@@ -66,7 +67,7 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 52 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 58 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a `start` that forgets to take back
@@ -128,6 +129,11 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - Assets: `load_program` copies each task's asset blob (fonts and icons, built by
   `tools/mkassets.py`) into the start of that task's own spare run, next to its code. The
   blob is data the task reads; it grants nothing.
+- Programs from the SD card: for an open slot the machine layer copies the image from the
+  starting task's memory (the Reply's `outVa` and `loadLen`, which
+  `exec_reads_only_readable` bounds) into the slot's code frames, after rebuilding the
+  tables and clearing the frames, and measures it. Parsing ELF happens in Terminal, in user
+  space; the kernel only ever sees a flat image.
 - Loading on demand: at boot only the programs `autostart` names are loaded; the apps are
   loaded when a `start` Reply names their slot (`load`). The machine layer must then, in
   this order, rebuild every task's tables from the revoked state, clear all 256 of the
