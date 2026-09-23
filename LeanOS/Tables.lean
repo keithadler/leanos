@@ -47,8 +47,8 @@ theorem reachable_frames {s : KState} (h : Reachable s) (i : Nat) :
   · simp at hm
 
 theorem poolFrames_eq : poolFrames = 512 := rfl
-theorem fbPages_eq : fbPages = 300 := rfl
-theorem devBase_eq : devBase = 812 := rfl
+theorem fbPages_eq : fbPages = 600 := rfl
+theorem devBase_eq : devBase = 1112 := rfl
 theorem devPages_eq : devPages = 1 := rfl
 
 theorem physOf_pool {s : KState} {f : Nat} (hf : f < poolFrames) :
@@ -66,7 +66,7 @@ theorem physOf_dev {s : KState} {f : Nat} (hd : devBase ≤ f) :
   unfold physOf; rw [if_neg h1, if_neg h2]; simp [devicePA]
 
 theorem fbSane_spec {b : Nat} (h : fbSane b = true) :
-    b % 4096 = 0 ∧ 69206016 ≤ b ∧ b + 1228800 ≤ 0xFE000000 := by
+    b % 4096 = 0 ∧ 69206016 ≤ b ∧ b + 2457600 ≤ 0xFE000000 := by
   unfold fbSane at h
   simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at h
   simp only [pageSize, frameBase, poolFrames, framesPerTask, maxTasks, fbPages] at h
@@ -326,8 +326,8 @@ theorem physOf_inj {s : KState} {f g : Nat} (hf : Valid s f) (hg : Valid s g)
   simp only [pageSize] at h
   have region : ∀ {x : Nat}, Valid s x →
       (x < 512 ∧ physOf s x = 67108864 + x * 4096) ∨
-      (512 ≤ x ∧ x < 812 ∧ fbSane s.fbBase = true ∧ physOf s x = s.fbBase + (x - 512) * 4096) ∨
-      (x = 812 ∧ physOf s x = 0xFE201000) := by
+      (512 ≤ x ∧ x < 1112 ∧ fbSane s.fbBase = true ∧ physOf s x = s.fbBase + (x - 512) * 4096) ∨
+      (x = 1112 ∧ physOf s x = 0xFE201000) := by
     intro x hx
     rcases hx with hp | ⟨hs, hd⟩ | ⟨hd, hd2⟩
     · left; exact ⟨by rwa [poolFrames_eq] at hp, physOf_pool hp⟩

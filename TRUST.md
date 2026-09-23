@@ -34,6 +34,11 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `derive_never_amplifies` | A derived capability covers only frames its parent covers (or names the same endpoint), keeps its badge, and allows nothing the parent does not. |
 | `write_reads_only_readable` | When `write` asks the machine layer to print user memory, every byte is in a page the calling task has mapped readable. |
 | `schedule_picks_ready` | If any task is ready, the scheduler picks a ready task. |
+| `reply_grants_nothing` | A reply changes no task's capabilities or mappings. |
+| `reply_wakes_only_caller` | A reply wakes only a task waiting for this replier. |
+| `irqs_fixed` | Interrupt capabilities never move: a task holds one only if it held it at boot. |
+| `irq_wakes_holder` | An interrupt wakes only a task given that interrupt's capability at boot. |
+| `uart_confined`, `uart_irq_only_input` | Only the input driver can ever hold the UART's registers or its interrupt. |
 
 And down to the hardware, in `LeanOS/Tables.lean`. The Lean kernel computes every
 translation-table word. If the machine layer stores those words (the `Installed`
@@ -42,13 +47,14 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | Theorem | Statement |
 |---|---|
 | `walk_eq_view` | For every virtual address, what user mode may do there is exactly what the task's mappings say, and nothing outside the 32 MiB user window. |
-| `el0_only_pool_or_fb` | User mode can reach only the frame pool and, if the firmware's address for it is sane, the framebuffer: never the kernel image, heap, tables or peripherals. |
 | `physOf_inj` | Different frames are different physical pages: the framebuffer never overlaps the pool. |
 | `el0_no_write_execute` | No address user mode can reach is both writable and executable. |
 | `el0_flow`, `el0_shared` | A physical page user mode can reach came along grant edges from its owner; two tasks share a page only if one owner reaches both. |
 | `el0_mallory_isolated` | mallory's user mode never reaches a page any other task can reach. |
+| `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
+| `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 24 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 31 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right or the framebuffer, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, and so on) and checks that the proofs reject every one.
@@ -98,6 +104,13 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   call rejects values that large, so the clamp never changes an outcome, but that is
   argued here, not proved.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.
+- Interrupt routing: `irq_init` enables exactly the lines Lean lists (`irqLines`); when one
+  fires, `handle_irq` masks it before telling Lean, and unmasks it only when a Reply says
+  so (an acknowledge from the capability's holder).
+- The idle loop waits for interrupts with WFI when no task is ready.
+- User mode may read the processor's virtual counter (CNTKCTL_EL1.EL0VCTEN), for
+  animations and timeouts. This gives no new power: a task could already time itself by
+  counting loops. Timing side channels remain out of scope.
 
 - The framebuffer: `fb_alloc` asks the firmware for 640 x 480 x 32 through the mailbox,
   once at boot, and passes the address to Lean only if the reply matches the request.
@@ -125,6 +138,9 @@ QEMU's model of them, because leanos has only run under QEMU.
 - The framebuffer is the only device memory given to a user task, and it cannot start
   DMA. Devices that can (USB, SD) will need an IOMMU-free answer on the Pi, which has
   none: their drivers will have to stay trusted or be confined by other means.
+- Input in the browser: `tools/serve.py` writes the page's keys and mouse into QEMU's serial
+  port. That bridge is a development tool on the host, not part of the OS; on a real Pi the
+  input driver reads whatever arrives on the UART.
 - Colors: the pixel order is set so QEMU shows 0x00RRGGBB correctly. A real Pi 4 may
   swap red and blue; that needs checking on hardware.
 - Endpoint capabilities are fixed by the boot manifest; tasks cannot create or pass them

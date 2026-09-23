@@ -59,7 +59,7 @@ check_order input \
 # The display: logo, desktop, the two window requests in either order, then the keys and
 # the drag, in order.
 display=$(echo "$out" | grep -E "^display: ")
-expected_head=$(printf '%s\n' "display: boot logo drawn" "display: desktop drawn on the 640x480 framebuffer")
+expected_head=$(printf '%s\n' "display: boot logo drawn" "display: desktop drawn on the 1024x600 framebuffer")
 [ "$(echo "$display" | head -2)" = "$expected_head" ] || fail "display did not draw the logo and desktop"
 for line in \
   "display: alice opened a 240x150 window from a read-only capability to 36 pages" \
@@ -71,7 +71,7 @@ expected_tail=$(printf '%s\n' "display: key 'H' to alice" "display: key 'i' to a
 [ "$(echo "$display" | tail -4)" = "$expected_tail" ] || fail "keys or drag not handled"
 [ "$(echo "$display" | wc -l | tr -d ' ')" = 8 ] || fail "display printed unexpected lines"
 
-echo "$out" | grep -q "^leanos: framebuffer 640x480 at 0x3c100000$" || fail "no framebuffer"
+echo "$out" | grep -q "^leanos: framebuffer 1024x600 at 0x3c100000$" || fail "no framebuffer"
 echo "$out" | grep -q "^leanos: idle, 3 tasks waiting" || fail "did not settle with three tasks waiting"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 echo "$out" | grep -qE "SHOULD NOT|CHANGED" && fail "a protection failed"
@@ -83,13 +83,14 @@ def load(path):
     data = open(path, "rb").read()
     _, dims, _, px = data.split(b"\n", 3)
     w, h = map(int, dims.split())
-    assert (w, h) == (640, 480), (w, h)
+    assert (w, h) == (1024, 600), (w, h)
     return lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
 
 logo = load("build/logo.ppm")
-r, g, b = logo(362, 150)          # the logo tile, off the lambda: indigo to teal
+r, g, b = logo(566, 172)          # the logo tile, off the lambda: indigo to teal
 assert b > r + 40 and b > 120, ("logo", (r, g, b))
-assert logo(320, 360)[1] > 150, ("progress bar", logo(320, 360))
+assert logo(512, 422)[1] > 150, ("progress bar, full", logo(512, 422))
+assert sum(1 for x in range(400, 640) if max(logo(x, 566)) > 90) > 40, "copyright line"
 
 at = load("build/screen.ppm")
 for x in (0, 1):                  # the menu bar, where mallory tried to write 0xbad

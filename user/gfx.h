@@ -98,7 +98,7 @@ static inline void round_rect(struct surface *s, int x, int y, int w, int h, int
     }
 }
 
-/* A rounded rectangle whose colour runs from `top` to `bottom`. */
+/* A rounded rectangle whose color runs from `top` to `bottom`. */
 static inline void round_gradient(struct surface *s, int x, int y, int w, int h, int r, unsigned top, unsigned bottom) {
     for (int j = y; j < y + h; j++) {
         if (j < s->cy0 || j >= s->cy1) continue;
@@ -148,6 +148,19 @@ static inline void thick_line(struct surface *s, int x0, int y0, int x1, int y1,
         }
 }
 
+/* An anti-aliased circle outline centered at (cx, cy), radius r, `width` pixels thick. */
+static inline void ring(struct surface *s, int cx, int cy, int r, int width, unsigned c) {
+    for (int y = cy - r - 2; y <= cy + r + 2; y++)
+        for (int x = cx - r - 2; x <= cx + r + 2; x++) {
+            int dx = (x - cx) * 16, dy = (y - cy) * 16;
+            int d = (int)isqrt((unsigned)(dx * dx + dy * dy));
+            int off = d - r * 16;
+            if (off < 0) off = -off;
+            int cover = width * 8 - off + 8;
+            blend(s, x, y, c, cover <= 0 ? 0 : cover >= 16 ? 255 : (unsigned)(cover * 255 / 16));
+        }
+}
+
 /* Text in the 5x7 font, each font pixel `scale` screen pixels; a character cell is
    6 x 8 font pixels. Returns the x after the last character. */
 static inline int text(struct surface *s, int x, int y, const char *str, unsigned c, int scale) {
@@ -166,6 +179,16 @@ static inline int text_width(const char *str, int scale) {
     int n = 0;
     while (str[n]) n++;
     return n ? n * 6 * scale - scale : 0;
+}
+
+/* The copyright sign, as tall as a line of text at `scale`: a ring with a c in it.
+   Returns the x after it. */
+static inline int copyright_sign(struct surface *s, int x, int y, unsigned c, int scale) {
+    int size = 7 * scale;
+    ring(s, x + size / 2, y + size / 2, size / 2, scale > 1 ? scale / 2 + 1 : 1, c);
+    int cs = scale > 2 ? scale / 2 : 1;
+    text(s, x + size / 2 - (5 * cs) / 2, y + size / 2 - (7 * cs) / 2, "c", c, cs);
+    return x + size + 2 * scale;
 }
 
 /* Copy `src` into `dst` with its top-left corner at (x, y), clipped to `dst`'s clip. */

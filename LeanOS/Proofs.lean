@@ -729,7 +729,7 @@ theorem initCaps_frame {j f : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ ini
   rcases cases4 hj with rfl | rfl | rfl | rfl | rfl <;>
     simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap] at hc <;>
     rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> obtain ⟨rfl, rfl⟩ := ho <;>
-    by_cases hfp : f < 512 <;> by_cases hfd : f < 812 <;>
+    by_cases hfp : f < 512 <;> by_cases hfd : f < 1112 <;>
     simp [WX, Rights.rx, Rights.rw, owner, poolFrames, framesPerTask, maxTasks, fbPages,
       displayTask, inputTask, devBase, devPages, hfp, hfd] at h1 h2 ⊢ <;> omega
 

@@ -10,20 +10,24 @@ theorems in `LeanOS/Proofs.lean` are about that same code, so there is no separa
 specification that could drift from what runs. Underneath, about 1,000 lines of C and
 assembly boot the board, write page tables and switch tasks, but make no access decisions.
 
-Today it boots the Pi 4 (tested on QEMU's `raspi4b` machine) into a small graphical
-desktop. A display server owns the framebuffer; alice draws a window in her own memory
-and hands the server a read-only capability to exactly those pages; mallory tries to reach
-the screen and everyone else's memory, and cannot.
+Today it boots the Pi 4 (tested on QEMU's `raspi4b` machine) to a graphical desktop at
+1024×600. You can type into a window and drag it around. A display server in user space
+owns the screen; an input driver in user space owns the serial port and its interrupt;
+alice's Notes app draws in her own memory and lends the display a read-only view of it.
+mallory tries to reach the screen, the keyboard and everyone's memory, and cannot.
 
-![The leanos desktop on QEMU's Raspberry Pi 4](docs/screen.png)
+![The leanos boot screen](docs/logo.png)
 
-The serial console of the same boot:
+![The leanos desktop after typing into Notes and dragging it](docs/screen.png)
+
+The serial console of that boot, with `make test` typing "Hi!" and dragging the window:
 
 ```
+leanos © 2026 Keith Adler
 leanos: Raspberry Pi 4, booting on EL1
-leanos: framebuffer 640x480 at 0x3c100000
+leanos: framebuffer 1024x600 at 0x3c100000
 leanos: MMU on
-leanos: Lean kernel initialized, 4 tasks
+leanos: Lean kernel initialized, 5 tasks
 alice: wrote secret 0x5ec12e7 to my data page
 mallory: I am task 2
 mallory: map capability 9 (not mine) at page 5 -> refused, no such capability
@@ -34,22 +38,27 @@ mallory: map the framebuffer (capability 5, which is the display's) -> refused, 
 mallory: map the endpoint as memory -> refused, not allowed
 mallory: asked for every right on the endpoint, got send
 carol: asked for write+execute on my data frame, got -w-
+input: listening on the UART
 carol: jumping into the instruction I wrote in my data page
 leanos: carol stopped: instruction fetch not allowed at 0x80010000
-display: desktop drawn on the 640x480 framebuffer
-alice: sent the display a 240x100 window, read-only, 24 pages -> ok
-alice: secret intact, exiting
-display: alice's window, 240x100 from a read-only capability to 24 pages, drawn at (60, 70)
+display: boot logo drawn
+display: desktop drawn on the 1024x600 framebuffer
+display: alice opened a 240x150 window from a read-only capability to 36 pages
+alice: opened a 240x150 window, read-only, 36 pages -> ok
 display: mallory asked for a window but sent no pixels; ignored
 mallory: ask the display for a window without pixels -> ok
 mallory: writing to the screen's physical address 0x3c100000 directly
 leanos: mallory stopped: data access not allowed at 0x3c100000
-leanos: idle, 1 task waiting for a message (40 system calls, 2 timer ticks, kernel heap 49296 bytes live, 60160 peak)
+leanos: idle, 3 tasks waiting (45 system calls, 170 timer ticks, 0 device interrupts, kernel heap 76400 bytes live, 96624 peak)
+display: key 'H' to alice
+display: key 'i' to alice
+display: key '!' to alice
+display: moved alice's window to (250, 208)
 ```
 
-The kernel stamps every message with the sender's badge, so mallory cannot pass for
-alice. Her direct write to the screen's physical address faults, and the pixel she aimed
-at still shows the menu bar. `make test` checks that pixel.
+alice, mallory and carol are test personas: a legitimate app, an attacker, and a program
+trying to run code it wrote. They exercise the protections; [ROADMAP.md](ROADMAP.md)
+replaces the fixed demo with an init task and real apps.
 
 ## What is proved
 
@@ -65,11 +74,15 @@ can reach, under any sequence of system calls with any arguments:
 - **Every mapping is backed** by a capability the task holds, with the same rights.
 - **`write` reads only memory the task may read.**
 - **The scheduler never runs a waiting or stopped task** while a ready one exists.
+- **Replies grant nothing** and wake only the task waiting for them.
+- **Devices and interrupts stay with their owners**: only the display server can reach the
+  screen, only the input driver the UART and its interrupt, and an interrupt wakes only a
+  holder of its capability.
 
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
 MMU proves that user mode reaches exactly its own mappings, only the frame pool and the
 framebuffer (never the kernel or the peripherals), and shares a physical page with another
-task only along a grant path. `make mutants` breaks the kernel in 24 ways and checks the
+task only along a grant path. `make mutants` breaks the kernel in 31 ways and checks the
 proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
@@ -94,8 +107,9 @@ make test     # proofs, axiom check, boot, the transcript, and the pixels on scr
 
 To run it in a browser, start `python3 tools/serve.py` and open http://127.0.0.1:8796.
 Boot starts QEMU's Pi 4 with no window of its own; the page shows its screen live (through
-noVNC, over a localhost-only WebSocket), passes keys and clicks to it, and streams the
-serial console alongside.
+noVNC, over a localhost-only WebSocket) and streams the serial console alongside. Click the
+screen to type or drag windows: the page sends keys and mouse over the Pi's serial line,
+where leanos's input driver reads them (QEMU's Pi 4 has no USB).
 
 ## How it fits together
 
@@ -108,7 +122,7 @@ serial console alongside.
 | `rt/runtime.c` | The bare-metal slice of Lean's runtime: allocator, reference counts, closures. |
 | `arch/boot.S` | Entry, exception vectors, entering and leaving user mode. |
 | `arch/kmain.c` | Boot, MMU, interrupt controller, timer; carries out what the Lean kernel returns. |
-| `user/` | The demo programs: the display server, alice, mallory, carol; `gfx.h` draws, `font5x7.txt` is the font. |
+| `user/` | The display server, the input driver, alice's Notes, and the test tasks mallory and carol; `gfx.h` draws, `font5x7.txt` is the font. |
 | `test/` | The boot check (transcript and screen), the axiom check, and the mutants. |
 | `tools/serve.py` | The browser console: runs QEMU and streams its serial output. |
 
@@ -133,12 +147,18 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 | 6 | `capinfo(cap)` | the rights a capability carries, whether it names frames or an endpoint, and how many frames |
 | 7 | `whoami()` | the task's number |
 | 8 | `send(cap, w0, w1, w2, grant)` | sends three words, and optionally a frame capability, through an endpoint; waits for a receiver |
-| 9 | `recv(cap)` | receives the badge, three words and any granted capability; waits for a sender |
+| 9 | `recv(cap)` | receives the badge, three words, any granted capability and, for a call, a reply slot; waits for a sender |
+| 10 | `call(cap, w0, w1, w2, grant)` | like send, then waits for the receiver's reply |
+| 11 | `reply(slot, w0, w1, w2)` | answers a caller; carries no capability and never blocks |
+| 12 | `irqwait(cap)` | waits for the interrupt an interrupt capability names |
+| 13 | `irqack(cap)` | lets that interrupt fire again |
 
-Frame capabilities name a run of physical frames and carry read, write and execute rights.
+Capabilities come in three kinds. Frame capabilities name a run of physical frames and carry read, write and execute rights.
 Each task starts with 64 frames (code, data, stack and 28 spare pages) and a 32 MiB
 window to map them in. Endpoint capabilities carry
 receive, send and grant rights, and a badge the kernel delivers with every message.
+Interrupt capabilities name an interrupt line; like endpoints, they are fixed by the boot
+manifest.
 
 ## License
 

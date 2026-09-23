@@ -38,25 +38,32 @@ frame only if a chain of explicit grants gave it one. (Done with endpoint capabi
 fixed by the boot manifest; creating and passing endpoints waits for stage 5.) A GUI needs this: clients talk to
 the display server over IPC and hand it the memory they draw into.
 
-## 4. Drivers in user space — framebuffer done
+## 4. Drivers in user space — done
 
-Done: capabilities name runs of frames, `derive` cuts out sub-runs, each task has 64
-frames and a 32 MiB window through 16 level-3 tables. The framebuffer is allocated at boot
-through the mailbox (kept in trusted C, since it is a DMA path) and handed to the display
-server as a capability; only it can ever reach the screen (proved). Remaining: interrupt
-capabilities, and moving the UART driver out of the kernel.
+Capabilities name runs of frames; each task has 64 frames and a 32 MiB window. The
+framebuffer (1024×600, allocated at boot through the mailbox, which stays in trusted C
+because it is a DMA path) goes to the display server; the UART's registers and interrupt go
+to an input driver. Interrupt capabilities are fixed by the manifest; a fired line is
+masked until its holder acknowledges it. Call and reply let clients wait on the display
+server without it ever blocking on them. Proved: only the display server reaches the
+screen, only the input driver the UART, an interrupt wakes only its holder, replies grant
+nothing. The desktop has a boot logo, rounded shadowed windows, a pointer, dragging, and
+typing into the focused window.
 
-Device-frame and interrupt capabilities. The framebuffer (allocated through the VideoCore
-mailbox) goes to a display-server task as a device capability; the UART driver moves out
-of the kernel. After this stage the kernel prints nothing on its own and never touches the
-screen.
+## 5. Verified boot
 
-## 5. Memory and processes from user space
+Show on the boot screen, step by step, that nothing was tampered with. The Pi 4's bootloader
+can verify an RSA signature on the boot image against a key hash burned into the chip's
+OTP memory (Raspberry Pi secure boot); leanos then checks each program it starts against a
+hash in that signed image before running it, and the progress bar follows those checks.
+Proved: the kernel starts a program only if its hash matches the manifest.
+
+## 6. Memory and processes from user space
 
 Untyped memory capabilities and retyping, so a root task builds the system: creating
 tasks, handing out frames, and revoking them (a capability derivation tree).
 
-## 6. The GUI
+## 7. The GUI
 
 A display server that owns the framebuffer and composites windows; clients draw into
 memory they share with it by grant, never into each other's. Proved: a client's pixels
@@ -64,13 +71,13 @@ only ever come from memory it was granted. Keyboard and mouse input: the Pi 4's 
 through PCIe and the VL805 xHCI controller, which is a large driver, so input starts on
 the UART and USB comes after.
 
-## 7. A bounded kernel
+## 8. A bounded kernel
 
 Prove how much kernel memory each operation can use, and preallocate per task, so no
 system call can exhaust the kernel heap. Replace list-based state where it grows with
 the system.
 
-## 8. A system people can use
+## 9. A system people can use
 
 A shell and file manager in the GUI, a RAM file system then the SD card, a loader for ELF
 programs, multiple cores, and the Pi 5.

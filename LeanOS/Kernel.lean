@@ -178,11 +178,11 @@ def poolFrames : Nat := framesPerTask * maxTasks
 
 def runCap (base count : Nat) (r : Rights) : Cap := ⟨.frames base count, r, 0⟩
 
-/-- The framebuffer: 640 × 480 pixels of 4 bytes, 300 pages. Its pages are frames
+/-- The framebuffer: 1024 × 600 pixels of 4 bytes, 600 pages. Its pages are frames
 `poolFrames` to `poolFrames + fbPages - 1`. -/
-def fbWidth : Nat := 640
-def fbHeight : Nat := 480
-def fbPages : Nat := 300
+def fbWidth : Nat := 1024
+def fbHeight : Nat := 600
+def fbPages : Nat := 600
 
 /-- The task that owns the framebuffer at boot: the display server. -/
 def displayTask : Nat := 1
@@ -636,6 +636,10 @@ before passing it in. -/
   | some n => n
   | none => 0
 @[export leanos_reply_unmask] def exRUnmask (r : Reply) : Nat := r.unmask
+/-- The screen the machine layer asks the firmware for. -/
+@[export leanos_fb_width] def exFbWidth (u : Nat) : Nat := fbWidth + u * 0
+@[export leanos_fb_height] def exFbHeight (u : Nat) : Nat := fbHeight + u * 0
+@[export leanos_fb_pages] def exFbPages (u : Nat) : Nat := fbPages + u * 0
 
 @[export leanos_cur] def exCur (s : KState) : Nat := s.cur
 @[export leanos_ready] def exReady (s : KState) (i : Nat) : Bool := isReady s.tasks i

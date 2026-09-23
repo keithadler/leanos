@@ -18,8 +18,8 @@
 #define MAX_WIN 4
 #define TITLE_H 26
 #define BAR_H 28
-#define W 640
-#define H 480
+#define W 1024
+#define H 600
 
 enum { OP_OPEN = 1, OP_WAIT = 2 };
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4 };
@@ -63,19 +63,62 @@ static void logo(struct surface *s, int x, int y, int size) {
     thick_line(s, x * 16 + 51 * u, y * 16 + 49 * u, x * 16 + 29 * u, y * 16 + 80 * u, stroke, rgb(255, 255, 255));
 }
 
+#define SPLASH_MS 1600
+#define PBAR_W 320
+#define PBAR_H 6
+#define PBAR_Y 420
+
+/* Ease in and out: 0..1000 to 0..1000, slow at both ends. */
+static int ease(int t) {
+    if (t <= 0) return 0;
+    if (t >= 1000) return 1000;
+    return t * t / 1000 * (3000 - 2 * t) / 1000;
+}
+
+static void splash_bar(struct state *st, int done /* 0..1000 */) {
+    struct surface *s = &st->screen;
+    int x = W / 2 - PBAR_W / 2;
+    clip_to(s, x - 12, PBAR_Y - 12, PBAR_W + 24, PBAR_H + 24);
+    for (int j = s->cy0; j < s->cy1; j++)
+        fill(s, s->cx0, j, s->cx1 - s->cx0, 1, mix(rgb(14, 18, 34), rgb(24, 38, 64), (unsigned)(j * 255 / (H - 1))));
+    round_rect(s, x, PBAR_Y, PBAR_W, PBAR_H, PBAR_H / 2, rgb(44, 54, 84), 255);
+    int filled = PBAR_W * done / 1000;
+    if (filled >= PBAR_H) {
+        for (int i = 0; i < filled; i++) {
+            unsigned c = mix(rgb(70, 110, 230), rgb(80, 220, 200), (unsigned)(i * 255 / PBAR_W));
+            int cover = i < PBAR_H / 2 || i >= filled - PBAR_H / 2 ? 1 : 0;
+            if (cover) round_rect(s, x + i, PBAR_Y, 1, PBAR_H, 0, c, 200);
+            else fill(s, x + i, PBAR_Y, 1, PBAR_H, c);
+        }
+        round_rect(s, x, PBAR_Y, filled, PBAR_H, PBAR_H / 2, rgb(80, 220, 200), 60);
+        /* a soft glint riding the leading edge */
+        for (int k = 5; k >= 1; k--)
+            round_rect(s, x + filled - 3 - k, PBAR_Y - k + 3, 2 * k + 3, 2 * k, k, rgb(200, 255, 245), 22);
+    }
+    clip_all(s);
+}
+
 static void splash(struct state *st) {
     struct surface *s = &st->screen;
     clip_all(s);
-    gradient(s, 0, 0, W, H, rgb(16, 20, 38), rgb(22, 34, 58));
-    logo(s, W / 2 - 60, 120, 120);
+    gradient(s, 0, 0, W, H, rgb(14, 18, 34), rgb(24, 38, 64));
+    logo(s, W / 2 - 70, 150, 140);
     const char *name = "leanos";
-    text(s, W / 2 - text_width(name, 5) / 2, 268, name, rgb(240, 242, 248), 5);
+    text(s, W / 2 - text_width(name, 6) / 2, 318, name, rgb(240, 242, 248), 6);
     const char *tag = "access control proved in Lean";
-    text(s, W / 2 - text_width(tag, 2) / 2, 318, tag, rgb(140, 150, 175), 2);
-    round_rect(s, W / 2 - 100, 360, 200, 6, 3, rgb(50, 60, 88), 255);
-    for (int p = 0; p <= 200; p += 8) {
-        round_rect(s, W / 2 - 100, 360, p < 6 ? 6 : p, 6, 3, rgb(90, 200, 190), 255);
-        spin(400000);
+    text(s, W / 2 - text_width(tag, 2) / 2, 376, tag, rgb(140, 150, 175), 2);
+    /* the copyright line at the foot of the screen */
+    const char *who = " 2026 Keith Adler";
+    int wide = 7 * 2 + 4 + text_width(who, 2);
+    int cx = copyright_sign(s, W / 2 - wide / 2, H - 40, rgb(110, 120, 150), 2);
+    text(s, cx, H - 40, who, rgb(110, 120, 150), 2);
+    /* The bar fills over SPLASH_MS, eased, drawn as often as the time allows. Later it will
+       follow real work: checking each program against the signed boot image. */
+    u64 start = millis();
+    for (;;) {
+        u64 t = millis() - start;
+        splash_bar(st, ease((int)(t * 1000 / SPLASH_MS)));
+        if (t >= SPLASH_MS) break;
     }
 }
 
@@ -293,11 +336,11 @@ __attribute__((section(".text.start"))) void _start(void) {
     splash(st);
     put_s(&l, "display: boot logo drawn");
     say(&l);
-    spin(20000000); /* let the logo be seen */
+    for (u64 t = millis(); millis() - t < 400;) {} /* hold the full bar a moment */
 
     for (int j = 0; j < H; j++) st->bg[j] = mix(rgb(24, 42, 78), rgb(36, 118, 126), (unsigned)(j * 255 / (H - 1)));
     composite(st, 0, 0, W, H);
-    put_s(&l, "display: desktop drawn on the 640x480 framebuffer");
+    put_s(&l, "display: desktop drawn on the 1024x600 framebuffer");
     say(&l);
 
     for (;;) {

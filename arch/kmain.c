@@ -37,6 +37,9 @@ lean_object *leanos_reply_unmask(lean_object *r);
 lean_object *leanos_irq(lean_object *s, lean_object *n);
 lean_object *leanos_irq_line_count(lean_object *unused);
 lean_object *leanos_irq_line(lean_object *k);
+lean_object *leanos_fb_width(lean_object *unused);
+lean_object *leanos_fb_height(lean_object *unused);
+lean_object *leanos_fb_pages(lean_object *unused);
 
 uint64_t rt_heap_live(void);
 uint64_t rt_heap_peak(void);
@@ -126,17 +129,17 @@ void kpanic(const char *msg) {
  * Asked of the VideoCore firmware through the mailbox, once, at boot, before anything
  * else runs. The mailbox is a DMA path (the firmware writes wherever the request says), so
  * it never leaves this layer: user space only ever sees the resulting pages, as frame
- * capabilities the Lean kernel hands out. The request is fixed: 640 x 480, 32 bits per
- * pixel, which is `fbWidth`, `fbHeight` and `fbPages` in LeanOS/Kernel.lean. */
+ * capabilities the Lean kernel hands out. The request is fixed: `fbWidth` x `fbHeight`,
+ * 32 bits per pixel, from LeanOS/Kernel.lean. */
 
 #define MBOX (PERIPHERAL_BASE + 0xB880)
-#define FB_W 640
-#define FB_H 480
-#define FB_PAGES 300
 
 static volatile uint32_t mbox_buf[36] __attribute__((aligned(16)));
 
 static uint64_t fb_alloc(void) {
+    const uint32_t FB_W = (uint32_t)nat(leanos_fb_width(lean_box(0)));
+    const uint32_t FB_H = (uint32_t)nat(leanos_fb_height(lean_box(0)));
+    const uint64_t FB_PAGES = nat(leanos_fb_pages(lean_box(0)));
     int i = 0;
     mbox_buf[i++] = 0;                  /* size, set below */
     mbox_buf[i++] = 0;                  /* request */
@@ -450,22 +453,31 @@ void trap(struct frame *f, uint64_t kind) {
 
 void kmain(void) {
     uart_init();
+    kputs("leanos \xc2\xa9 2026 Keith Adler\n");
     kputs("leanos: Raspberry Pi 4, booting on ");
     uint64_t el = SYSREG_READ(CurrentEL) >> 2;
     kputs(el == 1 ? "EL1" : "EL?");
     kputs("\n");
+    /* User mode may read the virtual counter (and its frequency) to keep time: animations
+       need it, and a task could already time itself by counting loops. */
+    SYSREG_WRITE(cntkctl_el1, 1UL << 1);
 
-    uint64_t fb = fb_alloc();
-    if (fb) {
-        kputs("leanos: framebuffer 640x480 at ");
-        kputhex(fb);
-        kputs("\n");
-    } else kputs("leanos: no framebuffer\n");
-
-    /* The Lean kernel comes up next: it computes the tables the MMU is turned on with. */
+    /* The Lean kernel comes up first: it says what screen to ask for, and computes the
+       tables the MMU is turned on with. */
     lean_object *res = initialize_leanos_LeanOS_Kernel(1);
     if (!lean_io_result_is_ok(res)) kpanic("Lean module initialization failed");
     lean_dec(res);
+
+    uint64_t fb = fb_alloc();
+    if (fb) {
+        kputs("leanos: framebuffer ");
+        kputdec(nat(leanos_fb_width(lean_box(0))));
+        kputs("x");
+        kputdec(nat(leanos_fb_height(lean_box(0))));
+        kputs(" at ");
+        kputhex(fb);
+        kputs("\n");
+    } else kputs("leanos: no framebuffer\n");
 
     mmu_init();
     kputs("leanos: MMU on\n");
