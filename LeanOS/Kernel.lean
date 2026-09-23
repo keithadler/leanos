@@ -71,6 +71,8 @@ structure Msg where
   w1 : Nat
   w2 : Nat
   grant : Option Cap
+  /-- a call: the sender waits for the receiver's reply -/
+  call : Bool
 
 inductive Status where
   | ready
@@ -78,6 +80,8 @@ inductive Status where
   | sending (e : Nat) (m : Msg)
   /-- blocked until a task sends to endpoint `e` -/
   | receiving (e : Nat)
+  /-- blocked after a call, until task `server` replies -/
+  | awaiting (server : Nat)
   | dead
 
 structure Task where
@@ -87,6 +91,9 @@ structure Task where
   /-- Values for registers x0, x1, … to load the next time the task runs: the result of its
   last system call. Empty when there is nothing to load. -/
   result : List Nat
+  /-- Tasks that called this one and wait for its reply, oldest first. A reply names one by
+  its position here. -/
+  callers : List Nat
 
 structure KState where
   tasks : List Task
@@ -201,7 +208,7 @@ def initMaps (i : Nat) : List Mapping :=
   app (runMaps 0 (64 * i) Rights.rx 16)
     (app (runMaps 16 (64 * i + 16) Rights.rw 16) (runMaps (userPages - 4) (64 * i + 32) Rights.rw 4))
 
-def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil⟩
+def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil, .nil⟩
 
 def mkTasksFrom (i : Nat) : Nat → List Task
   | 0 => .nil
@@ -263,18 +270,47 @@ def findSender (e : Nat) : List Task → Nat → Option (Nat × Msg)
     | some m => some (j, m)
     | none => findSender e ts (j + 1)
 
-/-- Task `u` receives message `m`: it becomes ready with the message in its registers
-(x0 = 0, x1 = badge, x2–x4 = words, x5 = 1 + index of a granted capability, or 0). A
-granted capability goes at the end of its list; if the list is full the delivery fails. -/
-def deliver (u : Task) (m : Msg) : Option Task :=
-  match m.grant with
-  | none => some { u with status := .ready,
-                          result := 0 :: m.badge :: m.w0 :: m.w1 :: m.w2 :: 0 :: .nil }
-  | some c =>
-    if len u.caps < maxCaps then
-      some { u with caps := snoc u.caps c, status := .ready,
-                    result := 0 :: m.badge :: m.w0 :: m.w1 :: m.w2 :: (len u.caps + 1) :: .nil }
-    else none
+/-- A free reply slot. -/
+def noTask : Nat := 1000000
+
+/-- A task answers at most this many callers at once. -/
+def maxCallers : Nat := 8
+
+/-- Put caller `j` in the first free slot, or a new one at the end. Slots never move, so a
+server can hold on to a slot number until it replies. Returns the slots and `j`'s slot. -/
+def placeCaller (j : Nat) : List Nat → Nat → List Nat × Nat
+  | .nil, i => (j :: .nil, i)
+  | c :: cs, i =>
+    if c == noTask then (j :: cs, i)
+    else match placeCaller j cs (i + 1) with
+      | (cs', k) => (c :: cs', k)
+
+/-- Task `u` receives message `m` from task `sender`: it becomes ready with the message in
+its registers (x0 = 0, x1 = badge, x2–x4 = words, x5 = 1 + index of a granted capability
+or 0, x6 = 1 + the reply slot of a call or 0). A granted capability goes at the end of its
+list. If its capabilities or reply slots are full, the delivery fails. -/
+def deliver (u : Task) (m : Msg) (sender : Nat) : Option Task :=
+  let placed := placeCaller sender u.callers 0
+  let callers := if m.call then placed.1 else u.callers
+  let slot := if m.call then placed.2 + 1 else 0
+  if len callers ≤ maxCallers then
+    match m.grant with
+    | none => some { u with status := .ready, callers := callers,
+                            result := 0 :: m.badge :: m.w0 :: m.w1 :: m.w2 :: 0 :: slot :: .nil }
+    | some c =>
+      if len u.caps < maxCaps then
+        some { u with caps := snoc u.caps c, status := .ready, callers := callers,
+                      result := 0 :: m.badge :: m.w0 :: m.w1 :: m.w2 :: (len u.caps + 1) :: slot :: .nil }
+      else none
+  else none
+
+/-- Whether task `j` of `ts` is waiting for a reply from task `server`. -/
+def awaitsFrom (ts : List Task) (j server : Nat) : Bool :=
+  match nth? ts j with
+  | some u => match u.status with
+    | .awaiting k => k == server
+    | _ => false
+  | none => false
 
 /-! ## System calls -/
 
@@ -395,9 +431,9 @@ def grantOf (t : Task) (ep : Cap) (gi : Nat) : Option (Option Cap) :=
   else none
 
 /-- Send three words, and optionally a frame capability, through endpoint capability `ci`.
-If a task is waiting to receive, it gets the message now and the sender carries on;
-otherwise the sender waits. -/
-def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) : Reply :=
+If a task is waiting to receive, it gets the message now; otherwise the sender waits. A
+plain send then carries on; a call waits for the receiver's reply. -/
+def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
   | some c =>
@@ -408,13 +444,17 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) : Reply :=
         match grantOf t c gi with
         | none => ret s t (eBadArg :: .nil)
         | some g =>
-          let m : Msg := ⟨c.badge, w0, w1, w2, g⟩
+          let m : Msg := ⟨c.badge, w0, w1, w2, g, call⟩
           match findReceiver e s.tasks 0 with
           | some j =>
             match nth? s.tasks j with
             | some u =>
-              match deliver u m with
-              | some u' => ret (setTask s j u') t (0 :: .nil)
+              match deliver u m s.cur with
+              | some u' =>
+                if call then
+                  ⟨schedule (setTask (setTask s j u') s.cur { t with status := .awaiting j, result := .nil }),
+                    0, 0, false⟩
+                else ret (setTask s j u') t (0 :: .nil)
               | none => ret s t (eFull :: .nil)
             | none => ret s t (eBadArg :: .nil)
           | none =>
@@ -422,7 +462,7 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) : Reply :=
       else ret s t (eBadArg :: .nil)
 
 /-- Receive through endpoint capability `ci`: take a waiting sender's message, or wait for
-one. The sender, if it was waiting, carries on with x0 = 0. -/
+one. A waiting plain sender carries on with x0 = 0; a caller goes on waiting, for the reply. -/
 def sysRecv (s : KState) (t : Task) (ci : Nat) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
@@ -435,20 +475,37 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) : Reply :=
         | some (j, m) =>
           match nth? s.tasks j with
           | some u =>
-            match deliver t m with
+            match deliver t m j with
             | some t' =>
-              ⟨setTask (setTask s j { u with status := .ready, result := 0 :: .nil }) s.cur t',
-                0, 0, false⟩
+              let u' : Task := if m.call then { u with status := .awaiting s.cur, result := .nil }
+                               else { u with status := .ready, result := 0 :: .nil }
+              ⟨setTask (setTask s j u') s.cur t', 0, 0, false⟩
             | none => ret s t (eFull :: .nil)
           | none => ret s t (eBadArg :: .nil)
         | none =>
           ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false⟩
       else ret s t (eBadArg :: .nil)
 
+/-- Answer the caller in reply slot `slot` (see `Task.callers`) with three words. Only a
+task still waiting for this task's reply is woken; a reply carries no capability. The slot
+is freed either way. -/
+def sysReply (s : KState) (t : Task) (slot w0 w1 w2 : Nat) : Reply :=
+  match nth? t.callers slot with
+  | none => ret s t (eBadArg :: .nil)
+  | some j =>
+    let t' : Task := { t with callers := setNth t.callers slot noTask }
+    if awaitsFrom s.tasks j s.cur then
+      match nth? s.tasks j with
+      | some u => ret (setTask s j { u with status := .ready, result := 0 :: w0 :: w1 :: w2 :: .nil }) t'
+                    (0 :: .nil)
+      | none => ret s t' (eBadArg :: .nil)
+    else ret s t' (eBadArg :: .nil)
+
 /-- System call `num` from the current task with arguments `a0` to `a4`:
   0 write(va, len) · 1 yield · 2 map(cap, vpn) · 3 unmap(vpn, count)
   4 derive(cap, rights, offset, count) · 5 exit · 6 capinfo(cap) · 7 whoami
-  8 send(cap, w0, w1, w2, grant) · 9 recv(cap) -/
+  8 send(cap, w0, w1, w2, grant) · 9 recv(cap) · 10 call(cap, w0, w1, w2, grant)
+  11 reply(slot, w0, w1, w2) -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with
   | none => ⟨s, 0, 0, false⟩
@@ -462,8 +519,10 @@ def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
     | 5 => ⟨killCurrent s, 0, 0, false⟩
     | 6 => sysCapInfo s t a0
     | 7 => ret s t (0 :: s.cur :: .nil)
-    | 8 => sysSend s t a0 a1 a2 a3 a4
+    | 8 => sysSend s t a0 a1 a2 a3 a4 false
     | 9 => sysRecv s t a0
+    | 10 => sysSend s t a0 a1 a2 a3 a4 true
+    | 11 => sysReply s t a0 a1 a2 a3
     | _ => ret s t (eNoCall :: .nil)
 
 /-- The machine layer has loaded task `j`'s result registers; forget them. -/

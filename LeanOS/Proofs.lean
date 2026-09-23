@@ -352,24 +352,49 @@ theorem findSender_spec {e : Nat} : ∀ {ts : List Task} {k j : Nat} {m : Msg},
       have : j - k = (j - (k + 1)) + 1 := by omega
       rw [this]; simpa [nth?] using hu
 
-/-- Receiving a message leaves a task fine, as long as a granted capability is fine for it. -/
-theorem deliver_ok {fb : Bool} {j : Nat} {u u' : Task} {m : Msg} (hu : TaskOK fb j u)
-    (hg : ∀ g, m.grant = some g → CapOK j g) (hd : deliver u m = some u') : TaskOK fb j u' := by
+/-- What a delivery can change: the receiver's capabilities grow by at most the granted one,
+its mappings stay the same, and it becomes ready. -/
+theorem deliver_spec {u u' : Task} {m : Msg} {sender : Nat} (hd : deliver u m sender = some u') :
+    u'.maps = u.maps ∧ u'.status = .ready ∧
+      (u'.caps = u.caps ∨ ∃ c, m.grant = some c ∧ u'.caps = snoc u.caps c) := by
   unfold deliver at hd
-  split at hd
-  · simp at hd; subst hd; exact ⟨hu.backed, hu.vpnOk, hu.caps, trivial, hu.fbMaps⟩
-  · rename_i g hmg
-    split at hd
-    · simp at hd; subst hd
-      refine ⟨?_, hu.vpnOk, ?_, trivial, hu.fbMaps⟩
-      · intro mp hmp
-        obtain ⟨c, hc, h1, h2⟩ := hu.backed mp hmp
-        exact ⟨c, mem_snoc.2 (Or.inl hc), h1, h2⟩
-      · intro c hc
-        rcases mem_snoc.1 hc with h | h
-        · exact hu.caps c h
-        · subst h; exact hg _ hmg
-    · simp at hd
+  dsimp only at hd
+  repeat' split at hd
+  all_goals first
+    | (simp at hd; done)
+    | (simp only [Option.some.injEq] at hd; subst hd
+       first
+         | exact ⟨rfl, rfl, Or.inl rfl⟩
+         | exact ⟨rfl, rfl, Or.inr ⟨_, by assumption, rfl⟩⟩)
+
+/-- Receiving a message leaves a task fine, as long as a granted capability is fine for it. -/
+theorem deliver_ok {fb : Bool} {j : Nat} {u u' : Task} {m : Msg} {sender : Nat}
+    (hu : TaskOK fb j u) (hg : ∀ g, m.grant = some g → CapOK j g)
+    (hd : deliver u m sender = some u') : TaskOK fb j u' := by
+  obtain ⟨hmaps, hst, hcaps⟩ := deliver_spec hd
+  have hcap : ∀ c ∈ u'.caps, c ∈ u.caps ∨ CapOK j c := by
+    intro c hc
+    rcases hcaps with h | ⟨g, hg', h⟩
+    · rw [h] at hc; exact Or.inl hc
+    · rw [h] at hc
+      rcases mem_snoc.1 hc with h1 | h1
+      · exact Or.inl h1
+      · subst h1; exact Or.inr (hg _ hg')
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  · intro mp hmp
+    rw [hmaps] at hmp
+    obtain ⟨c, hc, h1, h2⟩ := hu.backed mp hmp
+    refine ⟨c, ?_, h1, h2⟩
+    rcases hcaps with h | ⟨g, -, h⟩
+    · rw [h]; exact hc
+    · rw [h]; exact mem_snoc.2 (Or.inl hc)
+  · intro mp hmp; rw [hmaps] at hmp; exact hu.vpnOk mp hmp
+  · intro c hc
+    rcases hcap c hc with h | h
+    · exact hu.caps c h
+    · exact h
+  · rw [hst]; trivial
+  · intro mp hmp; rw [hmaps] at hmp; exact hu.fbMaps mp hmp
 
 /-! ## System calls preserve the invariant -/
 
@@ -453,8 +478,8 @@ theorem inv_sysWrite {s : KState} {t : Task} {va n : Nat} (hs : Inv s) (ht : Tas
     · exact inv_setTask hs (ht.result _)
     · exact inv_ret hs ht _
 
-theorem inv_sysSend {s : KState} {t : Task} {ci w0 w1 w2 gi : Nat} (hs : Inv s)
-    (hcur : nth? s.tasks s.cur = some t) : Inv (sysSend s t ci w0 w1 w2 gi).state := by
+theorem inv_sysSend {s : KState} {t : Task} {ci w0 w1 w2 gi : Nat} {call : Bool} (hs : Inv s)
+    (hcur : nth? s.tasks s.cur = some t) : Inv (sysSend s t ci w0 w1 w2 gi call).state := by
   have ht := hs.tasks _ _ hcur
   have hA := hs.lt hcur
   unfold sysSend
@@ -494,14 +519,18 @@ theorem inv_sysSend {s : KState} {t : Task} {ci w0 w1 w2 gi : Nat} (hs : Inv s)
                 have hrecv := huok.status
                 rw [hst] at hrecv
                 obtain ⟨c1, hc1, ho1, hr1⟩ := hrecv
-                apply inv_ret (inv_setTask hs (deliver_ok huok ?_ hd)) ht
-                intro g' hg'
-                obtain ⟨hgok, hgf, c2, hc2, ho2, hw2, hx2⟩ := hgr g' hg'
-                exact capOK_grant hgok hgf ⟨hA, hB, e, ⟨c2, hc2, ho2, hw2, hx2⟩, ⟨c1, hc1, ho1, hr1⟩⟩
+                have hdel : Inv (setTask s j u') := by
+                  apply inv_setTask hs (deliver_ok huok ?_ hd)
+                  intro g' hg'
+                  obtain ⟨hgok, hgf, c2, hc2, ho2, hw2, hx2⟩ := hgr g' hg'
+                  exact capOK_grant hgok hgf ⟨hA, hB, e, ⟨c2, hc2, ho2, hw2, hx2⟩, ⟨c1, hc1, ho1, hr1⟩⟩
+                split
+                · exact inv_schedule (inv_setTask hdel (ht.setStatus (.awaiting j) trivial _))
+                · exact inv_ret hdel ht _
               · exact inv_ret hs ht _
             · exact inv_ret hs ht _
           · apply inv_schedule
-            exact inv_setTask hs (ht.setStatus (.sending e ⟨c.badge, w0, w1, w2, g⟩)
+            exact inv_setTask hs (ht.setStatus (.sending e ⟨c.badge, w0, w1, w2, g, call⟩)
               ⟨⟨c0, hc0, ho0, hle0.2.1 hw, hb0⟩, fun g' hg' => hgr g' hg'⟩ _)
       · exact inv_ret hs ht _
 
@@ -534,8 +563,12 @@ theorem inv_sysRecv {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
             obtain ⟨-, hgrant⟩ := hsend
             split
             · rename_i t' hd
-              have h1 : Inv (setTask s j { u with status := .ready, result := 0 :: .nil }) :=
-                inv_setTask hs (huok.setStatus .ready trivial _)
+              dsimp only
+              have h1 : Inv (setTask s j (if m.call then { u with status := .awaiting s.cur, result := .nil }
+                  else { u with status := .ready, result := 0 :: .nil })) := by
+                split
+                · exact inv_setTask hs (huok.setStatus (.awaiting s.cur) trivial _)
+                · exact inv_setTask hs (huok.setStatus .ready trivial _)
               apply inv_setTask h1
               apply deliver_ok ht _ hd
               intro g hg
@@ -547,6 +580,24 @@ theorem inv_sysRecv {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
         · apply inv_schedule
           exact inv_setTask hs (ht.setStatus (.receiving e) ⟨c0, hc0, ho0, hle0.1 hr⟩ _)
       · exact inv_ret hs ht _
+
+theorem TaskOK.setCallers {fb : Bool} {j : Nat} {t : Task} (h : TaskOK fb j t) (cs : List Nat) :
+    TaskOK fb j { t with callers := cs } := ⟨h.backed, h.vpnOk, h.caps, h.status, h.fbMaps⟩
+
+theorem inv_sysReply {s : KState} {t : Task} {slot w0 w1 w2 : Nat} (hs : Inv s)
+    (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysReply s t slot w0 w1 w2).state := by
+  unfold sysReply
+  split
+  · exact inv_ret hs ht _
+  · rename_i j hj
+    dsimp only
+    split
+    · split
+      · rename_i u hu
+        exact inv_ret (inv_setTask hs ((hs.tasks j u hu).setStatus .ready trivial _))
+          (ht.setCallers _) _
+      · exact inv_ret hs (ht.setCallers _) _
+    · exact inv_ret hs (ht.setCallers _) _
 
 theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
     Inv (syscall s num a0 a1 a2 a3 a4).state := by
@@ -566,6 +617,8 @@ theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
     · exact inv_ret hs hto _
     · exact inv_sysSend hs ht
     · exact inv_sysRecv hs ht
+    · exact inv_sysSend hs ht
+    · exact inv_sysReply hs hto
     · exact inv_ret hs hto _
 
 /-! ## The boot manifest -/
@@ -732,6 +785,101 @@ theorem derive_never_amplifies (c : Cap) (bits off cnt : Nat) (o : Obj)
       d.badge = c.badge ∧ RLe d.rights c.rights :=
   ⟨fun _ hf => subObj_covers ho hf, fun _ he => subObj_endpoint ho he, rfl, meet_le _ _⟩
 
+/-! ## Replies -/
+
+theorem awaitsFrom_spec {ts : List Task} {j server : Nat} (h : awaitsFrom ts j server = true) :
+    ∃ u, nth? ts j = some u ∧ u.status = .awaiting server := by
+  unfold awaitsFrom at h
+  split at h
+  · rename_i u hu
+    split at h
+    · rename_i k hk; simp at h; subst h; exact ⟨u, hu, hk⟩
+    · simp at h
+  · simp at h
+
+/-- Every task has the same capabilities and mappings in `s'` as in `s`. -/
+def SameAuthority (s s' : KState) : Prop :=
+  ∀ j u u', nth? s.tasks j = some u → nth? s'.tasks j = some u' → u'.caps = u.caps ∧ u'.maps = u.maps
+
+theorem SameAuthority.trans {s1 s2 s3 : KState} (h1 : SameAuthority s1 s2) (h2 : SameAuthority s2 s3)
+    (hl : ∀ j u, nth? s1.tasks j = some u → ∃ v, nth? s2.tasks j = some v) : SameAuthority s1 s3 := by
+  intro j u u' hu hu'
+  obtain ⟨v, hv⟩ := hl j u hu
+  obtain ⟨c1, m1⟩ := h1 j u v hu hv
+  obtain ⟨c2, m2⟩ := h2 j v u' hv hu'
+  exact ⟨c2.trans c1, m2.trans m1⟩
+
+/-- Replacing task `k` by a task with the same capabilities and mappings. -/
+theorem sameAuthority_setTask {s : KState} {k : Nat} {v' : Task}
+    (h : ∀ v, nth? s.tasks k = some v → v'.caps = v.caps ∧ v'.maps = v.maps) :
+    SameAuthority s (setTask s k v') := by
+  intro j u u' hu hu'
+  simp only [setTask, nth?_setNth] at hu'
+  by_cases hk : k = j
+  · subst hk; simp [hu] at hu'; subst hu'; exact h u hu
+  · simp [hk, hu] at hu'; subst hu'; exact ⟨rfl, rfl⟩
+
+theorem nth?_setTask_some {s : KState} {k j : Nat} {v' u : Task} (hu : nth? s.tasks j = some u) :
+    ∃ w, nth? (setTask s k v').tasks j = some w := by
+  simp only [setTask, nth?_setNth]
+  by_cases hk : k = j
+  · subst hk; simp [hu]
+  · simp [hk, hu]
+
+/-- **A reply grants nothing.** No task's capabilities or mappings change when a task
+replies. -/
+theorem reply_grants_nothing {s : KState} {t : Task} (ht : nth? s.tasks s.cur = some t)
+    (slot w0 w1 w2 : Nat) : SameAuthority s (sysReply s t slot w0 w1 w2).state := by
+  have hcurT : ∀ (t' : Task), t'.caps = t.caps → t'.maps = t.maps →
+      SameAuthority s (setTask s s.cur t') := by
+    intro t' hc hm
+    apply sameAuthority_setTask
+    intro v hv; rw [ht] at hv; cases hv; exact ⟨hc, hm⟩
+  unfold sysReply
+  split
+  · exact hcurT _ rfl rfl
+  · rename_i j hj
+    dsimp only
+    split
+    · split
+      · rename_i u hu
+        -- first the caller wakes, then the replier's slot is freed
+        have h1 : SameAuthority s (setTask s j { u with status := .ready, result := 0 :: w0 :: w1 :: w2 :: .nil }) :=
+          sameAuthority_setTask (fun v hv => by rw [hu] at hv; cases hv; exact ⟨rfl, rfl⟩)
+        refine SameAuthority.trans h1 ?_ (fun k v hv => nth?_setTask_some hv)
+        apply sameAuthority_setTask
+        intro v hv
+        simp only [setTask, nth?_setNth] at hv
+        by_cases hjc : j = s.cur
+        · subst hjc; rw [hu] at ht; cases ht; simp [hu] at hv; subst hv; exact ⟨rfl, rfl⟩
+        · simp [hjc, ht] at hv; subst hv; exact ⟨rfl, rfl⟩
+      · exact hcurT _ rfl rfl
+    · exact hcurT _ rfl rfl
+
+/-- **A reply wakes only its caller.** Replying changes the status of no task other than
+the replier, except a task that was waiting for this replier's reply. -/
+theorem reply_wakes_only_caller {s : KState} {t : Task} (ht : nth? s.tasks s.cur = some t)
+    (slot w0 w1 w2 j : Nat) (hj : j ≠ s.cur) {u u' : Task} (hu : nth? s.tasks j = some u)
+    (hu' : nth? (sysReply s t slot w0 w1 w2).state.tasks j = some u')
+    (hch : u'.status ≠ u.status) : u.status = .awaiting s.cur := by
+  unfold sysReply at hu'
+  split at hu'
+  · simp [ret, setTask, nth?_setNth, Ne.symm hj, hu] at hu'; subst hu'; exact absurd rfl hch
+  · rename_i k hk
+    dsimp only at hu'
+    split at hu'
+    · rename_i haw
+      split at hu'
+      · rename_i v hv
+        simp only [ret, setTask, nth?_setNth, Ne.symm hj, if_false] at hu'
+        by_cases hkj : k = j
+        · subst hkj
+          obtain ⟨w, hw, hst⟩ := awaitsFrom_spec haw
+          rw [hw] at hu; cases hu; exact hst
+        · simp [hkj, hu] at hu'; subst hu'; exact absurd rfl hch
+      · simp [ret, setTask, nth?_setNth, Ne.symm hj, hu] at hu'; subst hu'; exact absurd rfl hch
+    · simp [ret, setTask, nth?_setNth, Ne.symm hj, hu] at hu'; subst hu'; exact absurd rfl hch
+
 /-! ## The demo manifest: who can reach whom -/
 
 /-- The only grant edge in the manifest: alice (0) to the server (1). -/
@@ -842,6 +990,9 @@ theorem outLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
          all_goals simp at h
          done)
       | (unfold sysRecv at h; repeat' (first | split at h | dsimp only at h)
+         all_goals simp at h
+         done)
+      | (unfold sysReply at h; repeat' (first | split at h | dsimp only at h)
          all_goals simp at h
          done)
 

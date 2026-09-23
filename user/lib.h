@@ -4,11 +4,11 @@
 typedef unsigned long u64;
 
 /* x0 is the status (0 = ok); the rest depend on the call. */
-struct res { u64 x[6]; };
+struct res { u64 x[7]; };
 #define status x[0]
 
 enum { SYS_WRITE, SYS_YIELD, SYS_MAP, SYS_UNMAP, SYS_DERIVE, SYS_EXIT, SYS_CAPINFO, SYS_WHOAMI,
-       SYS_SEND, SYS_RECV };
+       SYS_SEND, SYS_RECV, SYS_CALL, SYS_REPLY };
 enum { OK = 0, NO_CAP = 1, BAD_ARG = 2, NO_CALL = 3, FULL = 4 };
 /* Frame rights: read, write, execute. Endpoint rights use the same bits for receive,
    send, grant. */
@@ -30,11 +30,12 @@ static inline struct res sys(u64 n, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
     register u64 x3 __asm__("x3") = a3;
     register u64 x4 __asm__("x4") = a4;
     register u64 x5 __asm__("x5");
+    register u64 x6 __asm__("x6");
     __asm__ volatile("svc #0"
-                     : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "=r"(x5)
+                     : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "=r"(x5), "=r"(x6)
                      : "r"(x8)
                      : "memory");
-    return (struct res){{x0, x1, x2, x3, x4, x5}};
+    return (struct res){{x0, x1, x2, x3, x4, x5, x6}};
 }
 #define sys0(n) sys(n, 0, 0, 0, 0, 0)
 #define sys1(n, a) sys(n, a, 0, 0, 0, 0)

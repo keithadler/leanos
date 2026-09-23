@@ -58,7 +58,11 @@ mutant "grant an endpoint capability" \
     | none => none" "      | .endpoint _ => some (some g)
     | none => none"
 mutant "sender picks its own badge" \
-  "let m : Msg := ⟨c.badge, w0, w1, w2, g⟩" "let m : Msg := ⟨w0, w0, w1, w2, g⟩"
+  "let m : Msg := ⟨c.badge, w0, w1, w2, g, call⟩" "let m : Msg := ⟨w0, w0, w1, w2, g, call⟩"
+mutant "reply wakes a task that is not waiting for it" \
+  "    if awaitsFrom s.tasks j s.cur then" "    if true then"
+mutant "reply hands over the replier's capabilities" \
+  "ret (setTask s j { u with status := .ready, result := 0 :: w0 :: w1 :: w2 :: .nil }) t'" "ret (setTask s j { u with status := .ready, caps := t.caps, result := 0 :: w0 :: w1 :: w2 :: .nil }) t'"
 mutant "manifest gives mallory the grant right" \
   "epCap 0 false true false 2" "epCap 0 false true true 2"
 mutant "manifest gives mallory the receive right" \

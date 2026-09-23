@@ -23,3 +23,5 @@ open LeanOS
 #print axioms el0_flow
 #print axioms el0_shared
 #print axioms el0_mallory_isolated
+#print axioms reply_grants_nothing
+#print axioms reply_wakes_only_caller
