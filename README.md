@@ -219,6 +219,10 @@ can reach, under any sequence of system calls with any arguments:
   with the right the direction needs; the writes that could aim DMA anywhere else (device
   mode, descriptor DMA, descriptor lists) are never passed on; and only the driver holds
   the controller, which nobody can pass memory to. The driver tries all of it at start.
+- **A power cut never leaves a change half done**, for a model of the file server's journal:
+  cut its block writes anywhere, recover, and every block outside the journal is as before
+  the change or as after it (`crash_atomic`, in `LeanOS/Journal.lean`). The C file server
+  is tested against the same promise (`test/crash.sh`), not proved to be that model.
 - **Devices and interrupts stay with their owners**: only the display server can reach the
   screen, only the input driver the UART and its interrupt, and an interrupt wakes only a
   holder of its capability.

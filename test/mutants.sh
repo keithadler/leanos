@@ -6,7 +6,9 @@ cd "$(dirname "$0")/.."
 # The mutants: a name, text in LeanOS/Kernel.lean, and what it becomes. test/mutants.py
 # runs them, several at once (JOBS, default half the cores), each in its own copy of the
 # project, so the working tree is never touched.
-mutant() { printf '%s\0%s\0%s\0' "$1" "$2" "$3"; }
+mutant() { printf '%s\0%s\0%s\0%s\0' LeanOS/Kernel.lean "$1" "$2" "$3"; }
+# the journal's model (its proof is LeanOS/Journal.lean)
+mutant_journal() { printf '%s\0%s\0%s\0%s\0' LeanOS/JournalModel.lean "$1" "$2" "$3"; }
 
 {
 mutant "derive grants whatever is asked" \
@@ -191,5 +193,18 @@ mutant "grant the USB capability" \
       | _ => none" "      | .frames _ _ => some (some g)
       | .usbHost => some (some g)
       | _ => none"
+
+mutant_journal "the journal writes home before the commit" \
+  "  jw J 0 (t.map Prod.snd) ++
+    (J, .header t.length (t.map Prod.fst) (csum (t.map Prod.snd))) :: (t ++ (J, clean) :: .nil)" "  jw J 0 (t.map Prod.snd) ++ t ++
+    (J, .header t.length (t.map Prod.fst) (csum (t.map Prod.snd))) :: (J, clean) :: .nil"
+mutant_journal "the journal commits before its copies are written" \
+  "  jw J 0 (t.map Prod.snd) ++
+    (J, .header t.length (t.map Prod.fst) (csum (t.map Prod.snd))) :: (t ++ (J, clean) :: .nil)" "  (J, .header t.length (t.map Prod.fst) (csum (t.map Prod.snd))) :: (jw J 0 (t.map Prod.snd) ++
+    (t ++ (J, clean) :: .nil))"
+mutant_journal "recovery never finishes a committed change" \
+  "    then upd (applyW (ts.zip (readJ d J 0 n)) d) J clean" "    then upd d J clean"
+mutant_journal "recovery replays only the first block" \
+  "    then upd (applyW (ts.zip (readJ d J 0 n)) d) J clean" "    then upd (applyW ((ts.zip (readJ d J 0 n)).take 1) d) J clean"
 
 } | python3 test/mutants.py ${JOBS:-}

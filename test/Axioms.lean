@@ -58,3 +58,4 @@ open LeanOS
 #print axioms usb_dma_confined
 #print axioms usb_dma_own_memory
 #print axioms usb_writes_safe
+#print axioms LeanOS.Journal.crash_atomic

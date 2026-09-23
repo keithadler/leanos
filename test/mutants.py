@@ -23,11 +23,17 @@ PROJECT = ["LeanOS.lean", "LeanOS", "lakefile.toml", "lake-manifest.json", "lean
 
 
 def read_mutants():
+    """Records of four fields: the file, a name, the text, what it becomes."""
     fields = sys.stdin.buffer.read().decode().split("\0")
     if fields and fields[-1] == "":
         fields.pop()
-    assert len(fields) % 3 == 0, "a mutant needs a name, a target and a replacement"
-    return [tuple(fields[i:i + 3]) for i in range(0, len(fields), 3)]
+    assert len(fields) % 4 == 0, "a mutant needs a file, a name, a target and a replacement"
+    return [tuple(fields[i:i + 4]) for i in range(0, len(fields), 4)]
+
+
+def module_of(path):
+    """LeanOS/Kernel.lean -> LeanOS.Kernel"""
+    return path[:-len(".lean")].replace("/", ".")
 
 
 def lake(where, *target):
@@ -40,7 +46,7 @@ def main():
     mutants = read_mutants()
     if os.environ.get("LIMIT"):                     # for timing the runner on a few
         mutants = mutants[:int(os.environ["LIMIT"])]
-    kernel = open(os.path.join(ROOT, "LeanOS", "Kernel.lean")).read()
+    sources = {f: open(os.path.join(ROOT, f)).read() for f in {m[0] for m in mutants}}
     if not lake(ROOT):
         print("FAIL: the unmutated kernel does not build")
         return 1
@@ -61,23 +67,26 @@ def main():
                 shutil.copytree(src, os.path.join(where, item), symlinks=True)
             elif os.path.exists(src):
                 shutil.copy2(src, where)
-        path = os.path.join(where, "LeanOS", "Kernel.lean")
         while True:
             try:
-                i, (name, frm, to) = todo.get_nowait()
+                i, (file, name, frm, to) = todo.get_nowait()
             except queue.Empty:
                 return
-            if frm not in kernel:
-                verdict = "BROKEN: %s (its target is no longer in Kernel.lean)" % name
+            source = sources[file]
+            path = os.path.join(where, file)
+            if frm not in source:
+                verdict = "BROKEN: %s (its target is no longer in %s)" % (name, file)
             else:
                 with open(path, "w") as f:
-                    f.write(kernel.replace(frm, to, 1))
-                if not lake(where, "LeanOS.Kernel"):
-                    verdict = "BROKEN: %s (the mutated kernel does not compile)" % name
+                    f.write(source.replace(frm, to, 1))
+                if not lake(where, module_of(file)):
+                    verdict = "BROKEN: %s (the mutated %s does not compile)" % (name, file)
                 elif lake(where):
                     verdict = "SURVIVED: %s" % name
                 else:
                     verdict = "caught: %s" % name
+                with open(path, "w") as f:
+                    f.write(source)
             results[i] = verdict
             with lock:
                 print(verdict, flush=True)

@@ -245,8 +245,9 @@ QEMU's model of them, because leanos has only run under QEMU.
   and its blocks of the card), not what it does with the bytes. It keeps a journal: every
   change is written to the journal with a checksum first, then to its place, so after a
   power cut a change is finished or dropped whole, and the whole tree is checked (and
-  repaired, if it ever needs it) at every start. That is tested (`test/crash.sh`), not
-  proved; and it assumes the card writes a 512-byte block whole and in the order asked,
+  repaired, if it ever needs it) at every start. The protocol is proved atomic for a model
+  (`LeanOS/Journal.lean`: `crash_atomic`); that `user/fs.c` follows the model is tested
+  (`test/crash.sh`), not proved; and both assume the card writes a 512-byte block whole and in the order asked,
   which SD cards generally do but do not promise.
 - Capability lists are bounded (64 per task) but a server that is sent grants it does not
   want must drop them; the display server and the file server do. A client that floods a

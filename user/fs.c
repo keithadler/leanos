@@ -21,7 +21,8 @@
    then each block to its place, then clears the header. At start, a committed transaction
    whose checksum matches is written to its place again; one whose checksum does not match
    never committed, and nothing of it had reached its place. So each change is all or
-   nothing. Then the whole tree is checked: every cluster in use belongs to exactly one
+   nothing: LeanOS/Journal.lean proves it (`crash_atomic`) for a model of exactly this
+   protocol, cut after any number of block writes. Then the whole tree is checked: every cluster in use belongs to exactly one
    file, every file is in a folder; anything else is repaired and said.
 
    Without a card, the same file system lives in memory (smaller), until the Pi restarts. */

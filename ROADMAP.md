@@ -151,9 +151,10 @@ tree is checked and repaired at every start; files are read and written at any o
 a file can be as large as the card (512 MiB for now) and a program as large as its code run
 (`user/elfload.h` loads it piece by piece). Terminal has folders (`mkdir`, `cd`, `pwd`,
 `mv`), and Files opens them. `test/crash.sh` cuts the power in the middle of writes twelve
-times; `test/bigprog.sh` runs a 41 KiB program and reads back a 250 KiB file. Next: a
-model of the journal in Lean, with the proof that recovery always gives the state before
-or after each change.
+times; `test/bigprog.sh` runs a 41 KiB program and reads back a 250 KiB file. And the
+journal's protocol is modeled in Lean (`LeanOS/JournalModel.lean`) with the proof that a
+cut after any number of block writes, then recovery, gives the state before or after the
+change (`crash_atomic`); four mutants of the model are caught.
 
 Done too: programs from the SD card. They are ELF files on the card (`tools/mksd.py`
 writes a card with them, the way programs are copied onto any computer's disk); Terminal's
