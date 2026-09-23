@@ -33,7 +33,7 @@ KERNEL_LEAN_C := .lake/build/ir/LeanOS/Kernel.c
 USER_PROGS := alice display mallory carol input terminal settings security fs files
 USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
-ARCH_O := build/boot.o build/kmain.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
+ARCH_O := build/boot.o build/kmain.o build/sd.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
 
 .PHONY: all run test mutants proofs clean
 ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files)
@@ -149,9 +149,16 @@ build/leanos.elf: $(ARCH_O) $(INIT_O) arch/kernel.ld
 build/kernel8.img: build/leanos.elf
 	$(OBJCOPY) -O binary $< $@
 
-QEMU_ARGS := -M raspi4b -display none -serial stdio -semihosting -kernel build/kernel8.img
+# The SD card: an 8 MiB image, made once and kept, so files survive a reboot.
+SD_IMAGE := build/sd.img
+$(SD_IMAGE):
+	@mkdir -p build
+	qemu-img create -f raw $@ 8M
 
-run: build/kernel8.img
+QEMU_ARGS := -M raspi4b -display none -serial stdio -semihosting -kernel build/kernel8.img \
+  -drive if=sd,format=raw,file=$(SD_IMAGE)
+
+run: build/kernel8.img $(SD_IMAGE)
 	$(QEMU) $(QEMU_ARGS)
 
 test: all

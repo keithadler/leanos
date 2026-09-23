@@ -93,7 +93,7 @@ mutant "tasks start ready, unchecked" \
   "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .unverified, .nil, .nil, .nil⟩" "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil, .nil, .nil⟩"
 mutant "a stopped task may make system calls" \
   "    | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
+    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
 mutant "user pages always executable" \
   "privNoExec + (if m.rights.x then 0 else userNoExec)" "privNoExec + 0"
 mutant "read-only pages writable" \
@@ -127,9 +127,24 @@ mutant "drop lets a task keep the capability and gain another" \
 mutant "manifest lets mallory grant to the file server" \
   "| 2 => snoc (frameCaps 2) (epCap 0 false true false 2)" "| 2 => snoc (snoc (frameCaps 2) (epCap 0 false true false 2)) (epCap 1 false true true 2)"
 mutant "manifest lets the file server grant to the display" \
-  "| 8 => snoc (frameCaps 8) (epCap 1 true false false 0)" "| 8 => snoc (snoc (frameCaps 8) (epCap 1 true false false 0)) (epCap 0 false true true 8)"
+  "| 8 => snoc (snoc (frameCaps 8) (epCap 1 true false false 0)) (blocksCap 0 diskBlocks)" "| 8 => snoc (snoc (snoc (frameCaps 8) (epCap 1 true false false 0)) (blocksCap 0 diskBlocks)) (epCap 0 false true true 8)"
 mutant "manifest lets Settings receive the file server's mail" \
   "| 6 => snoc (frameCaps 6) (epCap 0 false true true 6)" "| 6 => snoc (snoc (frameCaps 6) (epCap 0 false true true 6)) (epCap 1 true false false 6)"
+mutant "block I/O skips the memory check" \
+  "if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then" "if Nat.ble (idx + 1) n && capRightFor write c.rights then"
+mutant "block I/O without the capability's right" \
+  "if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then" "if Nat.ble (idx + 1) n && ioPageOk t.maps va write then"
+mutant "block I/O past the end of the capability" \
+  "if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then" "if capRightFor write c.rights && ioPageOk t.maps va write then"
+mutant "a disk read may land in a read-only page" \
+  "  | false => writableAt" "  | false => readableAt"
+mutant "manifest gives mallory the disk" \
+  "| 2 => snoc (frameCaps 2) (epCap 0 false true false 2)" "| 2 => snoc (snoc (frameCaps 2) (epCap 0 false true false 2)) (blocksCap 0 diskBlocks)"
+mutant "grant a block capability" \
+  "      | .frames _ _ => some (some g)
+      | _ => none" "      | .frames _ _ => some (some g)
+      | .blocks _ _ => some (some g)
+      | _ => none"
 
 cp "$backup" LeanOS/Kernel.lean
 lake build >/dev/null 2>&1 || { echo "FAIL: the unmutated kernel no longer builds"; exit 1; }

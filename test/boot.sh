@@ -37,7 +37,7 @@ check_order alice \
   "alice: opened a 300x200 window, read-only, 59 pages -> ok"
 
 check_order fs \
-  "fs: ready, 1 file"
+  "fs: made a new file system on the SD card; ready, 1 file"
 
 check_order mallory \
   "mallory: I am task 2" \
@@ -48,6 +48,8 @@ check_order mallory \
   "mallory: map the framebuffer (capability 5, which is the display's) -> refused, no such capability" \
   "mallory: map the endpoint as memory -> refused, not allowed" \
   "mallory: asked for every right on the endpoint, got send" \
+  "mallory: read block 0 of the SD card through capability 20, which I do not have -> refused, no such capability" \
+  "mallory: read block 0 of the SD card through my endpoint capability -> refused, not allowed" \
   "mallory: ask the display for a window without pixels -> ok" \
   "mallory: writing to the screen's physical address 0x3c100000 directly" \
   "leanos: mallory stopped: data access not allowed at 0x3c100000"
@@ -80,6 +82,7 @@ for who in alice display mallory carol input fs; do
 done
 
 echo "$out" | grep -q "^leanos: framebuffer 1024x600 at 0x3c100000$" || fail "no framebuffer"
+echo "$out" | grep -qx "leanos: SD card ready" || fail "no SD card"
 echo "$out" | grep -q "^leanos: idle, 4 tasks waiting" || fail "did not settle with four tasks waiting"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 echo "$out" | grep -qE "SHOULD NOT|CHANGED" && fail "a protection failed"

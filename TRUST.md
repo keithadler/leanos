@@ -29,6 +29,8 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `edge_iff`, `reach_iff` | In the manifest the only grant edges are from the apps (Notes, Terminal, Settings, Security, Files) to the display server, and from Notes, Terminal and Files to the file server. Memory moves at most one step: neither server can pass on what it was given. |
 | `confined` | Every task but the two servers only ever holds its own 256 frames. (`mallory_confined`, `carol_confined`, `alice_confined` are the same for those three.) |
 | `server_frames`, `file_server_frames` | The display server holds only its own frames, the framebuffer, and frames the apps granted it; the file server, only its own frames and frames its clients granted it. |
+| `blocks_fixed`, `disk_only_file_server` | Block capabilities never move and never gain rights: only the file server ever holds one, for the manifest's 2048 blocks. |
+| `block_io_confined` | When a call asks the machine layer for block I/O, the block is inside a block capability the caller holds with the right it needs, and the 512 bytes are in the user window, in one page the caller has mapped writable (a read fills it) or readable (a write sends it). |
 | `drop_only_shrinks` | After `drop`, every task holds a subset of the capabilities and mappings it held before. |
 | `maps_backed` | Every page a task can see comes from one of its own capabilities, with that capability's rights. |
 | `no_write_execute` | No page is ever both writable and executable. |
@@ -64,7 +66,7 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 46 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 52 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a `start` that forgets to take back
@@ -133,6 +135,14 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   registers, and measure it, before any task runs again. `start_revokes` says no other
   task can reach those frames once the tables are rebuilt; that the clearing and loading
   touch only the slot's frames is this code's job.
+- The SD card (`arch/sd.c`, ~160 lines): an SDHCI driver by programmed I/O only, never
+  DMA, because the controller can be told to write anywhere in physical memory. It must
+  move exactly the 512 bytes at the address a Reply names, to or from exactly the block it
+  names, while the calling task's address space is live; `block_io_confined` says those
+  are allowed, this code must do nothing else. A failed transfer is reported to Lean
+  (`ioFailed`, a reachable transition), which gives the caller an I/O error. Tested only on
+  QEMU, where the card sits on the older EMMC controller; the Pi 4's slot is on EMMC2, which
+  may need more setup (clock, 1.8 V signaling) than this does.
 - The kernel stack: the Lean kernel recurses once per list element, and nothing proves a
   bound. The stack is sized for the largest lists the proofs allow (2 MiB for 8192
   mappings), painted at boot, and its bottom is checked on every return to user mode, so
@@ -186,9 +196,10 @@ QEMU's model of them, because leanos has only run under QEMU.
   eventually gets to run, or that the display server starts what the user clicked.
 - The file server is trusted with what its clients store: it can read and change any
   file, and it sees each client's buffer while it answers that client. The proofs bound
-  what it can *hold* (its own frames, and a client's buffer only as that client granted
-  it), not what it does with the bytes. Files live in its memory and are lost when the Pi
-  restarts.
+  what it can *hold* (its own frames, a client's buffer only as that client granted it,
+  and its blocks of the card), not what it does with the bytes. Writes go straight through
+  to the card, data then table, but a power cut in between can lose the last change: there
+  is no journal yet.
 - Capability lists are bounded (64 per task) but a server that is sent grants it does not
   want must drop them; the display server and the file server do. A client that floods a
   server with grants between the server's drops is not stopped by the kernel.

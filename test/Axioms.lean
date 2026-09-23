@@ -38,3 +38,6 @@ open LeanOS
 #print axioms only_display_launches
 #print axioms file_server_frames
 #print axioms drop_only_shrinks
+#print axioms blocks_fixed
+#print axioms disk_only_file_server
+#print axioms block_io_confined

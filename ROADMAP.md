@@ -100,7 +100,7 @@ instead of corrupting it; stage 6 found this the hard way, when revocation walke
 display server's 900 mappings and overran the old 64 KiB stack. The fix that belongs here
 is to prove a bound, or make the walks iterative.
 
-## 9. A system people can use — files in memory, done; the rest, next
+## 9. A system people can use — files on the SD card, done; the rest, next
 
 Done: a file server in user space, with its own endpoint, keeps up to 48 files of up to
 16 KiB in its own memory. Clients (Notes, Terminal, Files) grant it their 4-page buffer
@@ -111,5 +111,13 @@ display server, clients to the file server) and the proofs show memory moves at 
 step. Notes keeps its note across restarts, Terminal has `ls`, `cat`, `write` and `rm`,
 and the Files app browses and deletes.
 
-Next: the SD card (so files survive a restart), a loader for ELF programs, multiple cores,
-and the Pi 5.
+Done too: the SD card. A small SDHCI driver in the machine layer moves one block at a time
+by programmed I/O (never DMA, which could write anywhere), and only what the Lean kernel
+approved: block capabilities, held only by the file server, name the blocks it may use,
+and `block_io_confined` proves every transfer is inside one, into or out of memory the
+caller has mapped with the right permission. The file server keeps its table and files on
+the card and reads them back at boot, so files and the note survive a restart; with no
+card it keeps them in memory.
+
+Next: a journal (so a power cut cannot lose a change halfway), the SD card on real Pi 4
+hardware (EMMC2), a loader for ELF programs, multiple cores, and the Pi 5.

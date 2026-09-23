@@ -47,7 +47,7 @@ check_order settings \
 
 check_order files \
   "files: listed 3 files" \
-  "files: showing welcome.txt (160 bytes)" \
+  "files: showing welcome.txt (169 bytes)" \
   "files: opened a window -> ok" \
   "files: listed 3 files" \
   "files: showing hello.txt (19 bytes)"
@@ -98,3 +98,17 @@ assert sum(1 for y in range(160, 180) for x in range(114, 132) if max(at(x, y)) 
 assert max(at(170, 400)) < 60, ("terminal", at(170, 400))
 print("ok: the Graphite background, Security's ten checks, Terminal and the saved note are on screen")
 PY
+
+# Restart the Pi with the same SD card: the files are still there.
+again=$(python3 test/run.py 40 --keep-sd)
+[ $? -eq 0 ] || fail "the second boot did not reach idle"
+echo "$again" | grep -E "^(fs|alice): " | sed 's/^/  | /'
+echo "$again" | grep -qx "fs: ready, 3 files on the SD card" || fail "the files did not survive a restart"
+echo "$again" | grep -qx "alice: loaded notes.txt, 2 bytes" || fail "Notes did not get its note back after a restart"
+
+# And with no card at all, the system still comes up, with files in memory only.
+nocard=$(python3 test/run.py 40 --no-sd)
+[ $? -eq 0 ] || fail "the boot with no SD card did not reach idle"
+echo "$nocard" | grep -qx "leanos: no SD card" || fail "the kernel did not notice the missing card"
+echo "$nocard" | grep -qx "fs: no SD card; files are kept in memory only; ready, 1 file" || fail "the file server did not fall back to memory"
+echo "ok: the files and the note survive a restart on the SD card, and the system runs without one"

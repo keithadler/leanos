@@ -176,6 +176,7 @@ structure CapOK (j : Nat) (c : Cap) : Prop where
   endpoint : ∀ e, c.obj = .endpoint e → EndpointOK j e c.rights c.badge
   irq : ∀ n, c.obj = .irq n → ∃ c0 ∈ initCaps j, c0.obj = .irq n
   launch : ∀ k, c.obj = .launch k → ∃ c0 ∈ initCaps j, c0.obj = .launch k
+  blocks : ∀ b n, c.obj = .blocks b n → ∃ c0 ∈ initCaps j, c0.obj = .blocks b n ∧ RLe c.rights c0.rights
   run : RunOK c
 
 /-- A task waiting to send carries only a frame, one that is fine for it to hold, through an
@@ -298,6 +299,10 @@ theorem subObj_launch {o o' : Obj} {off cnt k : Nat} (h : subObj o off cnt = som
     (he : o' = .launch k) : o = .launch k := by
   rw [subObj_same h (by intro b n hb; rw [he] at hb; cases hb), he]
 
+theorem subObj_blocks {o o' : Obj} {off cnt b n : Nat} (h : subObj o off cnt = some o')
+    (he : o' = .blocks b n) : o = .blocks b n := by
+  rw [subObj_same h (by intro b' n' hb; rw [he] at hb; cases hb), he]
+
 theorem capOK_derive {j : Nat} {c : Cap} {o : Obj} {off cnt : Nat} (h : CapOK j c)
     (ho : subObj c.obj off cnt = some o) (r : Rights) : CapOK j ⟨o, c.rights.meet r, c.badge⟩ where
   frames f hf := by
@@ -309,6 +314,9 @@ theorem capOK_derive {j : Nat} {c : Cap} {o : Obj} {off cnt : Nat} (h : CapOK j 
     exact ⟨c0, hc0, hco, RLe.trans (meet_le _ _) hle, hb⟩
   irq n hn := h.irq n (subObj_irq ho hn)
   launch k hk := h.launch k (subObj_launch ho hk)
+  blocks b n hb := by
+    obtain ⟨c0, hc0, hco, hle⟩ := h.blocks b n (subObj_blocks ho hb)
+    exact ⟨c0, hc0, hco, RLe.trans (meet_le _ _) hle⟩
   run f f' hf hf' hp := h.run f f' (subObj_covers ho hf) (subObj_covers ho hf') hp
 
 /-- A frame capability that is fine for `A` to hold is fine for `B` to hold, if `A` can pass
@@ -316,13 +324,14 @@ frames to `B`. -/
 theorem capOK_grant {A B : Nat} {g : Cap} (hg : CapOK A g) (hf : ∃ b n, g.obj = .frames b n)
     (he : Edge A B) : CapOK B g := by
   obtain ⟨b, n, hgf⟩ := hf
-  refine ⟨?_, ?_, ?_, ?_, hg.run⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_, hg.run⟩
   · intro f' hf'
     obtain ⟨hlt, hwx, C, c0, hC, hr, hc0, ho, hle⟩ := hg.frames f' hf'
     exact ⟨hlt, hwx, C, c0, hC, Reach.step hr he, hc0, ho, hle⟩
   · intro e he'; rw [hgf] at he'; cases he'
   · intro n hn; rw [hgf] at hn; cases hn
   · intro k hk; rw [hgf] at hk; cases hk
+  · intro b' n' hb; rw [hgf] at hb; cases hb
 
 /-- The endpoint rights a task holds now are rights it held at boot. -/
 theorem boot_rights {j : Nat} {c : Cap} {e : Nat} (h : CapOK j c) (he : c.obj = .endpoint e) :
@@ -749,7 +758,7 @@ theorem initCaps_frame {j f : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ ini
     (hf : Covers c f) : owner f = j ∧ f < devBase + devPages ∧ ¬ WX c.rights := by
   obtain ⟨b, n, ho, h1, h2⟩ := hf
   rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hc <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap] at hc <;>
     rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> obtain ⟨rfl, rfl⟩ := ho <;>
     by_cases hfp : f < 4096 <;> by_cases hfd : f < 4696 <;>
     simp [WX, Rights.rx, Rights.rw, owner, poolFrames, framesPerTask, maxTasks, fbPages,
@@ -769,7 +778,7 @@ theorem initCaps_run {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCap
   have ⟨b, n, ho, _, _⟩ := hf
   apply runOK_of ho _ f f' hf hf'
   rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hc <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap] at hc <;>
     rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;>
     obtain ⟨rfl, rfl⟩ := ho <;> simp [poolFrames, framesPerTask, maxTasks, devBase, fbPages]
 
@@ -780,6 +789,7 @@ theorem initCap_ok {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps 
   endpoint e he := ⟨c, hc, he, RLe.refl _, rfl⟩
   irq n hn := ⟨c, hc, hn⟩
   launch k hk := ⟨c, hc, hk⟩
+  blocks b n hb := ⟨c, hc, hb, RLe.refl _⟩
   run := initCaps_run hj hc
 
 theorem mkTask_ok {fb : Bool} {j : Nat} (hj : j < numTasks) : TaskOK fb j (mkTask j) := by
@@ -1009,6 +1019,20 @@ theorem inv_sysDrop {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
     · intro c hc; exact ht.caps c (mem_removeNth hc)
     · intro m hm; exact ht.fbMaps m (mem_keepBacked hm).1
 
+theorem inv_sysBlock {s : KState} {t : Task} {ci idx va : Nat} {w : Bool} (hs : Inv s)
+    (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysBlock s t ci idx va w).state := by
+  unfold sysBlock
+  repeat' split
+  all_goals first
+    | exact inv_ret hs ht _
+    | exact inv_setTask hs (ht.result _)
+
+theorem inv_ioFailed {s : KState} (hs : Inv s) : Inv (ioFailed s) := by
+  unfold ioFailed
+  split
+  · rename_i t ht; exact inv_setTask hs ((hs.tasks _ t ht).result _)
+  · exact hs
+
 theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
     Inv (syscall s num a0 a1 a2 a3 a4).state := by
   unfold syscall
@@ -1038,6 +1062,8 @@ theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
       · exact inv_sysBootInfo hs hto
       · exact inv_sysStart hs hto
       · exact inv_sysDrop hs hto
+      · exact inv_sysBlock hs hto
+      · exact inv_sysBlock hs hto
       · exact inv_ret hs hto _
     · exact hs
 
@@ -1082,6 +1108,7 @@ inductive Reachable : KState → Prop
   | clear {s} (j : Nat) : Reachable s → Reachable (clearResult s j)
   | irq {s} (n : Nat) : Reachable s → Reachable (irqFired s n)
   | verify {s} (i : Nat) (h : List Nat) : Reachable s → Reachable (verify s i h)
+  | ioFail {s} : Reachable s → Reachable (ioFailed s)
 
 theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   induction h with
@@ -1092,6 +1119,7 @@ theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   | clear j _ ih => exact inv_clearResult ih j
   | irq n _ ih => exact inv_irqFired ih n
   | verify i h _ ih => exact inv_verify ih i h
+  | ioFail _ ih => exact inv_ioFailed ih
 
 /-! ## The guarantees -/
 
@@ -1256,11 +1284,11 @@ theorem edge_iff {A B : Nat} : Edge A B ↔ (App A ∧ B = 1) ∨ (FsClient A �
   constructor
   · rintro ⟨hA, hB, e, ⟨c, hc, hco, hw, hx⟩, ⟨d, hd, hdo, hr⟩⟩
     rcases cases10 hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-      simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hc <;>
+      simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap] at hc <;>
       rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
       simp at hco hw hx <;> subst hco <;>
       rcases cases10 hB with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-      simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hd <;>
+      simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap] at hd <;>
       rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
       simp at hdo hr <;> simp [App, FsClient]
   · have hd0 : epCap 0 true false false 0 ∈ initCaps 1 := by
@@ -1518,7 +1546,7 @@ theorem only_display_launches {s : KState} (h : Reachable s) {j : Nat} {t : Task
   obtain ⟨c0, hc0, ho⟩ := launch_fixed h ht hc hk
   have hj := (reachable_inv h).lt ht
   rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hc0 <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap] at hc0 <;>
     rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp at ho <;> subst ho <;> simp [App, displayTask]
 
@@ -1564,7 +1592,7 @@ theorem uart_irq_only_input {s : KState} (h : Reachable s) {j : Nat} {t : Task}
   obtain ⟨c0, hc0, ho⟩ := irqs_fixed h ht hc hn
   have hj := (reachable_inv h).lt ht
   rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap] at hc0 <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap] at hc0 <;>
     rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> rfl
 
 /-- **The UART belongs to the input driver.** No other task can ever hold a capability to
@@ -1655,6 +1683,9 @@ theorem outLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
       | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
          all_goals simp at h
          done)
+      | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
+         all_goals simp at h
+         done)
 
 /-- When a system call asks the machine layer to print user memory, every byte of it is in
 the user window, in a page the calling task has mapped with read rights. -/
@@ -1681,6 +1712,154 @@ theorem write_reads_only_readable (s : KState) (num a0 a1 a2 a3 a4 : Nat)
           Nat.div_le_div_right (by omega)
         omega
     · intro a h1 h2; simp at h2; omega
+
+/-! ## The SD card -/
+
+/-- Block capabilities never move: a task holds one only if it held it at boot, with at
+least those rights. -/
+theorem blocks_fixed {s : KState} (h : Reachable s) {j : Nat} {t : Task}
+    (ht : nth? s.tasks j = some t) {c : Cap} (hc : c ∈ t.caps) {b n : Nat} (hb : c.obj = .blocks b n) :
+    ∃ c0 ∈ initCaps j, c0.obj = .blocks b n ∧ RLe c.rights c0.rights :=
+  ((reachable_inv h).tasks j t ht).caps c hc |>.blocks b n hb
+
+/-- **The disk belongs to the file server.** No other task can ever hold a capability to
+any block of the SD card, and the file server holds only the manifest's blocks. -/
+theorem disk_only_file_server {s : KState} (h : Reachable s) {j : Nat} {t : Task}
+    (ht : nth? s.tasks j = some t) {c : Cap} (hc : c ∈ t.caps) {b n : Nat} (hb : c.obj = .blocks b n) :
+    j = fileServer ∧ b = 0 ∧ n = diskBlocks := by
+  obtain ⟨c0, hc0, ho, -⟩ := blocks_fixed h ht hc hb
+  have hj := (reachable_inv h).lt ht
+  rcases cases10 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap] at hc0 <;>
+    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp at ho <;> simp [fileServer, ho]
+
+theorem writableAt_spec : ∀ {ms : List Mapping} {p : Nat},
+    writableAt ms p = true → ∃ m ∈ ms, m.vpn = p ∧ m.rights.w = true
+  | [], p, h => by simp [writableAt] at h
+  | m :: ms, p, h => by
+    simp only [writableAt, Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq] at h
+    rcases h with h | h
+    · exact ⟨m, List.mem_cons_self .., h.1, h.2⟩
+    · obtain ⟨m', hm', h'⟩ := writableAt_spec h
+      exact ⟨m', List.mem_cons_of_mem _ hm', h'⟩
+
+@[simp] theorem ret_io (s : KState) (t : Task) (r : List Nat) : (ret s t r).io = 0 := rfl
+
+/-- The only system calls that ask the machine layer for block I/O are `blockread` and
+`blockwrite`. -/
+theorem io_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
+    (h : (syscall s num a0 a1 a2 a3 a4).io ≠ 0) :
+    ∃ t, nth? s.tasks s.cur = some t ∧ ∃ w, syscall s num a0 a1 a2 a3 a4 = sysBlock s t a0 a1 a2 w := by
+  unfold syscall at *
+  split at *
+  · simp at h
+  · rename_i t ht
+    refine ⟨t, ht, ?_⟩
+    split at *
+    rotate_left
+    · simp at h
+    unfold runCall at *
+    split at *
+    all_goals first
+      | exact ⟨_, rfl⟩
+      | exfalso
+        first
+        | (simp at h; done)
+        | (unfold sysWrite at h; repeat' split at h
+           all_goals simp at h
+           done)
+        | (unfold sysMap at h; repeat' split at h
+           all_goals simp at h
+           done)
+        | (unfold sysUnmap at h; simp at h; done)
+        | (unfold sysDerive at h; repeat' split at h
+           all_goals simp at h
+           done)
+        | (unfold sysCapInfo at h; repeat' split at h
+           all_goals simp at h
+           done)
+        | (unfold sysSend at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysRecv at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysReply at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysIrqWait at h; repeat' split at h
+           all_goals simp at h
+           done)
+        | (unfold sysIrqAck at h; repeat' split at h
+           all_goals simp at h
+           done)
+        | (unfold sysBootInfo at h; repeat' split at h
+           all_goals simp at h
+           done)
+        | (unfold sysStart at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+
+/-- What a `blockread` or `blockwrite` that asks for I/O checked. -/
+theorem sysBlock_io {s : KState} {t : Task} {ci idx va : Nat} {w : Bool}
+    (h : (sysBlock s t ci idx va w).io ≠ 0) :
+    ∃ c b n, nth? t.caps ci = some c ∧ c.obj = .blocks b n ∧ idx + 1 ≤ n ∧
+      capRightFor w c.rights = true ∧ ioPageOk t.maps va w = true ∧
+      (sysBlock s t ci idx va w).io = ioCode w ∧
+      (sysBlock s t ci idx va w).ioBlock = b + idx ∧ (sysBlock s t ci idx va w).outVa = va := by
+  unfold sysBlock at *
+  split at h
+  · simp at h
+  · rename_i c hc
+    split at h
+    · rename_i b n hb
+      split at h
+      · rename_i hcond
+        have hc' := hcond
+        simp only [Bool.and_eq_true, Nat.ble_eq] at hc'
+        refine ⟨c, b, n, hc, hb, hc'.1.1, hc'.1.2, hc'.2, ?_⟩
+        simp only [if_pos hcond, and_self]
+      · simp at h
+    · simp at h
+
+/-- **Block I/O touches only what the caller may touch.** When a system call asks the
+machine layer to read or write a block, the block is inside a block capability the caller
+holds, with the read right (for `blockread`) or the write right (for `blockwrite`); and all
+512 bytes of memory are in the user window, in one page the caller has mapped writable
+(the disk writes into it) or readable (the disk reads from it). -/
+theorem block_io_confined (s : KState) (num a0 a1 a2 a3 a4 : Nat)
+    (hio : (syscall s num a0 a1 a2 a3 a4).io ≠ 0) :
+    ∃ t, nth? s.tasks s.cur = some t ∧ ∃ c ∈ t.caps, ∃ b n, c.obj = .blocks b n ∧
+      b ≤ (syscall s num a0 a1 a2 a3 a4).ioBlock ∧ (syscall s num a0 a1 a2 a3 a4).ioBlock < b + n ∧
+      ((syscall s num a0 a1 a2 a3 a4).io = 1 → c.rights.r = true) ∧
+      ((syscall s num a0 a1 a2 a3 a4).io = 2 → c.rights.w = true) ∧
+      ∀ a, (syscall s num a0 a1 a2 a3 a4).outVa ≤ a → a < (syscall s num a0 a1 a2 a3 a4).outVa + 512 →
+        userBase ≤ a ∧ ∃ m ∈ t.maps, m.vpn = (a - userBase) / pageSize ∧
+          ((syscall s num a0 a1 a2 a3 a4).io = 1 → m.rights.w = true) ∧
+          ((syscall s num a0 a1 a2 a3 a4).io = 2 → m.rights.r = true) := by
+  obtain ⟨t, ht, w, heq⟩ := io_pos hio
+  refine ⟨t, ht, ?_⟩
+  rw [heq] at hio ⊢
+  obtain ⟨c, b, n, hc, hb, hidx, hr, hpage, hop, hblk, hva⟩ := sysBlock_io hio
+  rw [hop, hblk, hva]
+  simp only [ioPageOk, Bool.and_eq_true, beq_iff_eq, Nat.ble_eq] at hpage
+  obtain ⟨⟨hal, hub⟩, hpg⟩ := hpage
+  refine ⟨c, nth?_mem hc, b, n, hb, by omega, by omega, ?_, ?_, ?_⟩
+  · intro h; cases w <;> simp_all [ioCode, capRightFor]
+  · intro h; cases w <;> simp_all [ioCode, capRightFor]
+  · intro a h1 h2
+    have hsame : (a - userBase) / pageSize = (a2 - userBase) / pageSize := by
+      simp only [userBase, pageSize] at hub hal ⊢; omega
+    refine ⟨by omega, ?_⟩
+    cases w
+    · obtain ⟨m, hm, hv, hw⟩ := writableAt_spec (by simpa [pageRightFor] using hpg)
+      exact ⟨m, hm, by rw [hsame, hv], fun _ => hw, fun h => by simp [ioCode] at h⟩
+    · obtain ⟨m, hm, hv, hr'⟩ := readableAt_spec (by simpa [pageRightFor] using hpg)
+      exact ⟨m, hm, by rw [hsame, hv], fun h => by simp [ioCode] at h, fun _ => hr'⟩
 
 /-! ## Scheduling -/
 

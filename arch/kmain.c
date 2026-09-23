@@ -35,6 +35,12 @@ lean_object *leanos_reply_out_va(lean_object *r);
 lean_object *leanos_reply_out_len(lean_object *r);
 uint8_t leanos_reply_remap(lean_object *r);
 lean_object *leanos_reply_load(lean_object *r);
+lean_object *leanos_reply_io(lean_object *r);
+lean_object *leanos_reply_io_block(lean_object *r);
+lean_object *leanos_io_failed(lean_object *s);
+int sd_init(void);
+int sd_read(uint64_t block, void *dst);
+int sd_write(uint64_t block, const void *src);
 uint8_t leanos_autostart(lean_object *i);
 lean_object *leanos_reply_state(lean_object *r);
 lean_object *leanos_reply_unmask(lean_object *r);
@@ -388,6 +394,8 @@ static void do_syscall(uint64_t cur) {
     int remap = leanos_reply_remap((lean_inc(r), r));
     uint64_t unmask = nat(leanos_reply_unmask((lean_inc(r), r)));
     uint64_t load = nat(leanos_reply_load((lean_inc(r), r)));
+    uint64_t io = nat(leanos_reply_io((lean_inc(r), r)));
+    uint64_t io_block = nat(leanos_reply_io_block((lean_inc(r), r)));
     K = leanos_reply_state(r);
     if (unmask) gic_enable((uint32_t)(unmask - 1));
 
@@ -396,6 +404,12 @@ static void do_syscall(uint64_t cur) {
         char c = ((volatile const char *)out_va)[k];
         if (c == '\n') kputc('\r');
         kputc(c);
+    }
+    /* Block I/O, still in `cur`'s address space: the kernel checked the 512 bytes at out_va
+       are in a page `cur` has mapped writable (read) or readable (write). */
+    if (io) {
+        int ok = io == 1 ? sd_read(io_block, (void *)out_va) : sd_write(io_block, (const void *)out_va);
+        if (!ok) K = leanos_io_failed(K);
     }
     if (load) {
         /* `start`: the Lean kernel has already taken back every capability and mapping that
@@ -578,6 +592,7 @@ void kmain(void) {
 
     mmu_init();
     kputs("leanos: MMU on\n");
+    kputs(sd_init() ? "leanos: SD card ready\n" : "leanos: no SD card\n");
 
     K = leanos_init(lean_box(fb));
     ntasks = nat(leanos_ntasks(K1));

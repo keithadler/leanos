@@ -22,10 +22,12 @@ PORT = 8796
 VNC_DISPLAY = 1           # TCP 5901, localhost only
 WS_PORT = 5701            # the WebSocket noVNC connects to
 IMAGE = os.path.join(ROOT, "build", "kernel8.img")
+SD_IMAGE = os.path.join(ROOT, "build", "sd.img")   # the Pi's SD card; kept, so files survive
 SCREEN_W, SCREEN_H = 1024, 600   # fbWidth and fbHeight in LeanOS/Kernel.lean
 QEMU = ["qemu-system-aarch64", "-M", "raspi4b", "-display", "none",
         "-vnc", f"127.0.0.1:{VNC_DISPLAY},websocket=127.0.0.1:{WS_PORT}",
-        "-serial", "stdio", "-semihosting", "-kernel", IMAGE]
+        "-serial", "stdio", "-semihosting", "-kernel", IMAGE,
+        "-drive", f"if=sd,format=raw,file={SD_IMAGE}"]
 
 lock = threading.Lock()
 current = {"proc": None, "id": ""}
@@ -280,6 +282,9 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 if __name__ == "__main__":
     if not os.path.exists(IMAGE):
         raise SystemExit("build/kernel8.img is missing: run `make` first")
+    if not os.path.exists(SD_IMAGE):
+        with open(SD_IMAGE, "wb") as f:
+            f.truncate(8 * 1024 * 1024)   # a blank 8 MiB card; the file server formats it
     print(f"leanos in the browser on http://127.0.0.1:{PORT}", flush=True)
     try:
         Server(("127.0.0.1", PORT), Handler).serve_forever()

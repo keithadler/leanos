@@ -22,9 +22,9 @@ answers from the kernel (`whoami`, `caps`, `boot`, `uptime`) and the file server
 program's boot check and what is proved. Notes saves its note to the file server, so it
 is back when Notes starts again. An app is loaded and checked against the manifest each
 time it starts; closing its window stops it, and starting it again first takes back
-everything its last run shared. The file server keeps files in its own memory until the
-Pi restarts (the SD card comes later), and holds a client's memory only while it answers
-that client's request.
+everything its last run shared. The file server keeps files on the SD card, so they are
+still there after a restart, and holds a client's memory only while it answers that
+client's request.
 
 ![The leanos boot screen](docs/logo.png)
 
@@ -37,13 +37,14 @@ leanos © 2026 Keith Adler
 leanos: Raspberry Pi 4, booting on EL1
 leanos: framebuffer 1024x600 at 0x3c100000
 leanos: MMU on
+leanos: SD card ready
 leanos: Lean kernel initialized, 10 tasks
 leanos: alice verified, sha256 0x9fffc938...
 leanos: display verified, sha256 0xa41c3aec...
-leanos: mallory verified, sha256 0x982a4b6c...
+leanos: mallory verified, sha256 0x2dbdf014...
 leanos: carol verified, sha256 0x1c54ae17...
 leanos: input verified, sha256 0x7b5792ff...
-leanos: fs verified, sha256 0x7a71f583...
+leanos: fs verified, sha256 0xb50707da...
 alice: wrote secret 0x5ec12e7 to my data page
 mallory: I am task 2
 mallory: map capability 9 (not mine) at page 5 -> refused, no such capability
@@ -53,11 +54,13 @@ mallory: send the display a window of my pixels -> refused, not allowed
 mallory: map the framebuffer (capability 5, which is the display's) -> refused, no such capability
 mallory: map the endpoint as memory -> refused, not allowed
 mallory: asked for every right on the endpoint, got send
+mallory: read block 0 of the SD card through capability 20, which I do not have -> refused, no such capability
+mallory: read block 0 of the SD card through my endpoint capability -> refused, not allowed
 carol: asked for write+execute on my data frame, got -w-
 carol: jumping into the instruction I wrote in my data page
 leanos: carol stopped: instruction fetch not allowed at 0x80010000
 input: listening on the UART
-fs: ready, 1 file
+fs: made a new file system on the SD card; ready, 1 file
 alice: no saved note yet
 display: boot checks shown: 6 verified, 0 refused
 display: boot logo drawn
@@ -68,7 +71,7 @@ mallory: ask the display for a window without pixels -> ok
 mallory: writing to the screen's physical address 0x3c100000 directly
 leanos: mallory stopped: data access not allowed at 0x3c100000
 alice: opened a 300x200 window, read-only, 59 pages -> ok
-leanos: idle, 4 tasks waiting (79 system calls, 150 timer ticks, 0 device interrupts, kernel heap 148848 bytes live, 175472 peak, stack 66960 bytes peak)
+leanos: idle, 4 tasks waiting (100 system calls, 154 timer ticks, 0 device interrupts, kernel heap 148960 bytes live, 175584 peak, stack 66976 bytes peak)
 display: key 'H' to alice
 display: key 'i' to alice
 display: key '!' to alice
@@ -113,7 +116,7 @@ leanos: files started
 leanos: files verified, sha256 0x8e4f96ff...
 display: start Files -> ok
 files: listed 3 files
-files: showing welcome.txt (160 bytes)
+files: showing welcome.txt (169 bytes)
 files: opened a window -> ok
 files: listed 3 files
 files: showing hello.txt (19 bytes)
@@ -147,6 +150,10 @@ can reach, under any sequence of system calls with any arguments:
   the SHA-256 of what it was loaded with matches the boot manifest, and nothing can make a
   refused task run later. The boot screen shows each verdict. `make test` flips one bit of a
   program in the image and checks it is refused, at boot and when an app is started.
+- **The disk belongs to the file server**: no other task can ever hold a capability to
+  any block of the SD card. Block I/O touches only blocks the caller holds, with the right
+  it needs, and only 512 bytes in one page the caller has mapped writable (for a read) or
+  readable (for a write).
 - **Memory moves at most one step**: from an app to the display server, or from a file
   server client to the file server. Every other task only ever reaches its own memory,
   and neither server can pass on what it was given. `drop` only ever takes authority away.
@@ -161,7 +168,7 @@ can reach, under any sequence of system calls with any arguments:
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
 MMU proves that user mode reaches exactly its own mappings, only the frame pool and the
 framebuffer (never the kernel or the peripherals), and shares a physical page with another
-task only along a grant path. `make mutants` breaks the kernel in 46 ways and checks the
+task only along a grant path. `make mutants` breaks the kernel in 52 ways and checks the
 proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
@@ -177,7 +184,7 @@ make          # build build/kernel8.img and check every proof
 ```
 
 ```bash
-make run      # boot it on QEMU's Pi 4, headless: serial here, screen in the browser console
+make run      # boot it on QEMU's Pi 4, headless, with build/sd.img as its SD card
 ```
 
 ```bash
@@ -234,13 +241,16 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 | 14 | `bootinfo(task)` | whether that task's code matched the boot manifest, the start of its hash, and whether it is running |
 | 15 | `start(cap)` | starts the program slot a launch capability names, if it is not running: takes back what its last run shared, then has it loaded and checked |
 | 16 | `drop(cap)` | lets go of a capability, and of every page seen only through it; later capabilities move down one place |
+| 17 | `blockread(cap, index, va)` | reads one 512-byte block of the SD card, from a block capability, into the task's own writable memory |
+| 18 | `blockwrite(cap, index, va)` | writes 512 bytes of the task's own readable memory to one block |
 
 Capabilities come in four kinds. Frame capabilities name a run of physical frames and carry read, write and execute rights.
 Each task starts with 256 frames (16 code, 8 data, 4 stack and 228 spare pages) and a 32 MiB
 window to map them in. Endpoint capabilities carry
 receive, send and grant rights, and a badge the kernel delivers with every message.
-Interrupt capabilities name an interrupt line, and launch capabilities a program slot;
-like endpoints, they are fixed by the boot manifest.
+Interrupt capabilities name an interrupt line, launch capabilities a program slot, and
+block capabilities a run of the SD card's blocks; like endpoints, they are fixed by the
+boot manifest.
 
 ## License
 

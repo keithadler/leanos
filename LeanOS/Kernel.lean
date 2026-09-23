@@ -46,13 +46,15 @@ def rw : Rights := ⟨true, true, false⟩
 end Rights
 
 /-- What a capability names: a run of `count` physical 4 KiB frames starting at frame
-`base`, an endpoint messages pass through, interrupt line `n`, or the right to start (and
-restart) the program in slot `k`. -/
+`base`, an endpoint messages pass through, interrupt line `n`, the right to start (and
+restart) the program in slot `k`, or a run of `count` 512-byte blocks of the SD card
+starting at block `base`. -/
 inductive Obj where
   | frames (base count : Nat)
   | endpoint (e : Nat)
   | irq (n : Nat)
   | launch (k : Nat)
+  | blocks (base count : Nat)
 
 /-- A capability: an object, what its holder may do with it, and a badge. The badge of an
 endpoint capability is delivered with every message sent through it, so a receiver knows
@@ -217,6 +219,10 @@ def epCap (e : Nat) (recv send grant : Bool) (badge : Nat) : Cap := ⟨.endpoint
 def irqCap (n : Nat) : Cap := ⟨.irq n, ⟨true, true, false⟩, 0⟩
 def launchCap (k : Nat) : Cap := ⟨.launch k, ⟨true, true, false⟩, 0⟩
 
+/-- How much of the SD card the file server may use: blocks 0 to 2047 (1 MiB). -/
+def diskBlocks : Nat := 2048
+def blocksCap (base count : Nat) : Cap := ⟨.blocks base count, ⟨true, true, false⟩, 0⟩
+
 /-- Task `i`'s frames, as four runs: 16 pages of code (read/execute), 8 of data, 4 of
 stack, and 228 spare pages it holds a capability to but has not mapped. The machine layer
 loads the task's assets (fonts, icons, pictures), if it has any, at the start of the spare
@@ -236,7 +242,8 @@ Each of these endpoint capabilities is capability 4 of its task.
 
 Endpoint 1 is the file server's inbox. Task 8 (the file server) receives from it, and
 Notes, Terminal and Files may send to it and grant (a buffer, for one request), with
-badges 1, 5 and 9, as their capability 5. -/
+badges 1, 5 and 9, as their capability 5. The file server alone holds the SD card's first
+`diskBlocks` blocks, as its capability 5. -/
 def initCaps : Nat → List Cap
   | 0 => snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)
   | 1 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 1) (epCap 0 true false false 0))
@@ -248,7 +255,7 @@ def initCaps : Nat → List Cap
   | 5 => snoc (snoc (frameCaps 5) (epCap 0 false true true 5)) (epCap 1 false true true 5)
   | 6 => snoc (frameCaps 6) (epCap 0 false true true 6)
   | 7 => snoc (frameCaps 7) (epCap 0 false true true 7)
-  | 8 => snoc (frameCaps 8) (epCap 1 true false false 0)
+  | 8 => snoc (snoc (frameCaps 8) (epCap 1 true false false 0)) (blocksCap 0 diskBlocks)
   | 9 => snoc (snoc (frameCaps 9) (epCap 0 false true true 9)) (epCap 1 false true true 9)
   | i => frameCaps i
 
@@ -405,10 +412,16 @@ structure Reply where
   /-- load the program for slot `load - 1` into its frames, measure it and verify it; every
   task's page tables must be rebuilt (0 = none) -/
   load : Nat
+  /-- block I/O on the SD card: 1 = read block `ioBlock` into the calling task's 512 bytes at
+  user address `outVa`, 2 = write those bytes to it (0 = none). Only returned after checking
+  the block is in a block capability the task holds with that right, and the bytes lie in a
+  page it has mapped writable (for a read) or readable (for a write). -/
+  io : Nat
+  ioBlock : Nat
 
 /-- The call returns to the caller with result registers `r`. -/
 def ret (s : KState) (t : Task) (r : List Nat) : Reply :=
-  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0, 0⟩
+  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0, 0, 0, 0⟩
 
 /-- Where the frame pool starts: frame `f < poolFrames` is at `frameBase + f * pageSize`. -/
 def frameBase : Nat := 0x04000000
@@ -441,13 +454,13 @@ def sysMap (s : KState) (t : Task) (ci vpn : Nat) : Reply :=
       if vpn + count ≤ userPages && c.rights.r && validRun s base count then
         ⟨setTask s s.cur { t with maps := app (runMaps vpn base c.rights count)
                                                (dropRange vpn count t.maps),
-                                  result := 0 :: .nil }, 0, 0, true, 0, 0⟩
+                                  result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
 /-- Unmap pages `vpn` to `vpn + count - 1`. -/
 def sysUnmap (s : KState) (t : Task) (vpn count : Nat) : Reply :=
-  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0, 0⟩
+  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0⟩
 
 /-- The object a derived capability names: for a run of frames, the `count` frames from
 `offset` on (`count = 0`: all of them from `offset` on), if they lie inside the run. -/
@@ -473,8 +486,8 @@ def sysDerive (s : KState) (t : Task) (ci bits offset count : Nat) : Reply :=
           (0 :: len t.caps :: .nil)
       else ret s t (eFull :: .nil)
 
-/-- x1 = rights bits, x2 = kind (0 frames, 1 endpoint, 2 interrupt, 3 launch), x3 = number of
-frames, the interrupt line, or the slot. -/
+/-- x1 = rights bits, x2 = kind (0 frames, 1 endpoint, 2 interrupt, 3 launch, 4 disk blocks), x3 =
+number of frames, the interrupt line, the slot, or the number of blocks. -/
 def sysCapInfo (s : KState) (t : Task) (ci : Nat) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
@@ -484,6 +497,7 @@ def sysCapInfo (s : KState) (t : Task) (ci : Nat) : Reply :=
     | .endpoint _ => ret s t (0 :: c.rights.toBits :: 1 :: 0 :: .nil)
     | .irq n => ret s t (0 :: c.rights.toBits :: 2 :: n :: .nil)
     | .launch k => ret s t (0 :: c.rights.toBits :: 3 :: k :: .nil)
+    | .blocks _ n => ret s t (0 :: c.rights.toBits :: 4 :: n :: .nil)
 
 /-- Virtual page `v` is mapped with read rights. -/
 def readableAt : List Mapping → Nat → Bool
@@ -502,7 +516,7 @@ def sysWrite (s : KState) (t : Task) (va n : Nat) : Reply :=
   else if n ≤ maxWrite ∧ userBase ≤ va ∧
       allReadable t.maps ((va - userBase) / pageSize)
         ((va + n - 1 - userBase) / pageSize + 1 - (va - userBase) / pageSize) = true then
-    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0, 0⟩
+    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0, 0, 0, 0⟩
   else ret s t (eBadArg :: .nil)
 
 /-- The capability a send carries: none if `gi = 0`, else capability `gi - 1`, which must be
@@ -541,12 +555,12 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply
               | some u' =>
                 if call then
                   ⟨schedule (setTask (setTask s j u') s.cur { t with status := .awaiting j, result := .nil }),
-                    0, 0, false, 0, 0⟩
+                    0, 0, false, 0, 0, 0, 0⟩
                 else ret (setTask s j u') t (0 :: .nil)
               | none => ret s t (eFull :: .nil)
             | none => ret s t (eBadArg :: .nil)
           | none =>
-            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0, 0⟩
+            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -567,11 +581,11 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) : Reply :=
             | some t' =>
               let u' : Task := if m.call then { u with status := .awaiting s.cur, result := .nil }
                                else { u with status := .ready, result := 0 :: .nil }
-              ⟨setTask (setTask s j u') s.cur t', 0, 0, false, 0, 0⟩
+              ⟨setTask (setTask s j u') s.cur t', 0, 0, false, 0, 0, 0, 0⟩
             | none => ret s t (eFull :: .nil)
           | none => ret s t (eBadArg :: .nil)
         | none =>
-          ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false, 0, 0⟩
+          ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -608,7 +622,7 @@ def sysIrqWait (s : KState) (t : Task) (ci : Nat) : Reply :=
     match c.obj with
     | .irq n =>
       if hasLine n s.pending then ret { s with pending := dropLine n s.pending } t (0 :: .nil)
-      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0, 0⟩
+      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0, 0, 0, 0⟩
     | _ => ret s t (eBadArg :: .nil)
 
 /-- The holder of an interrupt has dealt with it: let it fire again. -/
@@ -619,6 +633,55 @@ def sysIrqAck (s : KState) (t : Task) (ci : Nat) : Reply :=
     match c.obj with
     | .irq n => { ret s t (0 :: .nil) with unmask := n + 1 }
     | _ => ret s t (eBadArg :: .nil)
+
+/-! ## The SD card -/
+
+/-- Virtual page `v` is mapped with write rights. -/
+def writableAt : List Mapping → Nat → Bool
+  | .nil, _ => false
+  | m :: ms, v => (m.vpn == v && m.rights.w) || writableAt ms v
+
+/-- The page right block I/O needs in memory: writable to read from the disk into it,
+readable to write it to the disk. -/
+def pageRightFor : Bool → List Mapping → Nat → Bool
+  | true => readableAt
+  | false => writableAt
+
+/-- The capability right block I/O needs: read to read the disk, write to write it. -/
+def capRightFor : Bool → Rights → Bool
+  | true => Rights.w
+  | false => Rights.r
+
+def ioCode : Bool → Nat
+  | true => 2
+  | false => 1
+
+/-- The 512 bytes at `va` may be filled from the disk (`write = false`: the page must be
+writable) or sent to it (`write = true`: readable). -/
+def ioPageOk (ms : List Mapping) (va : Nat) (write : Bool) : Bool :=
+  va % 512 == 0 && Nat.ble userBase va && pageRightFor write ms ((va - userBase) / pageSize)
+
+/-- Read block `idx` of block capability `ci` into the task's memory at `va`, or write it
+from there (`write`). The machine layer moves the bytes, and reports a hardware failure
+with `ioFailed`. -/
+def sysBlock (s : KState) (t : Task) (ci idx va : Nat) (write : Bool) : Reply :=
+  match nth? t.caps ci with
+  | none => ret s t (eNoCap :: .nil)
+  | some c =>
+    match c.obj with
+    | .blocks b n =>
+      if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, va, 0, false, 0, 0, ioCode write, b + idx⟩
+      else ret s t (eBadArg :: .nil)
+    | _ => ret s t (eBadArg :: .nil)
+
+/-- The machine layer could not complete the block I/O the last call asked for: the calling
+task gets an I/O error instead of success. -/
+def eIO : Nat := 5
+def ioFailed (s : KState) : KState :=
+  match nth? s.tasks s.cur with
+  | some t => setTask s s.cur { t with result := eIO :: .nil }
+  | none => s
 
 /-! ## Dropping a capability -/
 
@@ -652,7 +715,7 @@ def sysDrop (s : KState) (t : Task) (ci : Nat) : Reply :=
   | some _ =>
     let cs := removeNth t.caps ci
     ⟨setTask s s.cur { t with caps := cs, maps := keepBacked cs t.maps, result := 0 :: .nil },
-      0, 0, true, 0, 0⟩
+      0, 0, true, 0, 0, 0, 0⟩
 
 /-! ## Starting programs, and taking back what they shared -/
 
@@ -720,7 +783,7 @@ def sysStart (s : KState) (t : Task) (ci : Nat) : Reply :=
         if startable u.status && !(k == s.cur) then
           let s1 : KState := setTask { s with tasks := revokeAll k s.tasks } k (mkTask k)
           match nth? s1.tasks s.cur with
-          | some t1 => ⟨setTask s1 s.cur { t1 with result := 0 :: .nil }, 0, 0, true, 0, k + 1⟩
+          | some t1 => ⟨setTask s1 s.cur { t1 with result := 0 :: .nil }, 0, 0, true, 0, k + 1, 0, 0⟩
           | none => ret s t (eBadArg :: .nil)
         else ret s t (eBadArg :: .nil)
       | none => ret s t (eBadArg :: .nil)
@@ -773,11 +836,11 @@ def sysBootInfo (s : KState) (t : Task) (i : Nat) : Reply :=
 def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match num with
   | 0 => sysWrite s t a0 a1
-  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0⟩
+  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0⟩
   | 2 => sysMap s t a0 a1
   | 3 => sysUnmap s t a0 a1
   | 4 => sysDerive s t a0 a1 a2 a3
-  | 5 => ⟨killCurrent s, 0, 0, false, 0, 0⟩
+  | 5 => ⟨killCurrent s, 0, 0, false, 0, 0, 0, 0⟩
   | 6 => sysCapInfo s t a0
   | 7 => ret s t (0 :: s.cur :: .nil)
   | 8 => sysSend s t a0 a1 a2 a3 a4 false
@@ -789,6 +852,8 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 14 => sysBootInfo s t a0
   | 15 => sysStart s t a0
   | 16 => sysDrop s t a0
+  | 17 => sysBlock s t a0 a1 a2 false
+  | 18 => sysBlock s t a0 a1 a2 true
   | _ => ret s t (eNoCall :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
@@ -796,15 +861,15 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   4 derive(cap, rights, offset, count) · 5 exit · 6 capinfo(cap) · 7 whoami
   8 send(cap, w0, w1, w2, grant) · 9 recv(cap) · 10 call(cap, w0, w1, w2, grant)
   11 reply(slot, w0, w1, w2) · 12 irqwait(cap) · 13 irqack(cap) · 14 bootinfo(task)
-  15 start(cap) · 16 drop(cap)
+  15 start(cap) · 16 drop(cap) · 17 blockread(cap, index, va) · 18 blockwrite(cap, index, va)
 Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with
-  | none => ⟨s, 0, 0, false, 0, 0⟩
+  | none => ⟨s, 0, 0, false, 0, 0, 0, 0⟩
   | some t =>
     match t.status with
     | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0, 0⟩  -- only a running task makes system calls
+    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0⟩  -- only a running task makes system calls
 
 /-- The machine layer has loaded task `j`'s result registers; forget them. -/
 def clearResult (s : KState) (j : Nat) : KState :=
@@ -834,6 +899,9 @@ before passing it in. -/
   | none => 0
 @[export leanos_reply_unmask] def exRUnmask (r : Reply) : Nat := r.unmask
 @[export leanos_reply_load] def exRLoad (r : Reply) : Nat := r.load
+@[export leanos_reply_io] def exRIo (r : Reply) : Nat := r.io
+@[export leanos_reply_io_block] def exRIoBlock (r : Reply) : Nat := r.ioBlock
+@[export leanos_io_failed] def exIoFailed (s : KState) : KState := ioFailed s
 @[export leanos_autostart] def exAutostart (i : Nat) : Bool := autostart i
 /-- The screen the machine layer asks the firmware for. -/
 @[export leanos_fb_width] def exFbWidth (u : Nat) : Nat := fbWidth + u * 0

@@ -76,8 +76,18 @@ def wait_for(prefix):
     return ("wait", prefix)
 
 
+def blank_card(path=os.path.join(ROOT, "build", "sd-test.img"), size=8 * 1024 * 1024):
+    """A blank SD card image (the file server formats it on first boot)."""
+    with open(path, "wb") as f:
+        f.truncate(size)
+    return path
+
+
 def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None, image=None,
-         settle=0.3):
+         settle=0.3, sd=None):
+    """sd: the SD card image to boot with (a fresh blank one if None; "" for no card)."""
+    if sd is None:
+        sd = blank_card()
     """steps: bytes to type once the system is idle, each followed by a short pause, or
     wait_for(prefix) steps, which wait for a serial line.
     until: after the steps, wait for a serial line starting with this before the capture.
@@ -86,7 +96,8 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
     sock = os.path.join(tempfile.mkdtemp(prefix="leanos-"), "qmp.sock")
     proc = subprocess.Popen(
         ["qemu-system-aarch64", "-M", "raspi4b", "-display", "none", "-serial", "stdio",
-         "-semihosting", "-qmp", f"unix:{sock},server,nowait", "-kernel", image or IMAGE],
+         "-semihosting", "-qmp", f"unix:{sock},server,nowait", "-kernel", image or IMAGE]
+        + (["-drive", f"if=sd,format=raw,file={sd}"] if sd else []),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     qmp = Qmp(sock)
     deadline = time.monotonic() + timeout
@@ -198,6 +209,8 @@ if __name__ == "__main__":
     apps = "--apps" in sys.argv
     image = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--image=")), None)
     steps = DEMO_STEPS if demo else APP_STEPS if apps else ()
+    # --keep-sd: boot with the card the last run left (build/sd-test.img); --no-sd: no card
+    sd = os.path.join(ROOT, "build", "sd-test.img") if "--keep-sd" in sys.argv else "" if "--no-sd" in sys.argv else None
     until = "display: moved" if demo else "security: 10" if apps else None
     sys.exit(boot(float(args[0]) if args else 30, steps=steps, until=until,
-                  snaps={"display: boot logo drawn": "logo"}, image=image, settle=2 if apps else 0.3))
+                  snaps={"display: boot logo drawn": "logo"}, image=image, settle=2 if apps else 0.3, sd=sd))

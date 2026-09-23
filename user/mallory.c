@@ -31,6 +31,10 @@ __attribute__((section(".text.start"))) void _start(void) {
     put_s(&l, "\n");
     flush(&l);
 
+    report("read block 0 of the SD card through capability 20, which I do not have",
+           sys(SYS_BLOCKREAD, 20, 0, DATA, 0, 0));
+    report("read block 0 of the SD card through my endpoint capability",
+           sys(SYS_BLOCKREAD, ENDPOINT, 0, DATA, 0, 0));
     report("ask the display for a window without pixels", sys(SYS_SEND, ENDPOINT, 640, 480, 0, 0));
 
     put_s(&l, "mallory: writing to the screen's physical address 0x3c100000 directly\n");
