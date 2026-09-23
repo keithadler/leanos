@@ -165,13 +165,15 @@ inputEl.addEventListener('mousemove', (e) => {
   else { clearTimeout(pendingMove); pendingMove = setTimeout(() => { lastMove = performance.now(); mouse('v', e); }, 30); }
 });
 /* Text arrives through the field's input events, so typing, pasting and input methods all
-   work; Enter and Backspace come from the key events. */
+   work; Enter and Backspace come from the key events. A line break inside text (pasted
+   lines) is a Return too. */
 inputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { sendBytes('\r'); e.preventDefault(); }
   else if (e.key === 'Backspace') { sendBytes('\x7f'); e.preventDefault(); }
 });
 inputEl.addEventListener('input', () => {
-  const text = [...inputEl.value].filter(c => c >= ' ' && c.charCodeAt(0) < 127).join('');
+  const text = [...inputEl.value].map(c => c === '\n' ? '\r' : c)
+    .filter(c => c === '\r' || (c >= ' ' && c.charCodeAt(0) < 127)).join('');
   inputEl.value = '';
   if (text) sendBytes(text);
 });
