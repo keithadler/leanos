@@ -41,6 +41,9 @@ lean_object *leanos_reply_power(lean_object *r);
 uint8_t leanos_open_slot(lean_object *i);
 lean_object *leanos_reply_io_block(lean_object *r);
 lean_object *leanos_io_failed(lean_object *s);
+lean_object *leanos_reply_board(lean_object *r);
+lean_object *leanos_board_done(lean_object *s, lean_object *a, lean_object *b, lean_object *c,
+                               lean_object *d, lean_object *e);
 int sd_init(void);
 uint64_t sd_partition(void);
 int sd_part_read(uint64_t block, void *dst);
@@ -260,6 +263,86 @@ static uint64_t fb_alloc(void) {
         base == 0 || (base & (PAGE_SIZE - 1)))
         return 0;
     return base;
+}
+
+/* ---- the board's settings ----
+ * What Settings may ask of the Raspberry Pi, through the Lean kernel (`boardRequests`,
+ * proved to be the only requests that ever arrive, and only from Settings): read the board,
+ * read its sensors, switch the green activity light off or on, set the CPU clock to 600,
+ * 1000 or 1500 MHz. Everything but the light goes through the firmware's mailbox, one tag
+ * at a time; the light is GPIO 42 on a Pi 4. */
+
+/* One property tag: `in` words go in, up to `nout` words come back in `out`. With the MMU
+   on the buffer is cached memory, and the firmware reads and writes RAM behind the cache:
+   clean it out before, drop it after. 1 if the firmware answered. */
+static int mbox_tag(uint32_t tag, const uint32_t *in, int nin, uint32_t *out, int nout) {
+    int n = nin > nout ? nin : nout, i = 0;
+    mbox_buf[i++] = 0;
+    mbox_buf[i++] = 0;
+    mbox_buf[i++] = tag;
+    mbox_buf[i++] = (uint32_t)n * 4;
+    mbox_buf[i++] = 0;
+    for (int k = 0; k < n; k++) mbox_buf[i++] = k < nin ? in[k] : 0;
+    mbox_buf[i++] = 0;
+    mbox_buf[0] = (uint32_t)i * 4;
+    for (uint64_t a = (uint64_t)mbox_buf & ~63UL; a < (uint64_t)(mbox_buf + 36); a += 64)
+        __asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
+    __asm__ volatile("dsb sy" ::: "memory");
+    uint32_t msg = (uint32_t)(uint64_t)mbox_buf | 8;
+    for (int t = 0; mmio_r32(MBOX + 0x38) & 0x80000000; t++) if (t > 1000000) return 0;
+    mmio_w32(MBOX + 0x20, msg);
+    for (int t = 0;; t++) {
+        if (t > 10000000) return 0;
+        if (mmio_r32(MBOX + 0x18) & 0x40000000) continue;
+        if (mmio_r32(MBOX) == msg) break;
+    }
+    for (uint64_t a = (uint64_t)mbox_buf & ~63UL; a < (uint64_t)(mbox_buf + 36); a += 64)
+        __asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
+    __asm__ volatile("dsb sy" ::: "memory");
+    if (mbox_buf[1] != 0x80000000 || !(mbox_buf[4] & 0x80000000)) return 0;
+    for (int k = 0; k < nout; k++) out[k] = mbox_buf[5 + k];
+    return 1;
+}
+
+#define GPFSEL4 (PERIPHERAL_BASE + 0x200010)
+#define GPSET1 (PERIPHERAL_BASE + 0x200020)
+#define GPCLR1 (PERIPHERAL_BASE + 0x20002C)
+
+/* Carry out board request `req` for the current task: 1 if done, with five numbers. */
+static int board_request(uint64_t req, uint64_t v[5]) {
+    uint32_t o[2] = {0, 0};
+    for (int k = 0; k < 5; k++) v[k] = 0;
+    if (req == 1) {                                  /* the board */
+        if (!mbox_tag(0x00010002, 0, 0, o, 1)) return 0;
+        v[0] = o[0];                                 /* revision code */
+        if (mbox_tag(0x00010004, 0, 0, o, 2)) { v[1] = o[0]; v[2] = o[1]; }   /* serial */
+        if (mbox_tag(0x00010005, 0, 0, o, 2)) v[3] = o[1] >> 20;               /* MB for the ARM */
+        if (mbox_tag(0x00000001, 0, 0, o, 1)) v[4] = o[0];                     /* firmware */
+        return 1;
+    }
+    if (req == 2) {                                  /* the sensors */
+        const uint32_t id0 = 0, arm = 3;
+        if (!mbox_tag(0x00030006, &id0, 1, o, 2)) return 0;
+        v[0] = o[1];                                 /* thousandths of a degree C */
+        if (mbox_tag(0x00030002, &arm, 1, o, 2)) v[1] = o[1];   /* the CPU clock, Hz */
+        if (mbox_tag(0x00030004, &arm, 1, o, 2)) v[2] = o[1];   /* its maximum */
+        if (mbox_tag(0x00030046, 0, 0, o, 1)) v[3] = o[0];      /* throttling flags */
+        if (mbox_tag(0x0003000a, &id0, 1, o, 2)) v[4] = o[1];   /* the limit, thousandths */
+        return 1;
+    }
+    if (req == 3 || req == 4) {                      /* the activity light: GPIO 42 */
+        mmio_w32(GPFSEL4, (mmio_r32(GPFSEL4) & ~(7u << 6)) | (1u << 6));
+        mmio_w32(req == 4 ? GPSET1 : GPCLR1, 1u << 10);
+        return 1;
+    }
+    if (req == 600 || req == 1000 || req == 1500) {  /* the CPU clock, never above 1500 MHz */
+        const uint32_t in[3] = {3, (uint32_t)req * 1000000u, 0};
+        uint32_t out[2];
+        if (!mbox_tag(0x00038002, in, 3, out, 2)) return 0;
+        v[0] = out[1];
+        return 1;
+    }
+    kpanic("a board request the kernel should never have made");
 }
 
 /* ---- memory management unit ----
@@ -508,6 +591,7 @@ static void do_syscall(uint64_t cur) {
     uint64_t power = nat(leanos_reply_power((lean_inc(r), r)));
     uint64_t io = nat(leanos_reply_io((lean_inc(r), r)));
     uint64_t io_block = nat(leanos_reply_io_block((lean_inc(r), r)));
+    uint64_t board = nat(leanos_reply_board((lean_inc(r), r)));
     K = leanos_reply_state(r);
     if (unmask) gic_enable((uint32_t)(unmask - 1));
 
@@ -522,6 +606,14 @@ static void do_syscall(uint64_t cur) {
     if (io) {
         int ok = io == 1 ? sd_part_read(io_block, (void *)out_va) : sd_part_write(io_block, (const void *)out_va);
         if (!ok) K = leanos_io_failed(K);
+    }
+    /* Settings asked (only it can: `only_settings_touches_board`), for one of the listed
+       requests (`board_requests_listed`). */
+    if (board) {
+        uint64_t v[5];
+        if (board_request(board, v))
+            K = leanos_board_done(K, lean_box(v[0]), lean_box(v[1]), lean_box(v[2]), lean_box(v[3]), lean_box(v[4]));
+        else K = leanos_io_failed(K);
     }
     /* The display server asked (only it can: `only_display_powers`). Every file is already
        on the card: the file server writes each change through before it answers. */

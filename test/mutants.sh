@@ -174,6 +174,23 @@ mutant "grant the power capability" \
       | .power => some (some g)
       | _ => none"
 
+mutant "the CPU may be overclocked" \
+  "def cpuSpeeds : List Nat := 600 :: 1000 :: 1500 :: .nil" "def cpuSpeeds : List Nat := 600 :: 1000 :: 1800 :: .nil"
+mutant "board takes any CPU clock it is given" \
+  "(match nth? cpuSpeeds value with | some mhz => mhz | none => 0)" "value"
+mutant "board skips the rights check" \
+  "(if boardChanges req then c.rights.w else c.rights.r)" "true"
+mutant "Security also holds the board" \
+  "| 7 => snoc (frameCaps 7) (epCap 0 false true true 7)" "| 7 => snoc (snoc (frameCaps 7) (epCap 0 false true true 7)) boardCap"
+mutant "a tick moves the clock by two" \
+  "schedule { s with now := s.now + 1," "schedule { s with now := s.now + 2,"
+mutant "time reports a tick ahead" \
+  "ret s t (0 :: s.now :: ms ::" "ret s t (0 :: s.now + 1 :: ms ::"
+mutant "the clock's minutes run past 59" \
+  "(secs / 3600, secs / 60 % 60, secs % 60)" "(secs / 3600, secs / 60, secs % 60)"
+mutant "sleep rounds down" \
+  "let ticks := (ms + tickMs - 1) / tickMs" "let ticks := ms / tickMs"
+
 cp "$backup" LeanOS/Kernel.lean
 lake build >/dev/null 2>&1 || { echo "FAIL: the unmutated kernel no longer builds"; exit 1; }
 [ $survived -eq 0 ] && echo "ok: every mutant was caught by the proofs" || exit 1

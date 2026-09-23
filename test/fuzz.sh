@@ -9,18 +9,20 @@ fail() { echo "FAIL: $*"; exit 1; }
 out=$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for
+from run import boot, mouse, wait_for, DOCK
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [c.encode() for c in s]
-steps = [*click(478, 548), wait_for("terminal: opened"),
-         *keys("run fuzz\r"), wait_for("fuzz: opened"), wait_for("fuzz: 20000 calls", 1),
-         *click(150, 400), *keys("write after.txt still here\r"), wait_for("terminal: write"),
-         *click(546, 548), wait_for("settings: opened")]
+# fuzz from the Apps window's grid: the eighth program on the card, second row, third column
+steps = [*click(*DOCK["Apps"]), wait_for("apps: opened"), *click(376, 426), wait_for("fuzz: opened"),
+         wait_for("fuzz: 20000 calls", 1),
+         *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
+         *keys("write after.txt still here\r"), wait_for("terminal: write"),
+         *click(*DOCK["Settings"]), wait_for("settings: opened")]
 sys.exit(boot(240, steps=steps, until="settings: opened", settle=1))
 PY
 )
 status=$?
-echo "$out" | grep -E "^(fuzz|terminal: (run|write)|settings: opened|display: a program from the SD card (sent|keeps|may not))" | sed 's/^/  | /'
+echo "$out" | grep -E "^(fuzz|apps: fuzz|terminal: (run|write)|settings: opened|display: a program from the SD card (sent|keeps|may not))" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish (status $status)"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 echo "$out" | grep -qE "^fuzz: 20000 calls, 20000 answered as promised, 0 not$" || fail "the fuzzer found a broken promise"

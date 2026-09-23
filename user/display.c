@@ -1,6 +1,7 @@
 /* The display server. It owns the framebuffer (capability 5) and nothing else can reach it.
 
-   Clients call it. RAISE (7): w1 w2 = a card file's name, bring its window forward. OPEN: w0 = 1, w1 = width << 16 | height, w2 = up to 8 bytes of title,
+   Clients call it. RAISE (7): w1 w2 = a card file's name, bring its window forward.
+   PENDING (8): Apps asks which pinned program the dock wants started. OPEN: w0 = 1, w1 = width << 16 | height, w2 = up to 8 bytes of title,
    with a read-only capability to the window's pixels; the reply is 0 on success. WAIT:
    w0 = 2, w1 = 1 if the client redrew its pixels; the reply comes when there is an event
    for the client (w0 = kind, w1, w2). The server never blocks on a client: it holds each
@@ -47,8 +48,8 @@
 #define H 600
 #define RADIUS 12
 
-enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7 };
-enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5 };
+enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8 };
+enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6 };
 enum { BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
        BADGE_SECURITY = 7, BADGE_FILES = 9 };
 enum { SET_BACKGROUND = 1 };
@@ -59,15 +60,22 @@ enum { POWER_OFF = 0, POWER_RESTART = 1 };
 enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
 
 /* The dock. */
-#define DOCK_N 6
+#define DOCK_N 6        /* the built-in apps */
+#define NPIN 3          /* programs from the card kept in the dock */
+#define DOCK_ALL (DOCK_N + NPIN)
 #define ICON 52
-#define ICON_GAP 16
+#define ICON_GAP 14
 #define DOCK_PAD 14
-#define DOCK_W (DOCK_N * ICON + (DOCK_N - 1) * ICON_GAP + 2 * DOCK_PAD)
+#define DOCK_W (DOCK_ALL * ICON + (DOCK_ALL - 1) * ICON_GAP + 2 * DOCK_PAD)
 #define DOCK_H (ICON + 2 * DOCK_PAD - 4)
 #define DOCK_X ((W - DOCK_W) / 2)
 #define DOCK_Y (H - DOCK_H - 10)
-static const char *const dock_names[DOCK_N] = {"Notes", "Files", "Terminal", "Settings", "Security", "Apps"};
+static const char *const dock_names[DOCK_ALL] = {"Notes", "Files", "Terminal", "Settings", "Security", "Apps",
+                                                  "Clock", "Calculator", "Tour"};
+/* The pinned programs' files on the card. The display cannot read the card or start a
+   program from it: a click asks Apps, which can, to start it (OP_PENDING, EV_LAUNCH). */
+static const char *const pin_files[NPIN] = {"clock", "calc", "tour"};
+#define APPS_DOCK 5
 static const int dock_slot[DOCK_N] = {0, 9, 5, 6, 7, 16};
 static const int dock_launch[DOCK_N] = {LAUNCH_FIRST, LAUNCH_FIRST + 4, LAUNCH_FIRST + 1, LAUNCH_FIRST + 2,
                                         LAUNCH_FIRST + 3, APPS_LAUNCH};
@@ -98,7 +106,8 @@ struct state {
     unsigned char ignored[32];   /* requests not understood, per badge, so a flood logs once */
     struct surface screen;
     struct font ui, ui_bold, small, huge, medium;
-    struct picture icons[DOCK_N];
+    struct picture icons[DOCK_ALL];
+    char pending[16];           /* a pinned program to start when Apps next asks */
     /* the background pattern: a color per row, a glow per column, and a 32 x 32 tile */
     unsigned bg_row[H];
     /* the glow, per column, ready to blend: the weight left for the row's color, and the
@@ -322,8 +331,28 @@ static void top_bar(struct state *st) {
 
 static int dock_icon_x(int i) { return DOCK_X + DOCK_PAD + i * (ICON + ICON_GAP); }
 
+static int same_name(const char *a, const char *b) {
+    int i = 0;
+    while (i < 15 && a[i] && a[i] == b[i]) i++;
+    return i == 15 || a[i] == b[i];
+}
+
+/* The open window of the program from card file `name`, or -1. */
+static int window_of(struct state *st, const char *name) {
+    for (int k = 0; k < MAX_WIN; k++) {
+        struct win *w = &st->win[k];
+        if (w->used && !w->closing && w->prog[0] && same_name(w->prog, name)) return k;
+    }
+    return -1;
+}
+
+static int pinned(const struct win *w) {
+    for (int p = 0; p < NPIN; p++) if (w->prog[0] && same_name(w->prog, pin_files[p])) return 1;
+    return 0;
+}
+
 static int running(struct state *st, int i) {
-    (void)st;
+    if (i >= DOCK_N) return window_of(st, pin_files[i - DOCK_N]) >= 0;
     return run_state(dock_slot[i]) == 1;
 }
 
@@ -333,22 +362,28 @@ static int dock_extras(struct state *st, int *which) {
     int n = 0;
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
-        if (w->used && !w->closing && w->badge >= 10 && w->badge <= 15) which[n++] = k;
+        if (w->used && !w->closing && w->badge >= 10 && w->badge <= 15 && !pinned(w)) which[n++] = k;
     }
     return n;
 }
 
-static int extra_x(int i) { return DOCK_X + DOCK_W - DOCK_PAD + 14 + i * (MINI + MINI_GAP); }
+/* Running programs sit to the right of the dock; when there are more than fit, they overlap. */
+#define EXTRA_X0 (DOCK_X + DOCK_W - DOCK_PAD + 14)
+static int extra_step(int n) {
+    int room = W - 8 - MINI - EXTRA_X0;
+    return n > 1 && room / (n - 1) < MINI + MINI_GAP ? room / (n - 1) : MINI + MINI_GAP;
+}
+static int extra_x_of(int i, int n) { return EXTRA_X0 + i * extra_step(n); }
 
 static void dock(struct state *st) {
     struct surface *s = &st->screen;
     int which[MAX_WIN], n = dock_extras(st, which);
-    int width = DOCK_W + (n ? 14 + n * (MINI + MINI_GAP) - MINI_GAP + 4 : 0);
+    int width = DOCK_W + (n ? 14 + (n - 1) * extra_step(n) + MINI + 4 : 0);
     round_rect(s, DOCK_X, DOCK_Y, width, DOCK_H, 18, rgb(20, 22, 32), 110);
     if (n) fill_alpha(s, DOCK_X + DOCK_W - DOCK_PAD + 6, DOCK_Y + 14, 1, DOCK_H - 28, rgb(255, 255, 255), 60);
     for (int i = 0; i < n; i++) {
         struct win *w = &st->win[which[i]];
-        int x = extra_x(i), y = DOCK_Y + (DOCK_H - MINI) / 2 - 4 - (st->hover == 101 + which[i] ? 4 : 0);
+        int x = extra_x_of(i, n), y = DOCK_Y + (DOCK_H - MINI) / 2 - 4 - (st->hover == 101 + which[i] ? 4 : 0);
         const struct picture *ic = win_icon(st, which[i]);
         if (ic) icon_scaled(s, x, y, MINI, ic);
         else {
@@ -359,7 +394,7 @@ static void dock(struct state *st) {
         }
         round_rect(s, x + MINI / 2 - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, rgb(230, 232, 240), 255);
     }
-    for (int i = 0; i < DOCK_N; i++) {
+    for (int i = 0; i < DOCK_ALL; i++) {
         int lift = st->hover == i + 1 ? 4 : 0;
         icon(s, dock_icon_x(i), DOCK_Y + (DOCK_H - ICON) / 2 - 4 - lift, &st->icons[i]);
         if (running(st, i)) round_rect(s, dock_icon_x(i) + ICON / 2 - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, rgb(230, 232, 240), 255);
@@ -369,7 +404,7 @@ static void dock(struct state *st) {
         const char *label = extra ? st->win[st->hover - 101].title : dock_names[st->hover - 1];
         int cx = 0;
         if (extra) {
-            for (int i = 0; i < n; i++) if (which[i] == st->hover - 101) cx = extra_x(i) + MINI / 2;
+            for (int i = 0; i < n; i++) if (which[i] == st->hover - 101) cx = extra_x_of(i, n) + MINI / 2;
         } else cx = dock_icon_x(st->hover - 1) + ICON / 2;
         int lw = font_width(&st->ui, label) + 20;
         int lx = cx - lw / 2, ly = DOCK_Y - 34;
@@ -502,11 +537,11 @@ static int window_at(struct state *st, int x, int y) {
    window (101 + the window), or nothing (0). */
 static int dock_at(struct state *st, int x, int y) {
     if (y < DOCK_Y || y >= DOCK_Y + DOCK_H) return 0;
-    for (int i = 0; i < DOCK_N; i++)
+    for (int i = 0; i < DOCK_ALL; i++)
         if (x >= dock_icon_x(i) && x < dock_icon_x(i) + ICON) return i + 1;
     int which[MAX_WIN], n = dock_extras(st, which);
     for (int i = 0; i < n; i++)
-        if (x >= extra_x(i) && x < extra_x(i) + MINI) return 101 + which[i];
+        if (x >= extra_x_of(i, n) && x < extra_x_of(i, n) + MINI) return 101 + which[i];
     return 0;
 }
 
@@ -631,6 +666,50 @@ static void launch(struct state *st, struct line *l, int i) {
     composite(st, DOCK_AREA_X, DOCK_Y - 44, W, DOCK_H + 44);
 }
 
+/* A pinned program: bring its window forward, or have Apps start it. Apps reads the card
+   and holds the open slots' launch capabilities; the display holds neither. If Apps is
+   showing its window, it gets the name as an event; if not, the display starts Apps, which
+   asks for the name first thing (OP_PENDING), starts the program, and leaves quietly. */
+static void open_pinned(struct state *st, struct line *l, int p) {
+    int k = window_of(st, pin_files[p]);
+    if (k >= 0) {
+        bring_to_front(st, k);
+        return;
+    }
+    put_s(l, "display: open ");
+    put_s(l, pin_files[p]);
+    put_s(l, " from the dock");
+    say(l);
+    u64 a = 0, b = 0;
+    for (int i = 0; i < 8 && pin_files[p][i]; i++) {
+        u64 c = (u64)(unsigned char)pin_files[p][i] << (8 * (i % 4));
+        if (i < 4) a |= c;
+        else b |= c;
+    }
+    for (int j = 0; j < MAX_WIN; j++) {
+        struct win *w = &st->win[j];
+        if (w->used && !w->closing && slot_of(w->badge) == 16) {
+            deliver_event(w, EV_LAUNCH, a, b);
+            return;
+        }
+    }
+    int n = 0;
+    for (; n < 15 && pin_files[p][n]; n++) st->pending[n] = pin_files[p][n];
+    st->pending[n] = 0;
+    launch(st, l, APPS_DOCK);
+}
+
+/* PENDING: Apps asks, as it starts, whether the dock sent it a program to start. Only Apps
+   gets an answer; the name goes in two message words. */
+static void on_pending(struct state *st, struct res *r) {
+    u64 w[2] = {0, 0};
+    if (r->x[1] == 16) {
+        for (int i = 0; i < 15 && st->pending[i]; i++) w[i / 8] |= (u64)(unsigned char)st->pending[i] << (8 * (i % 8));
+        st->pending[0] = 0;
+    }
+    sys(SYS_REPLY, r->x[6] - 1, 0, w[0], w[1], 0);
+}
+
 /* x.y ms, from microseconds */
 static void put_ms(struct line *l, u64 us) {
     put_dec(l, us / 1000);
@@ -684,6 +763,7 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     if (kind == EV_DOWN) {
         int d = dock_at(st, st->px, st->py);
         if (d > 100) bring_to_front(st, d - 101);
+        else if (d > DOCK_N) open_pinned(st, l, d - 1 - DOCK_N);
         else if (d) launch(st, l, d - 1);
         int k = d ? -1 : window_at(st, st->px, st->py);
         if (k >= 0) {
@@ -959,7 +1039,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->small = font_of(assets, F_SMALL);
     st->huge = font_of(assets, F_HUGE);
     st->medium = font_of(assets, F_MEDIUM);
-    for (int i = 0; i < DOCK_N; i++) st->icons[i] = picture_of(assets, ASSET_ICON, 10 + i);
+    for (int i = 0; i < DOCK_ALL; i++) st->icons[i] = picture_of(assets, ASSET_ICON, 10 + i);
+    st->pending[0] = 0;
 
     st->screen = surface_of((unsigned *)PAGE(FB_PAGE), W, H);
     st->theme = 0;
@@ -1007,6 +1088,8 @@ __attribute__((section(".text.start"))) void _start(void) {
             on_start(st, &l, &r);
         } else if (slot && op == OP_RAISE) {
             on_raise(st, &l, &r);
+        } else if (slot && op == OP_PENDING) {
+            on_pending(st, &r);
         } else {
             /* A request the display does not understand, from anyone: it answers no, and
                says so the first few times, so a program that floods it cannot flood the log. */

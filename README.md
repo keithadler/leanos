@@ -27,11 +27,12 @@ Also on the card: `calc` (a calculator), `snake`, `life` (Conway's Game of Life)
 answer checked against the proofs), and `guide.txt`, a short user guide. Every program has
 an icon, in the Apps window, its title bar and the dock. Up to six programs from the card
 run at once, each confined to its own memory and a window; starting one that is already
-open brings its window to the front.
+open brings its window to the front. Clock, Calculator and the Tour are pinned in the dock.
 
 The dock starts apps: **Files** lists and shows what the file server holds, **Terminal**
 answers from the kernel (`whoami`, `caps`, `boot`, `ps`, `uptime`), the file server (`ls`,
-`cat`, `write`, `rm`), and runs programs from the SD card (`run calc`, `run snake`, ...), **Settings** changes the background, **Apps** shows every program, built in or on the
+`cat`, `write`, `rm`), and runs programs from the SD card (`run calc`, `run snake`, ...), **Settings** changes the background and shows and changes the Raspberry Pi itself
+(model, temperature, CPU speed, the activity light), **Apps** shows every program, built in or on the
 card, and starts it with a click, and **Security** shows every
 program's boot check and what is proved. Notes saves its note to the file server, so it
 is back when Notes starts again. An app is loaded and checked against the manifest each
@@ -200,6 +201,15 @@ can reach, under any sequence of system calls with any arguments:
   a reply meant for the old run.
 - **Only the display server can switch the machine off or restart it**: the power
   capability is the manifest's, never moves, and only the display server holds it.
+- **Only Settings touches the Raspberry Pi's own settings**, and only as listed: the
+  board capability is the manifest's, never moves, and only Settings holds it; the only
+  requests that ever reach the hardware are reading the board, reading its sensors, the
+  activity light off or on, and the CPU at 600, 1000 or 1500 MHz. **The CPU is never
+  overclocked** past a Pi 4's rated 1500 MHz, and changes need the capability's write right.
+- **The clock is the kernel's, and certified**: it moves only on a timer tick, by exactly
+  one, and never back; no system call changes it; `time` reads it without changing anything
+  else and hands out hours, minutes and seconds that add up to exactly the uptime; and
+  `sleep` never ends before the time asked for.
 - **Devices and interrupts stay with their owners**: only the display server can reach the
   screen, only the input driver the UART and its interrupt, and an interrupt wakes only a
   holder of its capability.
@@ -207,7 +217,7 @@ can reach, under any sequence of system calls with any arguments:
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
 MMU proves that user mode reaches exactly its own mappings, only the frame pool and the
 framebuffer (never the kernel or the peripherals), and shares a physical page with another
-task only along a grant path. `make mutants` breaks the kernel in 61 ways and checks the
+task only along a grant path. `make mutants` breaks the kernel in 69 ways and checks the
 proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
@@ -308,13 +318,16 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 | 19 | `exec(cap, va, len)` | starts an open slot with the program image at `va` (up to 64 KiB of the caller's readable memory) |
 | 20 | `sleep(ms)` | sleeps at least that long (whole 10 ms timer ticks), letting other tasks run |
 | 21 | `power(cap, action)` | switches the machine off (0) or restarts it (1), through the power capability |
+| 22 | `time()` | the kernel's clock: timer ticks since boot, milliseconds, and hours, minutes and seconds |
+| 23 | `board(cap, what, value)` | through the board capability: the board (model, serial, memory, firmware), its sensors (temperature, CPU clock, throttling), the CPU clock (600, 1000 or 1500 MHz), or the activity light |
 
 Capabilities come in four kinds. Frame capabilities name a run of physical frames and carry read, write and execute rights.
 Each task starts with 256 frames (16 code, 8 data, 4 stack and 228 spare pages) and a 32 MiB
 window to map them in. Endpoint capabilities carry
 receive, send and grant rights, and a badge the kernel delivers with every message.
-Interrupt capabilities name an interrupt line, launch capabilities a program slot, and
-block capabilities a run of the SD card's blocks; like endpoints, they are fixed by the
+Interrupt capabilities name an interrupt line, launch capabilities a program slot,
+block capabilities a run of the SD card's blocks, and the power and board capabilities the
+machine itself; like endpoints, they are fixed by the
 boot manifest.
 
 ## License

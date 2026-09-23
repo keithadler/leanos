@@ -71,6 +71,11 @@ def mouse(kind, x, y):
     return f"\x1bm{kind}{x:03d}{y:03d}".encode()
 
 
+# Where each dock icon's center is (user/display.c: DOCK_X + DOCK_PAD + ICON / 2 + 66 i).
+DOCK = {name: (248 + 66 * i, 548) for i, name in enumerate(
+    ["Notes", "Files", "Terminal", "Settings", "Security", "Apps", "Clock", "Calculator", "Tour"])}
+
+
 def wait_for(prefix, times=1):
     """A step that types nothing: it waits until `times` serial lines start with `prefix`."""
     return ("wait", prefix, times)
@@ -217,15 +222,17 @@ def click(x, y):
 
 
 APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
-             *click(342, 548), wait_for("alice: opened"),
-             *click(478, 548), wait_for("terminal: opened"),
+             *click(*DOCK["Notes"]), wait_for("alice: opened"),
+             *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
              *keys("caps\r"), wait_for("terminal: caps"), *keys("boot\r"), wait_for("terminal: boot"),
              *keys("write hello.txt Hello from Terminal\r"), wait_for("terminal: write"),
              *keys("ls\r"), wait_for("terminal: ls"),
-             *click(546, 548), wait_for("settings: opened"),
-             *click(362, 268), wait_for("settings: background"),
+             *click(*DOCK["Settings"]), wait_for("settings: opened"),
+             *click(336, 228), wait_for("settings: background"),
+             *click(563, 332), wait_for("settings: the firmware reports"),
+             *click(527, 466), wait_for("settings: activity light"),
              *click(154, 127), wait_for("terminal: window closed"),
-             mouse("v", 300, 300), *click(478, 548), wait_for("terminal: opened"),
+             mouse("v", 300, 300), *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
              *keys("caps\r"), wait_for("terminal: caps"),
              b"write fast.txt 0123456789abcdefghijklmnopqrstuvwxyz\r", wait_for("terminal: write fast.txt"),
              b"cat fast.txt\r", wait_for("terminal: cat fast.txt"),
@@ -233,9 +240,9 @@ APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
              b"run hello\r", wait_for("hello: opened"),
              *keys("abc"),
              *click(150, 400), b"run clock\r", wait_for("clock: ticked 3 times"),
-             *click(410, 548), wait_for("files: opened"),
+             *click(*DOCK["Files"]), wait_for("files: opened"),
              *[b"\x1b[B"] * 19, wait_for("files: showing hello.txt"),
-             *click(614, 548), wait_for("security: 12")]
+             *click(*DOCK["Security"]), wait_for("security: 12")]
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]

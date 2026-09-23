@@ -44,3 +44,13 @@ open LeanOS
 #print axioms exec_reads_only_readable
 #print axioms tick_wakes_only_sleepers
 #print axioms only_display_powers
+#print axioms clock_monotone
+#print axioms syscall_now
+#print axioms tick_now
+#print axioms time_reads_clock
+#print axioms clockOf_spec
+#print axioms sleep_on_time
+#print axioms board_requests_listed
+#print axioms cpu_never_overclocked
+#print axioms board_needs_right
+#print axioms only_settings_touches_board

@@ -56,6 +56,7 @@ inductive Obj where
   | launch (k : Nat)
   | blocks (base count : Nat)
   | power
+  | board
 
 /-- A capability: an object, what its holder may do with it, and a badge. The badge of an
 endpoint capability is delivered with every message sent through it, so a receiver knows
@@ -204,6 +205,8 @@ def fbPages : Nat := 600
 
 /-- The task that owns the framebuffer at boot: the display server. -/
 def displayTask : Nat := 1
+/-- Settings: the only task that holds the board's settings (`boardCap`). -/
+def settingsTask : Nat := 6
 
 /-- Device register pages, after the framebuffer: frame `devBase + k` is device page `k`.
 Page 0 is the PL011 UART. -/
@@ -231,6 +234,9 @@ def launchCap (k : Nat) : Cap := ⟨.launch k, ⟨true, true, false⟩, 0⟩
 def diskBlocks : Nat := 2048
 def blocksCap (base count : Nat) : Cap := ⟨.blocks base count, ⟨true, true, false⟩, 0⟩
 def powerCap : Cap := ⟨.power, ⟨true, true, false⟩, 0⟩
+/-- The Raspberry Pi's own settings: read the board and its sensors (read right), change the
+CPU clock and the activity light (write right). Settings' capability 5. -/
+def boardCap : Cap := ⟨.board, ⟨true, true, false⟩, 0⟩
 
 /-- Task `i`'s frames, as four runs: 16 pages of code (read/execute), 8 of data, 4 of
 stack, and 228 spare pages it holds a capability to but has not mapped. The machine layer
@@ -272,7 +278,7 @@ def initCaps : Nat → List Cap
   | 5 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5))
            (epCap 1 false true true 5)) (launchCap 10)) (launchCap 11)) (launchCap 12)) (launchCap 13))
            (launchCap 14)) (launchCap 15)
-  | 6 => snoc (frameCaps 6) (epCap 0 false true true 6)
+  | 6 => snoc (snoc (frameCaps 6) (epCap 0 false true true 6)) boardCap
   | 7 => snoc (frameCaps 7) (epCap 0 false true true 7)
   | 8 => snoc (snoc (frameCaps 8) (epCap 1 true false false 0)) (blocksCap 0 diskBlocks)
   | 9 => snoc (snoc (frameCaps 9) (epCap 0 false true true 9)) (epCap 1 false true true 9)
@@ -483,10 +489,13 @@ structure Reply where
   /-- switch the machine off (1) or restart it (2), at the request of a power capability's
   holder (0 = neither) -/
   power : Nat
+  /-- ask the board's firmware or hardware (0 = nothing), at the request of a board
+  capability's holder: one of `boardRequests`, see `sysBoard` -/
+  board : Nat
 
 /-- The call returns to the caller with result registers `r`. -/
 def ret (s : KState) (t : Task) (r : List Nat) : Reply :=
-  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0, 0, 0, 0, 0, 0⟩
+  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-- Where the frame pool starts: frame `f < poolFrames` is at `frameBase + f * pageSize`. -/
 def frameBase : Nat := 0x04000000
@@ -519,13 +528,13 @@ def sysMap (s : KState) (t : Task) (ci vpn : Nat) : Reply :=
       if vpn + count ≤ userPages && c.rights.r && validRun s base count then
         ⟨setTask s s.cur { t with maps := app (runMaps vpn base c.rights count)
                                                (dropRange vpn count t.maps),
-                                  result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0⟩
+                                  result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
 /-- Unmap pages `vpn` to `vpn + count - 1`. -/
 def sysUnmap (s : KState) (t : Task) (vpn count : Nat) : Reply :=
-  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0⟩
+  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-- The object a derived capability names: for a run of frames, the `count` frames from
 `offset` on (`count = 0`: all of them from `offset` on), if they lie inside the run. -/
@@ -564,6 +573,7 @@ def sysCapInfo (s : KState) (t : Task) (ci : Nat) : Reply :=
     | .launch k => ret s t (0 :: c.rights.toBits :: 3 :: k :: .nil)
     | .blocks _ n => ret s t (0 :: c.rights.toBits :: 4 :: n :: .nil)
     | .power => ret s t (0 :: c.rights.toBits :: 5 :: 0 :: .nil)
+    | .board => ret s t (0 :: c.rights.toBits :: 6 :: 0 :: .nil)
 
 /-- Virtual page `v` is mapped with read rights. -/
 def readableAt : List Mapping → Nat → Bool
@@ -582,7 +592,7 @@ def sysWrite (s : KState) (t : Task) (va n : Nat) : Reply :=
   else if n ≤ maxWrite ∧ userBase ≤ va ∧
       allReadable t.maps ((va - userBase) / pageSize)
         ((va + n - 1 - userBase) / pageSize + 1 - (va - userBase) / pageSize) = true then
-    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0, 0, 0, 0, 0, 0⟩
+    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0, 0, 0, 0, 0, 0, 0⟩
   else ret s t (eBadArg :: .nil)
 
 /-- The capability a send carries: none if `gi = 0`, else capability `gi - 1`, which must be
@@ -621,12 +631,12 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply
               | some u' =>
                 if call then
                   ⟨schedule (setTask (setTask s j u') s.cur { t with status := .awaiting j, result := .nil }),
-                    0, 0, false, 0, 0, 0, 0, 0, 0⟩
+                    0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
                 else ret (setTask s j u') t (0 :: .nil)
               | none => ret s t (eFull :: .nil)
             | none => ret s t (eBadArg :: .nil)
           | none =>
-            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0⟩
+            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -647,11 +657,11 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) : Reply :=
             | some t' =>
               let u' : Task := if m.call then { u with status := .awaiting s.cur, result := .nil }
                                else { u with status := .ready, result := 0 :: .nil }
-              ⟨setTask (setTask s j u') s.cur t', 0, 0, false, 0, 0, 0, 0, 0, 0⟩
+              ⟨setTask (setTask s j u') s.cur t', 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
             | none => ret s t (eFull :: .nil)
           | none => ret s t (eBadArg :: .nil)
         | none =>
-          ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0⟩
+          ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -688,7 +698,7 @@ def sysIrqWait (s : KState) (t : Task) (ci : Nat) : Reply :=
     match c.obj with
     | .irq n =>
       if hasLine n s.pending then ret { s with pending := dropLine n s.pending } t (0 :: .nil)
-      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0⟩
+      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
     | _ => ret s t (eBadArg :: .nil)
 
 /-- The holder of an interrupt has dealt with it: let it fire again. -/
@@ -737,7 +747,7 @@ def sysBlock (s : KState) (t : Task) (ci idx va : Nat) (write : Bool) : Reply :=
     match c.obj with
     | .blocks b n =>
       if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then
-        ⟨setTask s s.cur { t with result := 0 :: .nil }, va, 0, false, 0, 0, ioCode write, b + idx, 0, 0⟩
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, va, 0, false, 0, 0, ioCode write, b + idx, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -760,9 +770,69 @@ def sysPower (s : KState) (t : Task) (ci action : Nat) : Reply :=
     match c.obj with
     | .power =>
       if c.rights.w && Nat.ble action 1 then
-        ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, action + 1⟩
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, action + 1, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
+
+/-! ## The Raspberry Pi's settings -/
+
+/-- The CPU clocks Settings may choose, in MHz. None is above 1500, what every Pi 4 is
+rated for: the kernel never asks the firmware to overclock. -/
+def cpuSpeeds : List Nat := 600 :: 1000 :: 1500 :: .nil
+
+/-- What the machine layer may be asked to do with the board, by number:
+  1 read the board (revision, serial, memory, firmware) · 2 read its sensors (temperature,
+  CPU clock, throttling) · 3 switch the activity light off · 4 switch it on ·
+  600, 1000, 1500 set the CPU clock to that many MHz.
+Nothing else, ever: see `board_requests_listed`. -/
+def boardRequests : List Nat := 1 :: 2 :: 3 :: 4 :: cpuSpeeds
+
+/-- `board(cap, what, value)`: what 0 reads the board, 1 its sensors, 2 sets the CPU clock
+to `cpuSpeeds[value]`, 3 switches the activity light off (value 0) or on (1). Returns the
+request number, or 0 if the arguments ask for nothing on the list. -/
+def boardRequest (what value : Nat) : Nat :=
+  if what = 0 then 1
+  else if what = 1 then 2
+  else if what = 2 then (match nth? cpuSpeeds value with | some mhz => mhz | none => 0)
+  else if what = 3 ∧ value < 2 then 3 + value
+  else 0
+
+/-- A request that changes something (as opposed to reading), which needs the write right. -/
+def boardChanges (req : Nat) : Bool := Nat.ble 3 req
+
+/-- Ask the board something through board capability `ci`. The machine layer carries the
+request out and hands back what the firmware answered (`boardDone`), or an I/O error. -/
+def sysBoard (s : KState) (t : Task) (ci what value : Nat) : Reply :=
+  match nth? t.caps ci with
+  | none => ret s t (eNoCap :: .nil)
+  | some c =>
+    match c.obj with
+    | .board =>
+      let req := boardRequest what value
+      if !(req == 0) && (if boardChanges req then c.rights.w else c.rights.r) then
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, 0, req⟩
+      else ret s t (eBadArg :: .nil)
+    | _ => ret s t (eBadArg :: .nil)
+
+/-- The machine layer did a board request for the current task: its answer, five numbers
+from the firmware, become the task's results. -/
+def boardDone (s : KState) (a b c d e : Nat) : KState :=
+  match nth? s.tasks s.cur with
+  | some t => setTask s s.cur { t with result := 0 :: a :: b :: c :: d :: e :: .nil }
+  | none => s
+
+/-! ## Time -/
+
+/-- Milliseconds since boot, as hours, minutes and seconds: what the clock shows. -/
+def clockOf (ms : Nat) : Nat × Nat × Nat :=
+  let secs := ms / 1000
+  (secs / 3600, secs / 60 % 60, secs % 60)
+
+/-- `time`: the kernel's own count of timer ticks since boot, the milliseconds that makes,
+and the hours, minutes and seconds of that. Changes nothing but the caller's results. -/
+def sysTime (s : KState) (t : Task) : Reply :=
+  let ms := s.now * tickMs
+  ret s t (0 :: s.now :: ms :: (clockOf ms).1 :: (clockOf ms).2.1 :: (clockOf ms).2.2 :: .nil)
 
 /-! ## Sleeping -/
 
@@ -770,9 +840,9 @@ def sysPower (s : KState) (t : Task) (ci action : Nat) : Reply :=
 run; 0 just lets the next ready task run. -/
 def sysSleep (s : KState) (t : Task) (ms : Nat) : Reply :=
   let ticks := (ms + tickMs - 1) / tickMs
-  if ticks = 0 then ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0⟩
+  if ticks = 0 then ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
   else ⟨schedule (setTask s s.cur { t with status := .sleeping (s.now + ticks), result := .nil }),
-        0, 0, false, 0, 0, 0, 0, 0, 0⟩
+        0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-! ## Dropping a capability -/
 
@@ -806,7 +876,7 @@ def sysDrop (s : KState) (t : Task) (ci : Nat) : Reply :=
   | some _ =>
     let cs := removeNth t.caps ci
     ⟨setTask s s.cur { t with caps := cs, maps := keepBacked cs t.maps, result := 0 :: .nil },
-      0, 0, true, 0, 0, 0, 0, 0, 0⟩
+      0, 0, true, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-! ## Starting programs, and taking back what they shared -/
 
@@ -885,7 +955,7 @@ def sysStart (s : KState) (t : Task) (ci src len : Nat) : Reply :=
         if startable u.status && !(k == s.cur) && imageOk (dropMaps k t.maps) k src len then
           let s1 : KState := setTask { s with tasks := revokeAll k s.tasks } k (mkTask k)
           match nth? s1.tasks s.cur with
-          | some t1 => ⟨setTask s1 s.cur { t1 with result := 0 :: .nil }, src, 0, true, 0, k + 1, 0, 0, len, 0⟩
+          | some t1 => ⟨setTask s1 s.cur { t1 with result := 0 :: .nil }, src, 0, true, 0, k + 1, 0, 0, len, 0, 0⟩
           | none => ret s t (eBadArg :: .nil)
         else ret s t (eBadArg :: .nil)
       | none => ret s t (eBadArg :: .nil)
@@ -938,11 +1008,11 @@ def sysBootInfo (s : KState) (t : Task) (i : Nat) : Reply :=
 def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match num with
   | 0 => sysWrite s t a0 a1
-  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0⟩
+  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
   | 2 => sysMap s t a0 a1
   | 3 => sysUnmap s t a0 a1
   | 4 => sysDerive s t a0 a1 a2 a3
-  | 5 => ⟨killCurrent s, 0, 0, false, 0, 0, 0, 0, 0, 0⟩
+  | 5 => ⟨killCurrent s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
   | 6 => sysCapInfo s t a0
   | 7 => ret s t (0 :: s.cur :: .nil)
   | 8 => sysSend s t a0 a1 a2 a3 a4 false
@@ -959,6 +1029,8 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 19 => sysStart s t a0 a1 a2
   | 20 => sysSleep s t a0
   | 21 => sysPower s t a0 a1
+  | 22 => sysTime s t
+  | 23 => sysBoard s t a0 a1 a2
   | _ => ret s t (eNoCall :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
@@ -968,15 +1040,16 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   11 reply(slot, w0, w1, w2) · 12 irqwait(cap) · 13 irqack(cap) · 14 bootinfo(task)
   15 start(cap) · 16 drop(cap) · 17 blockread(cap, index, va) · 18 blockwrite(cap, index, va)
   19 exec(cap, va, len): start an open slot with the program at va · 20 sleep(ms)
-  21 power(cap, action): 0 switch off, 1 restart
+  21 power(cap, action): 0 switch off, 1 restart · 22 time
+  23 board(cap, what, value): read the board or its sensors, set the CPU clock or the light
 Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with
-  | none => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0⟩
+  | none => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩
   | some t =>
     match t.status with
     | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0⟩  -- only a running task makes system calls
+    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0⟩  -- only a running task makes system calls
 
 /-- The machine layer has loaded task `j`'s result registers; forget them. -/
 def clearResult (s : KState) (j : Nat) : KState :=
@@ -1009,6 +1082,8 @@ before passing it in. -/
 @[export leanos_reply_io] def exRIo (r : Reply) : Nat := r.io
 @[export leanos_reply_load_len] def exRLoadLen (r : Reply) : Nat := r.loadLen
 @[export leanos_reply_power] def exRPower (r : Reply) : Nat := r.power
+@[export leanos_reply_board] def exRBoard (r : Reply) : Nat := r.board
+@[export leanos_board_done] def exBoardDone (s : KState) (a b c d e : Nat) : KState := boardDone s a b c d e
 @[export leanos_open_slot] def exOpenSlot (i : Nat) : Bool := openSlot i
 @[export leanos_reply_io_block] def exRIoBlock (r : Reply) : Nat := r.ioBlock
 @[export leanos_io_failed] def exIoFailed (s : KState) : KState := ioFailed s

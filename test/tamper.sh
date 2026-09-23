@@ -62,8 +62,8 @@ PY
 out=$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for
-steps = [mouse("d", 614, 548), mouse("u", 614, 548), wait_for("display: Security was refused")]
+from run import boot, mouse, wait_for, DOCK
+steps = [mouse("d", *DOCK["Security"]), mouse("u", *DOCK["Security"]), wait_for("display: Security was refused")]
 sys.exit(boot(60, steps=steps, until="display: Security was refused", image="build/kernel8-tampered.img"))
 PY
 )

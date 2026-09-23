@@ -69,7 +69,7 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 61 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 69 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a `start` that forgets to take back
@@ -126,6 +126,15 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   this rule, one call with two arguments near 2^62 stopped the machine, and one unmap of
   2^40 pages kept the kernel busy for hours (`dropRange` now walks the task's mappings,
   not the range).
+- The board's settings: `board_request` in `arch/kmain.c` carries out the only requests the
+  kernel proves can arrive (read the board, read the sensors, the activity light on GPIO 42,
+  the CPU at 600, 1000 or 1500 MHz) through the firmware's mailbox. What the firmware
+  answers is passed back unexamined, and what the firmware does with a clock request (it
+  may cap it further, for heat or power) is the firmware's.
+- The clock's link to real time: `now` counts timer interrupts, and the machine layer
+  programs the timer for one every 10 ms. That the interval is right, and that no tick is
+  lost while interrupts are masked in the kernel, is argued, not proved; the proofs are
+  about the count.
 - The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
   then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.

@@ -49,13 +49,26 @@ check_order terminal \
 check_order hello \
   "hello: opened a window -> ok"
 
-check_order clock \
-  "clock: opened a window -> ok" \
-  "clock: ticked 3 times"
+# The clock shows the Lean kernel's time: its hours, minutes and seconds are its tick count
+# (10 ms each) in whole seconds (`time_reads_clock`).
+echo "$out" | grep -qx "clock: opened a window -> ok" || fail "clock did not open"
+python3 - "$(echo "$out" | grep "^clock: ticked 3 times")" <<'PY2' || fail "the clock does not show the kernel's ticks"
+import re, sys
+m = re.fullmatch(r"clock: ticked 3 times, at tick (\d+) \((\d\d):(\d\d):(\d\d)\)", sys.argv[1])
+assert m, sys.argv[1]
+t, h, mi, s = map(int, m.groups())
+assert t * 10 // 1000 == h * 3600 + mi * 60 + s, sys.argv[1]
+PY2
 
+# Settings reads the board through the kernel (QEMU's model of a Pi 4B: revision 0xb03115,
+# 25 C, 700 MHz) and changes it: the CPU to 600 MHz, the activity light on.
 check_order settings \
   "settings: opened a window -> ok" \
-  "settings: background set to Graphite -> ok"
+  "settings: Raspberry Pi 4 Model B, revision 0xb03115, 25.0 C, CPU at 700 MHz" \
+  "settings: background set to Graphite -> ok" \
+  "settings: CPU speed 600 MHz -> ok" \
+  "settings: the firmware reports the CPU at 600 MHz" \
+  "settings: activity light on -> ok"
 
 # Files: the list, then the down arrow through every file, past the 12 rows it shows at once
 echo "$out" | grep -qx "files: listed 21 files" || fail "files did not list the card"

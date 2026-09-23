@@ -9,8 +9,8 @@
 #include "gfx.h"
 #include "assets.h"
 
-enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7 };
-enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5 };
+enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8 };
+enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6 };
 /* The arrow keys, as EV_KEY codes (the input driver turns ESC [ A..D into these). */
 enum { KEY_UP = 128, KEY_DOWN = 129, KEY_RIGHT = 130, KEY_LEFT = 131 };
 enum { SET_BACKGROUND = 1 };
@@ -18,7 +18,7 @@ enum { SET_BACKGROUND = 1 };
 #define SPARE 3
 #define SPARE_PAGE 64       /* where an app maps its spare run: assets first */
 #define APP_WIN_OFFSET 64   /* the window's pixels, this many pages into the spare run */
-#define APP_WIN_PAGES 184   /* the most a window may use (the display's limit) */
+#define APP_WIN_PAGES 164   /* the most a window may use: the spare run's 228 pages less the assets' 64 */
 
 struct event { u64 kind, a, b; };
 

@@ -219,6 +219,22 @@ static void start(struct launcher *st, struct line *l, int i) {
     flush(l);
 }
 
+/* Start the card program called `name`, if the card has it. */
+static void start_named(struct launcher *st, struct line *l, const char *name) {
+    for (int i = 0; i < st->n; i++) {
+        int j = 0;
+        while (j < 15 && name[j] && name[j] == st->p[i].name[j]) j++;
+        if (name[j] == st->p[i].name[j]) {
+            start(st, l, i);
+            return;
+        }
+    }
+    put_s(l, "apps: ");
+    put_s(l, name);
+    put_s(l, " is not on the SD card\n");
+    flush(l);
+}
+
 /* Which cell is at (x, y): 0-4 a built-in app, 10 + i a card program, -1 none. */
 static int hit(struct launcher *st, int x, int y) {
     if (x < GRID_X) return -1;
@@ -245,6 +261,15 @@ __attribute__((section(".text.start"))) void _start(void) {
     fs_init(&st->fs, SPARE_PAGE);
     st->pressed = -1;
     scan(st, &l);
+    /* Started by a click on a program pinned in the dock? Then start that, and nothing else. */
+    struct res pend = sys(SYS_CALL, ENDPOINT, OP_PENDING, 0, 0, 0);
+    if (pend.status == OK && pend.x[2]) {
+        char name[17];
+        for (int i = 0; i < 16; i++) name[i] = (char)(pend.x[2 + i / 8] >> (8 * (i % 8)));
+        name[16] = 0;
+        start_named(st, &l, name);
+        exit_task();
+    }
     draw(st);
     u64 opened = app_open_at(WIN_OFFSET, AW, AH, "Apps");
     put_s(&l, "apps: opened a window");
@@ -257,6 +282,13 @@ __attribute__((section(".text.start"))) void _start(void) {
         struct event e = app_wait(dirty);
         dirty = 0;
         if (e.kind == EV_CLOSE) exit_task();
+        if (e.kind == EV_LAUNCH) {          /* from the dock: up to 8 bytes of a name */
+            char name[9];
+            for (int i = 0; i < 8; i++) name[i] = (char)((i < 4 ? e.a : e.b) >> (8 * (i % 4)));
+            name[8] = 0;
+            start_named(st, &l, name);
+            continue;
+        }
         if (e.kind != EV_DOWN) continue;
         int c = hit(st, (int)e.a, (int)e.b);
         if (c < 0) continue;

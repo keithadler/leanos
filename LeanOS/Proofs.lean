@@ -197,6 +197,7 @@ structure CapOK (j : Nat) (c : Cap) : Prop where
   launch : ∀ k, c.obj = .launch k → ∃ c0 ∈ initCaps j, c0.obj = .launch k
   blocks : ∀ b n, c.obj = .blocks b n → ∃ c0 ∈ initCaps j, c0.obj = .blocks b n ∧ RLe c.rights c0.rights
   power : c.obj = .power → ∃ c0 ∈ initCaps j, c0.obj = .power
+  board : c.obj = .board → ∃ c0 ∈ initCaps j, c0.obj = .board
   run : RunOK c
 
 /-- A task waiting to send carries only a frame, one that is fine for it to hold, through an
@@ -324,6 +325,12 @@ theorem subObj_blocks {o o' : Obj} {off cnt b n : Nat} (h : subObj o off cnt = s
     (he : o' = .blocks b n) : o = .blocks b n := by
   rw [subObj_same h (by intro b' n' hb; rw [he] at hb; cases hb), he]
 
+theorem subObj_board {o o' : Obj} {off cnt : Nat} (h : subObj o off cnt = some o')
+    (he : o' = .board) : o = .board := by
+  cases o <;> simp [subObj] at h
+  · split at h <;> split at h <;> simp at h <;> subst he <;> simp at h
+  all_goals first | exact (h ▸ he) | (subst he; simp_all)
+
 theorem subObj_power {o o' : Obj} {off cnt : Nat} (h : subObj o off cnt = some o')
     (he : o' = .power) : o = .power := by
   rw [subObj_same h (by intro b n hb; rw [he] at hb; cases hb), he]
@@ -343,6 +350,7 @@ theorem capOK_derive {j : Nat} {c : Cap} {o : Obj} {off cnt : Nat} (h : CapOK j 
     obtain ⟨c0, hc0, hco, hle⟩ := h.blocks b n (subObj_blocks ho hb)
     exact ⟨c0, hc0, hco, RLe.trans (meet_le _ _) hle⟩
   power hp := h.power (subObj_power ho hp)
+  board hb := h.board (subObj_board ho hb)
   run f f' hf hf' hp := h.run f f' (subObj_covers ho hf) (subObj_covers ho hf') hp
 
 /-- A frame capability that is fine for `A` to hold is fine for `B` to hold, if `A` can pass
@@ -350,7 +358,7 @@ frames to `B`. -/
 theorem capOK_grant {A B : Nat} {g : Cap} (hg : CapOK A g) (hf : ∃ b n, g.obj = .frames b n)
     (he : Edge A B) : CapOK B g := by
   obtain ⟨b, n, hgf⟩ := hf
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, hg.run⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, hg.run⟩
   · intro f' hf'
     obtain ⟨hlt, hwx, C, c0, hC, hr, hc0, ho, hle⟩ := hg.frames f' hf'
     exact ⟨hlt, hwx, C, c0, hC, Reach.step hr he, hc0, ho, hle⟩
@@ -359,6 +367,7 @@ theorem capOK_grant {A B : Nat} {g : Cap} (hg : CapOK A g) (hf : ∃ b n, g.obj 
   · intro k hk; rw [hgf] at hk; cases hk
   · intro b' n' hb; rw [hgf] at hb; cases hb
   · intro hp; rw [hgf] at hp; cases hp
+  · intro hb; rw [hgf] at hb; cases hb
 
 /-- The endpoint rights a task holds now are rights it held at boot. -/
 theorem boot_rights {j : Nat} {c : Cap} {e : Nat} (h : CapOK j c) (he : c.obj = .endpoint e) :
@@ -786,7 +795,7 @@ theorem initCaps_frame {j f : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ ini
     (hf : Covers c f) : owner f = j ∧ f < devBase + devPages ∧ ¬ WX c.rights := by
   obtain ⟨b, n, ho, h1, h2⟩ := hf
   rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap] at hc <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc <;>
     rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> obtain ⟨rfl, rfl⟩ := ho <;>
     by_cases hfp : f < 5120 <;> by_cases hfd : f < 5720 <;>
     simp [WX, Rights.rx, Rights.rw, owner, poolFrames, framesPerTask, maxTasks, fbPages,
@@ -806,7 +815,7 @@ theorem initCaps_run {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCap
   have ⟨b, n, ho, _, _⟩ := hf
   apply runOK_of ho _ f f' hf hf'
   rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap] at hc <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc <;>
     rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;>
     obtain ⟨rfl, rfl⟩ := ho <;> simp [poolFrames, framesPerTask, maxTasks, devBase, fbPages]
 
@@ -819,6 +828,7 @@ theorem initCap_ok {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps 
   launch k hk := ⟨c, hc, hk⟩
   blocks b n hb := ⟨c, hc, hb, RLe.refl _⟩
   power hp := ⟨c, hc, hp⟩
+  board hb := ⟨c, hc, hb⟩
   run := initCaps_run hj hc
 
 theorem mkTask_ok {fb : Bool} {j : Nat} (hj : j < numTasks) : TaskOK fb j (mkTask j) := by
@@ -1072,6 +1082,20 @@ theorem inv_sysPower {s : KState} {t : Task} {ci a : Nat} (hs : Inv s)
     | exact inv_ret hs ht _
     | exact inv_setTask hs (ht.result _)
 
+theorem inv_sysBoard {s : KState} {t : Task} {ci w v : Nat} (hs : Inv s)
+    (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysBoard s t ci w v).state := by
+  unfold sysBoard
+  repeat' (first | split | dsimp only)
+  all_goals first
+    | exact inv_ret hs ht _
+    | exact inv_setTask hs (ht.result _)
+
+theorem inv_boardDone {s : KState} (hs : Inv s) (a b c d e : Nat) : Inv (boardDone s a b c d e) := by
+  unfold boardDone
+  split
+  · rename_i t ht; exact inv_setTask hs ((hs.tasks _ t ht).result _)
+  · exact hs
+
 /-! ### Time -/
 
 theorem TaskOK.wake {fb : Bool} {j : Nat} {t : Task} (h : TaskOK fb j t) (now : Nat) :
@@ -1150,6 +1174,8 @@ theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
       · exact inv_sysSleep hs hto hmt
       · exact inv_sysPower hs hto
       · exact inv_ret hs hto _
+      · exact inv_sysBoard hs hto
+      · exact inv_ret hs hto _
     · exact hs
 
 /-! ## Verified boot -/
@@ -1194,6 +1220,7 @@ inductive Reachable : KState → Prop
   | irq {s} (n : Nat) : Reachable s → Reachable (irqFired s n)
   | verify {s} (i : Nat) (h : List Nat) : Reachable s → Reachable (verify s i h)
   | ioFail {s} : Reachable s → Reachable (ioFailed s)
+  | board {s} (a b c d e : Nat) : Reachable s → Reachable (boardDone s a b c d e)
 
 theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   induction h with
@@ -1205,6 +1232,7 @@ theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   | irq n _ ih => exact inv_irqFired ih n
   | verify i h _ ih => exact inv_verify ih i h
   | ioFail _ ih => exact inv_ioFailed ih
+  | board a b c d e _ ih => exact inv_boardDone ih a b c d e
 
 /-! ## The guarantees -/
 
@@ -1370,11 +1398,11 @@ theorem edge_iff {A B : Nat} : Edge A B ↔ (App A ∧ B = 1) ∨ (FsClient A �
   constructor
   · rintro ⟨hA, hB, e, ⟨c, hc, hco, hw, hx⟩, ⟨d, hd, hdo, hr⟩⟩
     rcases cases17 hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-      simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap] at hc <;>
+      simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc <;>
       rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
       simp at hco hw hx <;> subst hco <;>
       rcases cases17 hB with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-      simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap] at hd <;>
+      simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hd <;>
       rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
       simp at hdo hr <;> simp [App, FsClient]
   · have hd0 : epCap 0 true false false 0 ∈ initCaps 1 := by
@@ -1651,7 +1679,7 @@ theorem only_display_launches {s : KState} (h : Reachable s) {j : Nat} {t : Task
   obtain ⟨c0, hc0, ho⟩ := launch_fixed h ht hc hk
   have hj := (reachable_inv h).lt ht
   rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap] at hc0 <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc0 <;>
     rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp at ho <;> subst ho <;> simp [App, displayTask, openSlot] <;> decide
 
@@ -1697,7 +1725,7 @@ theorem uart_irq_only_input {s : KState} (h : Reachable s) {j : Nat} {t : Task}
   obtain ⟨c0, hc0, ho⟩ := irqs_fixed h ht hc hn
   have hj := (reachable_inv h).lt ht
   rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap] at hc0 <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc0 <;>
     rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> rfl
 
 /-- **The UART belongs to the input driver.** No other task can ever hold a capability to
@@ -1791,6 +1819,10 @@ theorem outLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
       | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
          all_goals simp at h
          done)
+      | (unfold sysTime at h; simp at h; done)
+      | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
+         all_goals simp at h
+         done)
       | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
          all_goals simp at h
          done)
@@ -1841,7 +1873,7 @@ theorem disk_only_file_server {s : KState} (h : Reachable s) {j : Nat} {t : Task
   obtain ⟨c0, hc0, ho, -⟩ := blocks_fixed h ht hc hb
   have hj := (reachable_inv h).lt ht
   rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap] at hc0 <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc0 <;>
     rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp at ho <;> simp [fileServer, ho]
 
@@ -1912,6 +1944,10 @@ theorem io_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
            all_goals simp at h
            done)
         | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysTime at h; simp at h; done)
+        | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
@@ -2066,6 +2102,10 @@ theorem power_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
         | (unfold sysStart at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
+        | (unfold sysTime at h; simp at h; done)
+        | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
@@ -2089,7 +2129,7 @@ theorem only_display_powers {s : KState} (hr : Reachable s) {num a0 a1 a2 a3 a4 
       generalize s.cur = j at hj ⊢
       intro hc0 ho
       rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-        simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap] at hc0 <;>
+        simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc0 <;>
         rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
         simp at ho <;> rfl
     · simp at hp
@@ -2195,6 +2235,10 @@ theorem loadLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
         | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
+        | (unfold sysTime at h; simp at h; done)
+        | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
@@ -2290,5 +2334,311 @@ theorem schedule_picks_ready (s : KState) (h : ∃ i, isReady s.tasks i = true) 
     have := findReady_none hnone k hk
     rw [hkj, hi] at this
     exact absurd this (by simp)
+
+/-! ## The certified clock
+
+The kernel keeps time as `now`, the number of timer ticks since boot. The clock program
+shows what `time` returns. These theorems say what that number is: it moves only on a
+timer tick, by exactly one, never back; `time` reads it without changing anything else;
+the hours, minutes and seconds it hands out are exactly the uptime; and `sleep` never ends
+before the time asked for. That each tick is 10 ms apart is the machine layer's timer
+programming (trusted, see TRUST.md). -/
+
+@[simp] theorem now_setTask (s : KState) (j : Nat) (t : Task) : (setTask s j t).now = s.now := rfl
+
+@[simp] theorem now_schedule (s : KState) : (schedule s).now = s.now := by
+  unfold schedule; split <;> rfl
+
+@[simp] theorem now_killCurrent (s : KState) : (killCurrent s).now = s.now := by
+  unfold killCurrent; split <;> simp
+
+/-- **A timer tick moves the clock by exactly one.** -/
+theorem tick_now (s : KState) : (tick s).now = s.now + 1 := by
+  unfold tick; simp
+
+theorem clearResult_now (s : KState) (j : Nat) : (clearResult s j).now = s.now := by
+  unfold clearResult; split <;> simp
+
+theorem irqFired_now (s : KState) (n : Nat) : (irqFired s n).now = s.now := by
+  unfold irqFired; repeat' split
+  all_goals simp
+
+theorem verify_now (s : KState) (i : Nat) (h : List Nat) : (verify s i h).now = s.now := by
+  unfold verify; repeat' split
+  all_goals simp
+
+theorem ioFailed_now (s : KState) : (ioFailed s).now = s.now := by
+  unfold ioFailed; split <;> simp
+
+theorem boardDone_now (s : KState) (a b c d e : Nat) : (boardDone s a b c d e).now = s.now := by
+  unfold boardDone; split <;> simp
+
+theorem ret_now (s : KState) (t : Task) (r : List Nat) : (ret s t r).state.now = s.now := rfl
+
+/-- **No system call changes the clock.** Only the timer does. -/
+theorem syscall_now (s : KState) (num a0 a1 a2 a3 a4 : Nat) :
+    (syscall s num a0 a1 a2 a3 a4).state.now = s.now := by
+  unfold syscall
+  split
+  · rfl
+  · split
+    · unfold runCall
+      split
+      all_goals first
+        | rfl
+        | simp
+        | (unfold sysWrite; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysMap; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysUnmap; simp)
+        | (unfold sysDerive; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysCapInfo; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysSend; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysRecv; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysReply; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysIrqWait; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysIrqAck; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysBootInfo; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysStart; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysDrop; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysBlock; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysSleep; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysPower; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+        | (unfold sysTime; simp [ret_now])
+        | (unfold sysBoard; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
+    · rfl
+
+/-- **The clock never goes back.** Every step the machine can take leaves `now` where it was
+or, on a timer tick, one further on. -/
+theorem clock_monotone (s : KState) :
+    (∀ num a0 a1 a2 a3 a4, (syscall s num a0 a1 a2 a3 a4).state.now = s.now) ∧
+    (tick s).now = s.now + 1 ∧ (killCurrent s).now = s.now ∧
+    (∀ j, (clearResult s j).now = s.now) ∧ (∀ n, (irqFired s n).now = s.now) ∧
+    (∀ i h, (verify s i h).now = s.now) ∧ (ioFailed s).now = s.now ∧
+    (∀ a b c d e, (boardDone s a b c d e).now = s.now) :=
+  ⟨syscall_now s, tick_now s, now_killCurrent s, clearResult_now s, irqFired_now s, verify_now s,
+    ioFailed_now s, boardDone_now s⟩
+
+/-- Hours, minutes and seconds add back up to the whole seconds, and read like a clock. -/
+theorem clockOf_spec (ms : Nat) :
+    (clockOf ms).1 * 3600 + (clockOf ms).2.1 * 60 + (clockOf ms).2.2 = ms / 1000 ∧
+    (clockOf ms).2.1 < 60 ∧ (clockOf ms).2.2 < 60 := by
+  unfold clockOf
+  dsimp only
+  refine ⟨?_, Nat.mod_lt _ (by decide), Nat.mod_lt _ (by decide)⟩
+  omega
+
+/-- **What `time` returns is the kernel's clock, and nothing else changes.** The caller
+gets `now`, the milliseconds since boot, and hours, minutes and seconds that add up to
+exactly those whole seconds; the state is the old one with only the caller's results set. -/
+theorem time_reads_clock (s : KState) (t : Task) :
+    ∃ h m sec, (sysTime s t).state = setTask s s.cur
+        { t with result := 0 :: s.now :: s.now * tickMs :: h :: m :: sec :: .nil } ∧
+      h * 3600 + m * 60 + sec = s.now * tickMs / 1000 ∧ m < 60 ∧ sec < 60 ∧
+      (sysTime s t).outLen = 0 ∧ (sysTime s t).io = 0 ∧ (sysTime s t).power = 0 ∧
+      (sysTime s t).board = 0 ∧ (sysTime s t).load = 0 := by
+  obtain ⟨h1, h2, h3⟩ := clockOf_spec (s.now * tickMs)
+  exact ⟨_, _, _, rfl, h1, h2, h3, rfl, rfl, rfl, rfl, rfl⟩
+
+/-- **`sleep` never ends early, and is at most one tick late.** A task that asks to sleep
+`ms > 0` milliseconds is asleep until tick `w`, and the ticks from now to `w` last at least
+`ms` and less than `ms` plus one tick. With `tick_wakes_only_sleepers` (a tick wakes a
+sleeper only once `now` has reached its `w`), it cannot wake before its time. -/
+theorem sleep_on_time (s : KState) (t : Task) (ms : Nat) (hms : 0 < ms)
+    (ht : nth? s.tasks s.cur = some t) :
+    ∃ w u, nth? (sysSleep s t ms).state.tasks s.cur = some u ∧ u.status = .sleeping w ∧
+      s.now ≤ w ∧ ms ≤ (w - s.now) * tickMs ∧ (w - s.now) * tickMs < ms + tickMs := by
+  have hlt : s.cur < len s.tasks := by
+    exact nth?_lt ht
+  unfold sysSleep
+  dsimp only
+  have hpos : (ms + tickMs - 1) / tickMs ≠ 0 := by simp [tickMs]; omega
+  simp only [hpos, if_false, schedule_tasks, setTask, nth?_setNth, if_pos, ht, Option.map_some]
+  refine ⟨s.now + (ms + tickMs - 1) / tickMs, _, rfl, rfl, Nat.le_add_right _ _, ?_, ?_⟩ <;>
+    simp only [Nat.add_sub_cancel_left, tickMs] <;> omega
+
+/-! ## The Raspberry Pi's settings
+
+The board capability lets its holder read the board and its sensors and change two
+things: the CPU clock and the activity light. These theorems say which requests can reach
+the machine layer at all, from whom, and with which right. -/
+
+@[simp] theorem ret_board (s : KState) (t : Task) (r : List Nat) : (ret s t r).board = 0 := rfl
+
+theorem board_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
+    (h : (syscall s num a0 a1 a2 a3 a4).board ≠ 0) :
+    ∃ t, nth? s.tasks s.cur = some t ∧ ∃ ci w v, syscall s num a0 a1 a2 a3 a4 = sysBoard s t ci w v := by
+  unfold syscall at *
+  split at *
+  · simp at h
+  · rename_i t ht
+    refine ⟨t, ht, ?_⟩
+    split at *
+    rotate_left
+    · simp at h
+    unfold runCall at *
+    split at *
+    all_goals first
+      | exact ⟨_, _, _, rfl⟩
+      | exfalso
+        first
+        | (simp at h; done)
+        | (unfold sysUnmap at h; simp at h; done)
+        | (unfold sysWrite at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysMap at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysDerive at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysCapInfo at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysSend at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysRecv at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysReply at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysIrqWait at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysIrqAck at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysBootInfo at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysStart at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysTime at h; simp at h; done)
+        | (unfold sysPower at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+
+
+/-- `boardRequest` asks for nothing, or for something on the list. -/
+theorem boardRequest_listed (w v : Nat) : boardRequest w v = 0 ∨ boardRequest w v ∈ boardRequests := by
+  unfold boardRequest
+  by_cases h0 : w = 0
+  · simp [h0, boardRequests]
+  by_cases h1 : w = 1
+  · simp [h1, boardRequests]
+  by_cases h2 : w = 2
+  · simp only [h0, h1, h2, if_false, if_true]
+    rcases v with _ | _ | _ | v <;> simp [nth?, cpuSpeeds, boardRequests]
+  by_cases h3 : w = 3 ∧ v < 2
+  · simp only [h0, h1, h2, h3, if_false, if_true, and_self]
+    right
+    rcases h3 with ⟨_, hv⟩
+    rcases v with _ | _ | v
+    · simp [boardRequests]
+    · simp [boardRequests]
+    · omega
+  · simp [h0, h1, h2, h3]
+
+/-- **Only listed requests ever reach the hardware.** Whatever a task passes, a system call
+asks the machine layer for nothing, or for one of `boardRequests`: read the board, read the
+sensors, the light off or on, or the CPU at 600, 1000 or 1500 MHz. -/
+theorem board_requests_listed (s : KState) (num a0 a1 a2 a3 a4 : Nat) :
+    (syscall s num a0 a1 a2 a3 a4).board = 0 ∨ (syscall s num a0 a1 a2 a3 a4).board ∈ boardRequests := by
+  by_cases h : (syscall s num a0 a1 a2 a3 a4).board = 0
+  · exact Or.inl h
+  obtain ⟨t, _, ci, w, v, heq⟩ := board_pos h
+  rw [heq] at h ⊢
+  unfold sysBoard at h ⊢
+  repeat' (first | split at h | split | dsimp only at h ⊢)
+  all_goals first
+    | (left; rfl)
+    | (simp at h; done)
+    | exact boardRequest_listed _ _
+
+/-- **The CPU is never overclocked.** Any CPU clock a system call asks the machine layer
+for is between 600 and 1500 MHz: a Pi 4's rated range. (Requests 1 to 4 are the reads and
+the light; every other request is a clock.) -/
+theorem cpu_never_overclocked (s : KState) (num a0 a1 a2 a3 a4 : Nat)
+    (h : 4 < (syscall s num a0 a1 a2 a3 a4).board) :
+    600 ≤ (syscall s num a0 a1 a2 a3 a4).board ∧ (syscall s num a0 a1 a2 a3 a4).board ≤ 1500 := by
+  rcases board_requests_listed s num a0 a1 a2 a3 a4 with h0 | hl
+  · omega
+  · generalize (syscall s num a0 a1 a2 a3 a4).board = b at h hl ⊢
+    simp [boardRequests, cpuSpeeds] at hl
+    omega
+
+/-- **Changes need the write right; reads, the read right.** A board request reaches the
+machine layer only through a board capability the caller holds, with the right that kind of
+request needs, and the call asks for nothing else: no printing, no disk, no power, no load. -/
+theorem board_needs_right (s : KState) (t : Task) (ci w v : Nat)
+    (h : (sysBoard s t ci w v).board ≠ 0) :
+    ∃ c, nth? t.caps ci = some c ∧ c.obj = .board ∧
+      (boardChanges (sysBoard s t ci w v).board = true → c.rights.w = true) ∧
+      (boardChanges (sysBoard s t ci w v).board = false → c.rights.r = true) ∧
+      (sysBoard s t ci w v).outLen = 0 ∧ (sysBoard s t ci w v).io = 0 ∧
+      (sysBoard s t ci w v).power = 0 ∧ (sysBoard s t ci w v).load = 0 ∧
+      (sysBoard s t ci w v).state = setTask s s.cur { t with result := 0 :: .nil } := by
+  cases hc : nth? t.caps ci with
+  | none => unfold sysBoard at h; simp [hc] at h
+  | some c =>
+    cases hobj : c.obj
+    all_goals try (unfold sysBoard at h; simp [hc, hobj] at h; done)
+    unfold sysBoard at h ⊢
+    simp only [hc, hobj] at h ⊢
+    refine ⟨c, rfl, hobj, ?_⟩
+    cases hch : boardChanges (boardRequest w v) <;> cases hw : c.rights.w <;> cases hr : c.rights.r <;>
+      by_cases h0 : boardRequest w v = 0 <;> simp_all [ret]
+
+/-- **Only Settings touches the board.** When a system call asks the machine layer to read
+or change the board, the caller is Settings: the board capability is the manifest's, only
+frames can be granted, so it never moves, and only Settings holds it. -/
+theorem only_settings_touches_board {s : KState} (hr : Reachable s) {num a0 a1 a2 a3 a4 : Nat}
+    (hp : (syscall s num a0 a1 a2 a3 a4).board ≠ 0) : s.cur = settingsTask := by
+  obtain ⟨t, ht, ci, w, v, heq⟩ := board_pos hp
+  rw [heq] at hp
+  unfold sysBoard at hp
+  split at hp
+  · simp at hp
+  · rename_i c hc
+    split at hp
+    · rename_i hb
+      obtain ⟨c0, hc0, ho⟩ := ((reachable_inv hr).tasks _ t ht).caps c (nth?_mem hc) |>.board hb
+      have hj := (reachable_inv hr).lt ht
+      revert hc0 ho
+      generalize s.cur = j at hj ⊢
+      intro hc0 ho
+      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+        simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap] at hc0 <;>
+        rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+        simp at ho <;> rfl
+    · simp at hp
 
 end LeanOS
