@@ -10,7 +10,7 @@
    by the open slot, not by the launcher. */
 #include "app.h"
 #include "fs.h"
-#include "elf.h"
+#include "elfload.h"
 
 #define AW 480
 #define AH 336
@@ -187,11 +187,9 @@ static void start(struct launcher *st, struct line *l, int i) {
         flush(l);
         return;
     }
-    long n = fs_read(&st->fs, p->name);
     unsigned char *image = (unsigned char *)PAGE(SPARE_PAGE + IMAGE_PAGE);
     u64 len = 0;
-    if (n < 0) why = "could not read it";
-    else why = elf_image((const unsigned char *)fs_data(&st->fs), (u64)n, image, &len);
+    why = elf_load(&st->fs, p->name, image, &len);
     if (!why) {
         char iconname[FS_NAME_MAX + 6];
         icon_name(iconname, p->name);

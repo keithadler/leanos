@@ -134,7 +134,7 @@ def main():
     card = bytearray(total * SECTOR)
     card[0:SECTOR] = mbr([(0x0E, BOOT_START, BOOT_SECTORS), (0xDA, data_start, total - data_start)])
     card[BOOT_START * SECTOR:data_start * SECTOR] = fat16(boot_files)
-    fs = file_system(program_files(specs))
+    fs = file_system(program_files(specs), total - data_start)
     card[data_start * SECTOR:data_start * SECTOR + len(fs)] = fs
     open(out, "wb").write(card)
     print(f"{out}: {total * SECTOR // (1024 * 1024)} MiB; write it to an SD card and boot a Pi 4")

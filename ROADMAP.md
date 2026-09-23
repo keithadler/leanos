@@ -141,9 +141,19 @@ Done too: the SD card. A small SDHCI driver in the machine layer moves one block
 by programmed I/O (never DMA, which could write anywhere), and only what the Lean kernel
 approved: block capabilities, held only by the file server, name the blocks it may use,
 and `block_io_confined` proves every transfer is inside one, into or out of memory the
-caller has mapped with the right permission. The file server keeps its table and files on
-the card and reads them back at boot, so files and the note survive a restart; with no
-card it keeps them in memory.
+caller has mapped with the right permission.
+
+Done too: a real file system on the card (`user/fs.c`, and `tools/mksd.py` writes the same
+format): a superblock, a write-ahead journal, a bitmap of 4 KiB clusters, inodes with
+direct, indirect and double-indirect clusters, and folders. Every change is one
+transaction (journal, checksummed commit, then home), replayed or dropped at start; the
+tree is checked and repaired at every start; files are read and written at any offset, so
+a file can be as large as the card (512 MiB for now) and a program as large as its code run
+(`user/elfload.h` loads it piece by piece). Terminal has folders (`mkdir`, `cd`, `pwd`,
+`mv`), and Files opens them. `test/crash.sh` cuts the power in the middle of writes twelve
+times; `test/bigprog.sh` runs a 41 KiB program and reads back a 250 KiB file. Next: a
+model of the journal in Lean, with the proof that recovery always gives the state before
+or after each change.
 
 Done too: programs from the SD card. They are ELF files on the card (`tools/mksd.py`
 writes a card with them, the way programs are copied onto any computer's disk); Terminal's

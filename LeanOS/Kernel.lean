@@ -243,7 +243,7 @@ def irqCap (n : Nat) : Cap := ⟨.irq n, ⟨true, true, false⟩, 0⟩
 def launchCap (k : Nat) : Cap := ⟨.launch k, ⟨true, true, false⟩, 0⟩
 
 /-- How much of the SD card the file server may use: blocks 0 to 2047 (1 MiB). -/
-def diskBlocks : Nat := 2048
+def diskBlocks : Nat := 1048576
 def blocksCap (base count : Nat) : Cap := ⟨.blocks base count, ⟨true, true, false⟩, 0⟩
 def powerCap : Cap := ⟨.power, ⟨true, true, false⟩, 0⟩
 /-- The Raspberry Pi's own settings: read the board and its sensors (read right), change the

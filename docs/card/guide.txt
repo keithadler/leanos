@@ -13,6 +13,9 @@ The leanos menu
 
 Terminal
   ls, cat FILE, write FILE TEXT, rm FILE    files on the card
+  mkdir FOLDER, cd FOLDER, cd .., pwd       folders
+  mv FROM TO                                move or rename, in one step
+  fill FILE KB CHAR, verify FILE            a big test file, and checking one
   run PROGRAM                               start a program from the card
   ps                                        every program slot, and what runs in it
   whoami, caps, boot, uptime                what the kernel says about this program

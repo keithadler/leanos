@@ -4,13 +4,14 @@
    send + grant to the display server and the file server. */
 #include "app.h"
 #include "fs.h"
-#include "elf.h"
+#include "elfload.h"
 
 /* Terminal's launch capabilities for the open slots, which run programs from the SD card. */
 #define LAUNCH_OPEN 6
 #define OPEN_FIRST 10
 #define OPEN_SLOTS 6
 #define IMAGE_OFFSET 192   /* the program image, in the spare run: pages 192-207 */
+#define FILE_OFFSET 208    /* a program's file as read from the card: pages 208-223, 64 KiB */
 
 #define TW 460
 #define TH 272
@@ -30,6 +31,7 @@ struct term {
     struct font mono;
     struct surface win;
     struct fs_client fs;
+    char cwd[FS_PATH_MAX + 1];  /* the folder commands are in: "" is the top */
 };
 
 static const unsigned BG = 0x171a21, FG = 0xdde2ec, DIM = 0x8a93a6, GREEN = 0x7fd1a0;
@@ -144,7 +146,21 @@ static void cmd_boot(struct term *t, struct line *l) {
 
 static const char *fs_error(u64 code) {
     return code == FS_NOT_FOUND ? "no such file" : code == FS_FULL ? "no room"
-         : code == FS_NO_SERVER ? "the file server did not answer" : "not a valid name";
+         : code == FS_NO_SERVER ? "the file server did not answer" : code == FS_EXISTS ? "already there"
+         : code == FS_NOT_EMPTY ? "the folder is not empty" : code == FS_NOT_DIR ? "not a folder"
+         : code == FS_IS_DIR ? "a folder" : code == FS_IO ? "the card did not answer" : "not a valid name";
+}
+
+/* A path as the file server takes it: `arg` from the top folder if it starts with '/',
+   else from the current folder. */
+static void resolve(struct term *t, const char *arg, char *out) {
+    int n = 0;
+    if (arg[0] != '/')
+        for (int i = 0; t->cwd[i] && n < FS_PATH_MAX; i++) out[n++] = t->cwd[i];
+    else arg++;
+    if (n && arg[0] && n < FS_PATH_MAX) out[n++] = '/';
+    for (int i = 0; arg[i] && n < FS_PATH_MAX; i++) out[n++] = arg[i];
+    out[n] = 0;
 }
 
 /* The first word of `c` into `word`; returns the rest. */
@@ -167,59 +183,194 @@ static void fs_log(struct line *l, const char *cmd, const char *name, const char
     flush(l);
 }
 
-static void cmd_ls(struct term *t, struct line *l) {
-    long n = fs_list(&t->fs);
-    if (n < 0) { say(t, "the file server did not answer"); fs_log(l, "ls", 0, "no answer"); return; }
-    const struct fs_entry *e = fs_entries(&t->fs);
-    for (long i = 0; i < n; i++) {
-        put_s(l, e[i].name);
-        pad_to(l, 30);
-        put_dec(l, e[i].size);
-        put_s(l, " bytes");
-        out(t, l);
+static void cmd_ls(struct term *t, struct line *l, const char *args) {
+    char arg[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    word_of(args, arg, FS_PATH_MAX);
+    resolve(t, arg, path);
+    u64 total = 0, from = 0;
+    long shown = 0;
+    for (;;) {
+        long n = fs_list_dir(&t->fs, path, from, &total);
+        if (n < 0) { say(t, "no such folder"); fs_log(l, "ls", arg[0] ? arg : 0, "no such folder"); return; }
+        const struct fs_entry *e = fs_entries(&t->fs);
+        for (long i = 0; i < n; i++) {
+            put_s(l, e[i].name);
+            if (e[i].kind == FS_DIR) {
+                put_s(l, "/");
+                out(t, l);
+                continue;
+            }
+            pad_to(l, 30);
+            put_dec(l, e[i].size);
+            put_s(l, " bytes");
+            out(t, l);
+        }
+        shown += n;
+        from += (u64)n;
+        if (n == 0 || from >= total) break;
     }
-    if (n == 0) say(t, "no files");
-    put_s(l, "terminal: ls -> ");
-    put_dec(l, (u64)n);
-    put_s(l, n == 1 ? " file\n" : " files\n");
+    if (shown == 0) say(t, "nothing here");
+    put_s(l, "terminal: ls");
+    if (arg[0]) { put_s(l, " "); put_s(l, arg); }
+    put_s(l, " -> ");
+    put_dec(l, (u64)shown);
+    put_s(l, shown == 1 ? " file\n" : " files\n");
     flush(l);
 }
 
 static void cmd_cat(struct term *t, struct line *l, const char *args) {
-    char name[FS_NAME_MAX + 1];
-    word_of(args, name, FS_NAME_MAX);
-    long n = fs_read(&t->fs, name);
-    if (n < 0) { say(t, "no such file"); fs_log(l, "cat", name, "no such file"); return; }
-    const char *d = fs_data(&t->fs);
-    /* line by line; long lines wrap in push() */
-    long start = 0;
-    for (long i = 0; i <= n; i++)
-        if (i == n || d[i] == '\n') {
-            if (i > start || i < n) push(t, d + start, (u64)(i - start), 0);
-            start = i + 1;
-        }
+    char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    word_of(args, name, FS_PATH_MAX);
+    resolve(t, name, path);
+    u64 size = 0, off = 0;
+    for (;;) {
+        long n = fs_read_at(&t->fs, path, off, &size);
+        if (n < 0) { say(t, "no such file"); fs_log(l, "cat", name, "no such file"); return; }
+        const char *d = fs_data(&t->fs);
+        /* line by line; long lines wrap in push() */
+        long start = 0;
+        for (long i = 0; i <= n; i++)
+            if (i == n || d[i] == '\n') {
+                if (i > start || i < n) push(t, d + start, (u64)(i - start), 0);
+                start = i + 1;
+            }
+        off += (u64)n;
+        if (n == 0 || off >= size) break;
+    }
     put_s(l, "terminal: cat ");
     put_s(l, name);
     put_s(l, " -> ");
-    put_dec(l, (u64)n);
+    put_dec(l, off);
     put_s(l, " bytes\n");
     flush(l);
 }
 
 static void cmd_write(struct term *t, struct line *l, const char *args) {
-    char name[FS_NAME_MAX + 1];
-    const char *text = word_of(args, name, FS_NAME_MAX);
-    u64 st = fs_write(&t->fs, name, text, slen(text));
+    char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    const char *text = word_of(args, name, FS_PATH_MAX);
+    resolve(t, name, path);
+    u64 st = fs_write(&t->fs, path, text, slen(text));
     say(t, st == FS_OK ? "saved" : fs_error(st));
     fs_log(l, "write", name, st == FS_OK ? "ok" : fs_error(st));
 }
 
 static void cmd_rm(struct term *t, struct line *l, const char *args) {
-    char name[FS_NAME_MAX + 1];
-    word_of(args, name, FS_NAME_MAX);
-    u64 st = fs_delete(&t->fs, name);
+    char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    word_of(args, name, FS_PATH_MAX);
+    resolve(t, name, path);
+    u64 st = fs_delete(&t->fs, path);
     say(t, st == FS_OK ? "removed" : fs_error(st));
     fs_log(l, "rm", name, st == FS_OK ? "ok" : fs_error(st));
+}
+
+static void cmd_mkdir(struct term *t, struct line *l, const char *args) {
+    char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    word_of(args, name, FS_PATH_MAX);
+    resolve(t, name, path);
+    u64 st = fs_mkdir(&t->fs, path);
+    say(t, st == FS_OK ? "made" : fs_error(st));
+    fs_log(l, "mkdir", name, st == FS_OK ? "ok" : fs_error(st));
+}
+
+static void cmd_mv(struct term *t, struct line *l, const char *args) {
+    char a[FS_PATH_MAX + 1], b[FS_PATH_MAX + 1], pa[FS_PATH_MAX + 1], pb[FS_PATH_MAX + 1];
+    word_of(word_of(args, a, FS_PATH_MAX), b, FS_PATH_MAX);
+    resolve(t, a, pa);
+    resolve(t, b, pb);
+    u64 kind = fs_stat(&t->fs, pb, 0);
+    if (kind == FS_DIR) {                  /* into a folder: keep the name */
+        const char *last = a;
+        for (const char *p = a; *p; p++) if (*p == '/') last = p + 1;
+        int n = slen(pb);
+        if (n + 1 + (int)slen(last) <= FS_PATH_MAX) { pb[n] = '/'; for (int i = 0; ; i++) { pb[n + 1 + i] = last[i]; if (!last[i]) break; } }
+    }
+    u64 st = fs_rename(&t->fs, pa, pb);
+    say(t, st == FS_OK ? "moved" : fs_error(st));
+    fs_log(l, "mv", a, st == FS_OK ? "ok" : fs_error(st));
+}
+
+static void cmd_cd(struct term *t, struct line *l, const char *args) {
+    char arg[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    word_of(args, arg, FS_PATH_MAX);
+    if (!arg[0] || (arg[0] == '/' && !arg[1])) {
+        t->cwd[0] = 0;
+    } else if (arg[0] == '.' && arg[1] == '.' && !arg[2]) {
+        int n = slen(t->cwd);
+        while (n > 0 && t->cwd[n - 1] != '/') n--;
+        t->cwd[n > 0 ? n - 1 : 0] = 0;
+    } else {
+        resolve(t, arg, path);
+        if (fs_stat(&t->fs, path, 0) != FS_DIR) {
+            say(t, "no such folder");
+            fs_log(l, "cd", arg, "no such folder");
+            return;
+        }
+        for (int i = 0; ; i++) { t->cwd[i] = path[i]; if (!path[i]) break; }
+    }
+    put_s(l, "/");
+    put_s(l, t->cwd);
+    out(t, l);
+    fs_log(l, "cd", arg[0] ? arg : "/", "ok");
+}
+
+/* fill NAME KB CHAR: a file of KB kilobytes of CHAR, written in pieces to NAME.tmp and then
+   put in place by one rename, which the file server does in one step: whatever happens,
+   NAME is the old file or the new one, never half of each. */
+static void cmd_fill(struct term *t, struct line *l, const char *args) {
+    char name[FS_PATH_MAX + 1], num[12], ch[4], path[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 1];
+    word_of(word_of(word_of(args, name, FS_PATH_MAX - 4), num, 10), ch, 2);
+    u64 kb = 0;
+    for (int i = 0; num[i] >= '0' && num[i] <= '9'; i++) kb = kb * 10 + (u64)(num[i] - '0');
+    resolve(t, name, path);
+    int n = slen(path);
+    for (int i = 0; i <= n; i++) tmp[i] = path[i];
+    tmp[n] = '.'; tmp[n + 1] = 't'; tmp[n + 2] = 'm'; tmp[n + 3] = 'p'; tmp[n + 4] = 0;
+    char *piece = (char *)PAGE(SPARE_PAGE + FILE_OFFSET);
+    for (u64 i = 0; i < 16384; i++) piece[i] = ch[0] ? ch[0] : 'x';
+    u64 st = fs_write(&t->fs, tmp, piece, 0);
+    for (u64 off = 0; st == FS_OK && off < kb * 1024; off += 16000) {
+        u64 take = kb * 1024 - off < 16000 ? kb * 1024 - off : 16000;
+        st = fs_write_at(&t->fs, tmp, off, piece, take);
+    }
+    if (st == FS_OK) st = fs_rename(&t->fs, tmp, path);
+    say(t, st == FS_OK ? "filled" : fs_error(st));
+    fs_log(l, "fill", name, st == FS_OK ? "ok" : fs_error(st));
+}
+
+/* verify NAME: whether every byte of NAME is the same (what fill makes). */
+static void cmd_verify(struct term *t, struct line *l, const char *args) {
+    char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    word_of(args, name, FS_PATH_MAX);
+    resolve(t, name, path);
+    u64 size = 0, off = 0;
+    char first = 0;
+    int mixed = 0;
+    for (;;) {
+        long n = fs_read_at(&t->fs, path, off, &size);
+        if (n < 0) { say(t, "no such file"); fs_log(l, "verify", name, "no such file"); return; }
+        const char *d = fs_data(&t->fs);
+        for (long i = 0; i < n; i++) {
+            if (!off && !i) first = d[0];
+            if (d[i] != first) mixed = 1;
+        }
+        off += (u64)n;
+        if (n == 0 || off >= size) break;
+    }
+    put_dec(l, off);
+    put_s(l, mixed ? " bytes, mixed" : " bytes, all the same");
+    out(t, l);
+    put_s(l, "terminal: verify ");
+    put_s(l, name);
+    put_s(l, " -> ");
+    put_dec(l, off);
+    if (mixed) put_s(l, " bytes, mixed\n");
+    else {
+        put_s(l, " bytes of '");
+        char c[2] = {first ? first : '-', 0};
+        put_s(l, c);
+        put_s(l, "'\n");
+    }
+    flush(l);
 }
 
 /* Every program slot and what the kernel says about it. */
@@ -252,11 +403,17 @@ static void cmd_run(struct term *t, struct line *l, const char *args) {
         fs_log(l, "run", name, "already open");
         return;
     }
-    long n = fs_read(&t->fs, name);
-    if (n < 0) { say(t, "no such file"); fs_log(l, "run", name, "no such file"); return; }
+    char path[FS_PATH_MAX + 1];
+    resolve(t, name, path);
+    if (fs_stat(&t->fs, path, 0) != FS_FILE && name[0] != '/') {      /* not here: the top folder */
+        int i = 0;
+        for (; name[i]; i++) path[i] = name[i];
+        path[i] = 0;
+    }
+    if (fs_stat(&t->fs, path, 0) != FS_FILE) { say(t, "no such file"); fs_log(l, "run", name, "no such file"); return; }
     unsigned char *image = (unsigned char *)PAGE(SPARE_PAGE + IMAGE_OFFSET);
     u64 len = 0;
-    const char *why = elf_image((const unsigned char *)fs_data(&t->fs), (u64)n, image, &len);
+    const char *why = elf_load(&t->fs, path, image, &len);
     if (why) {
         put_s(l, name);
         put_s(l, ": ");
@@ -301,7 +458,9 @@ static void run(struct term *t, struct line *l) {
     if (!*c) return;
     if (starts(c, "help")) {
         say(t, "whoami caps boot ps uptime echo clear exit");
-        say(t, "ls, cat FILE, write FILE TEXT, rm FILE, run PROGRAM");
+        say(t, "ls [FOLDER], cat FILE, write FILE TEXT, rm FILE");
+        say(t, "mkdir FOLDER, cd FOLDER, pwd, mv FROM TO, run PROGRAM");
+        say(t, "fill FILE KB CHAR, verify FILE");
         say(t, "tour: why leanos is harder to attack than Linux");
     } else if (starts(c, "whoami")) {
         u64 me = sys0(SYS_WHOAMI).x[1];
@@ -322,7 +481,21 @@ static void run(struct term *t, struct line *l) {
     } else if (starts(c, "tour")) {
         cmd_run(t, l, " tour");
     } else if (starts(c, "ls")) {
-        cmd_ls(t, l);
+        cmd_ls(t, l, c + 2);
+    } else if (starts(c, "mkdir")) {
+        cmd_mkdir(t, l, c + 5);
+    } else if (starts(c, "mv")) {
+        cmd_mv(t, l, c + 2);
+    } else if (starts(c, "cd")) {
+        cmd_cd(t, l, c + 2);
+    } else if (starts(c, "pwd")) {
+        put_s(l, "/");
+        put_s(l, t->cwd);
+        out(t, l);
+    } else if (starts(c, "fill")) {
+        cmd_fill(t, l, c + 4);
+    } else if (starts(c, "verify")) {
+        cmd_verify(t, l, c + 6);
     } else if (starts(c, "cat")) {
         cmd_cat(t, l, c + 3);
     } else if (starts(c, "write")) {
@@ -361,6 +534,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     t->mono = font_of(assets, F_MONO);
     t->win = app_surface(TW, TH);
     fs_init(&t->fs, SPARE_PAGE);
+    t->cwd[0] = 0;
     t->n = t->len = 0;
     say(t, "leanos terminal. Type help, or tour.");
     draw(t);

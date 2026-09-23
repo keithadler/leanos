@@ -236,6 +236,8 @@ test: all
 	./test/tamper.sh
 	./test/fuzz.sh
 	./test/usb.sh
+	./test/crash.sh
+	./test/bigprog.sh
 
 # Break the kernel in known ways and check the proofs catch every one (slow).
 mutants:

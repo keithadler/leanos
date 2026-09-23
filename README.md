@@ -37,9 +37,11 @@ card, and starts it with a click, and **Security** shows every
 program's boot check and what is proved. Notes saves its note to the file server, so it
 is back when Notes starts again. An app is loaded and checked against the manifest each
 time it starts; closing its window stops it, and starting it again first takes back
-everything its last run shared. The file server keeps files on the SD card, so they are
-still there after a restart, and holds a client's memory only while it answers that
-client's request. The leanos menu (click the logo) restarts the machine or switches it
+everything its last run shared. The file server keeps a real file system on the SD card:
+folders, files as large as the card, and a journal, so a power cut cannot leave a change
+half done (`test/crash.sh` cuts the power twelve times in the middle of writes, and every
+time the card checks clean and the file is one whole version); it checks the whole tree at
+every start, and holds a client's memory only while it answers that client's request. The leanos menu (click the logo) restarts the machine or switches it
 off.
 
 ![The leanos boot screen](docs/logo.png)

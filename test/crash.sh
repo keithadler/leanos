@@ -1,0 +1,59 @@
+#!/bin/bash
+# Power cuts. Terminal rewrites a 200 KB file over and over (fill: written in pieces to
+# f.tmp, then renamed over f in one step), and the machine is killed at a random moment,
+# twelve times. After each cut, the card must check clean on the next boot (the journal
+# either finishes or drops the interrupted change: nothing to repair), and f must be one
+# whole version, never half of each: 204800 bytes all the same letter (or not there yet),
+# and never older than the last change the file server said was done.
+set -u
+cd "$(dirname "$0")/.."
+fail() { echo "FAIL: $*"; exit 1; }
+card=build/sd-crash.img
+cp build/sd-template.img $card
+
+out=$(python3 - "$card" <<'PY'
+import random, sys
+sys.path.insert(0, "test")
+from run import boot, mouse, wait_for, DOCK
+card = sys.argv[1]
+click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
+keys = lambda s: [c.encode() for c in s]
+random.seed(20260923)
+quiet = lambda line: None
+finished = dropped = 0
+for i in range(12):
+    # the cut: some time into a stream of rewrites
+    cut = random.uniform(9, 22)
+    steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened")]
+    for k in range(40):     # one at a time: a typed-ahead queue only holds so much
+        steps += keys(f"fill f 200 {'abcdefghij'[k % 10]}\r") + [wait_for("terminal: fill f", k + 1)]
+    lines = []
+    boot(cut, on_line=lines.append, steps=steps, until="never", sd=card, cut=True)
+    fills = sum(l.startswith("terminal: fill f -> ok") for l in lines)
+    # the next boot: check the card, then look at f
+    lines = []
+    boot(60, on_line=lines.append, sd=card, until="terminal: verify", settle=0.5,
+         steps=[*click(*DOCK["Terminal"]), wait_for("terminal: opened"), *keys("verify f\r")])
+    got = [l for l in lines if l.startswith(("fs:", "terminal: verify", "leanos: PANIC"))]
+    finished += any(l.startswith("fs: finished") for l in got)
+    dropped += any(l.startswith("fs: dropped") for l in got)
+    # durable: f is the last fill the log saw finish, or the one after (its commit made it,
+    # its log line did not): never an older one
+    import re
+    m = [re.search(r"verify f -> 204800 bytes of '(.)'", l) for l in got]
+    letter = next((x.group(1) for x in m if x), None)
+    ok = fills == 0 or letter in ("abcdefghij"[(fills - 1) % 10], "abcdefghij"[fills % 10])
+    print(f"cut {i + 1}: after {cut:.1f} s, {fills} fills logged{'' if ok else ', LOST'}; " + " / ".join(got), flush=True)
+print(f"crash: journal finished {finished} interrupted changes and dropped {dropped}", flush=True)
+PY
+)
+echo "$out" | sed 's/^/  | /'
+echo "$out" | grep -q "PANIC" && fail "kernel panicked"
+[ "$(echo "$out" | grep -c "^cut ")" = 12 ] || fail "the twelve cuts did not all run"
+echo "$out" | grep "^cut " | grep -q "fs: repaired" && fail "a power cut left something to repair"
+echo "$out" | grep "^cut " | grep -q "mixed" && fail "a power cut left half of one version and half of another"
+echo "$out" | grep "^cut " | grep -vq "fs: checked" && fail "a boot did not check the card"
+echo "$out" | grep "^cut " | grep -q ", LOST;" && fail "a change the file server had committed was lost"
+bad=$(echo "$out" | grep "^cut " | grep "terminal: verify f -> " | grep -v "terminal: verify f -> 204800 bytes of '[a-j]'")
+[ -z "$bad" ] || fail "f was not one whole version: $bad"
+echo "ok: twelve power cuts in the middle of writes, and every time the card was consistent and the file whole"

@@ -123,9 +123,9 @@ def fresh_card(path=TEST_CARD):
 
 
 def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None, image=None,
-         settle=0.3, sd=None, usb=False):
+         settle=0.3, sd=None, usb=False, cut=False):
     """sd: the SD card image to boot with (a fresh copy of the programs card if None; ""
-    for no card)."""
+    for no card). cut: at the timeout, kill QEMU at once (a power cut), not after a grace."""
     if sd is None:
         sd = fresh_card()
     """steps: bytes to type once the system is idle, each followed by a short pause, or
@@ -148,7 +148,7 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
     import threading as _threading
     def watchdog():
         while proc.poll() is None:
-            if time.monotonic() > deadline + 5:
+            if time.monotonic() > deadline + (0 if cut else 5):
                 proc.kill()
                 return
             time.sleep(0.5)
@@ -201,8 +201,11 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                                               timeout=max(0, deadline - time.monotonic()))
                             time.sleep(0.05)
                             continue
-                        proc.stdin.write(chunk)
-                        proc.stdin.flush()
+                        try:
+                            proc.stdin.write(chunk)
+                            proc.stdin.flush()
+                        except (BrokenPipeError, ValueError, OSError):
+                            return                      # QEMU is gone (a cut, a timeout)
                         # QEMU holds what the UART cannot take yet, so no key is lost: keys
                         # go fast. Mouse reports keep a hand's pace, so a drag is drawn one
                         # move at a time, as the drawing-speed check expects.

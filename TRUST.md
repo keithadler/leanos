@@ -29,7 +29,7 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `edge_iff`, `reach_iff` | In the manifest the only grant edges are from the apps (Notes, Terminal, Settings, Security, Files) to the display server, and from Notes, Terminal and Files to the file server. Memory moves at most one step: neither server can pass on what it was given. |
 | `confined` | Every task but the two servers only ever holds its own 256 frames. (`mallory_confined`, `carol_confined`, `alice_confined` are the same for those three.) |
 | `server_frames`, `file_server_frames` | The display server holds only its own frames, the framebuffer, and frames the apps granted it; the file server, only its own frames and frames its clients granted it. |
-| `blocks_fixed`, `disk_only_file_server` | Block capabilities never move and never gain rights: only the file server ever holds one, for the manifest's 2048 blocks. |
+| `blocks_fixed`, `disk_only_file_server` | Block capabilities never move and never gain rights: only the file server ever holds one, for the manifest's 1,048,576 blocks (512 MiB; the machine layer keeps every access inside the card's data partition). |
 | `block_io_confined` | When a call asks the machine layer for block I/O, the block is inside a block capability the caller holds with the right it needs, and the 512 bytes are in the user window, in one page the caller has mapped writable (a read fills it) or readable (a write sends it). |
 | `drop_only_shrinks` | After `drop`, every task holds a subset of the capabilities and mappings it held before. |
 | `maps_backed` | Every page a task can see comes from one of its own capabilities, with that capability's rights. |
@@ -242,9 +242,12 @@ QEMU's model of them, because leanos has only run under QEMU.
 - The file server is trusted with what its clients store: it can read and change any
   file, and it sees each client's buffer while it answers that client. The proofs bound
   what it can *hold* (its own frames, a client's buffer only as that client granted it,
-  and its blocks of the card), not what it does with the bytes. Writes go straight through
-  to the card, data then table, but a power cut in between can lose the last change: there
-  is no journal yet.
+  and its blocks of the card), not what it does with the bytes. It keeps a journal: every
+  change is written to the journal with a checksum first, then to its place, so after a
+  power cut a change is finished or dropped whole, and the whole tree is checked (and
+  repaired, if it ever needs it) at every start. That is tested (`test/crash.sh`), not
+  proved; and it assumes the card writes a 512-byte block whole and in the order asked,
+  which SD cards generally do but do not promise.
 - Capability lists are bounded (64 per task) but a server that is sent grants it does not
   want must drop them; the display server and the file server do. A client that floods a
   server with grants between the server's drops is not stopped by the kernel.

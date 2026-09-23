@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "leanos",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["/Users/keith/Downloads/leanos/tools/serve.py"],
+      "port": 8796
+    }
+  ]
+}
