@@ -170,7 +170,9 @@ inputEl.addEventListener('mousemove', (e) => {
    work; Enter and Backspace come from the key events. A line break inside text (pasted
    lines) is a Return too. */
 inputEl.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { sendBytes('\r'); e.preventDefault(); }
+  const arrows = {ArrowUp: 'A', ArrowDown: 'B', ArrowRight: 'C', ArrowLeft: 'D'};
+  if (arrows[e.key]) { sendBytes('\x1b[' + arrows[e.key]); e.preventDefault(); }
+  else if (e.key === 'Enter') { sendBytes('\r'); e.preventDefault(); }
   else if (e.key === 'Backspace') { sendBytes('\x7f'); e.preventDefault(); }
 });
 inputEl.addEventListener('input', () => {

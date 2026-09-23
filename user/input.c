@@ -5,8 +5,9 @@
 
    What arrives on the serial line: ordinary bytes are keys. A mouse report is ESC 'm',
    then 'd' (button down), 'u' (up) or 'v' (moved), then x and y as three decimal digits
-   each: "\x1bmd320240". On QEMU the browser console writes these; on a real Pi, any
-   serial terminal can. */
+   each: "\x1bmd320240". The arrow keys come as a terminal sends them, ESC [ A (up), B
+   (down), C (right), D (left), and become keys 128 to 131. On QEMU the browser console
+   writes these; on a real Pi, any serial terminal can. */
 #include "lib.h"
 
 #define UART_REGS 5
@@ -50,7 +51,10 @@ __attribute__((section(".text.start"))) void _start(void) {
                 if (c == 27) state = 1;
                 else event(EV_KEY, c, 0);
             } else if (state == 1) {
-                state = c == 'm' ? 2 : 0;
+                state = c == 'm' ? 2 : c == '[' ? 10 : 0;
+            } else if (state == 10) {        /* ESC [ A..D: an arrow key */
+                if (c >= 'A' && c <= 'D') event(EV_KEY, 128 + (u64)(c - 'A'), 0);
+                state = 0;
             } else if (state == 2) {
                 kind = c == 'd' ? EV_DOWN : c == 'u' ? EV_UP : EV_MOVE;
                 x = y = 0;

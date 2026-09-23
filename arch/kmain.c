@@ -398,7 +398,7 @@ static void load_program(uint64_t i) {
 
 static const char *const names[] = {"alice", "display", "mallory", "carol", "input",
                                     "terminal", "settings", "security", "fs", "files",
-                                    "slot 10", "slot 11"};
+                                    "slot 10", "slot 11", "slot 12", "slot 13", "slot 14", "slot 15"};
 #define NPROGS 10   /* the programs in the kernel image, for slots 0-9 */
 
 /* SHA-256 of "abc", from FIPS 180-4: the hash must be right before anything relies on it. */

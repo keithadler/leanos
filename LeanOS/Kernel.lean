@@ -184,7 +184,7 @@ without bound by deriving or being granted capabilities. -/
 def maxCaps : Nat := 64
 
 /-- The number of program slots in the manifest, and the most the frame pool has room for. -/
-def numTasks : Nat := 12
+def numTasks : Nat := 16
 def maxTasks : Nat := 16
 
 /-- Each task owns 256 frames (1 MiB) of the pool: task `i` owns frames `256i` to `256i+255`. -/
@@ -247,9 +247,9 @@ registers (capability 5) and its interrupt (capability 6). Tasks 5 (Terminal), 6
 (Settings), 7 (Security) and 9 (Files) may send and grant with badges 5, 6, 7 and 9.
 Each of these endpoint capabilities is capability 4 of its task.
 
-Terminal also holds the launch capabilities for the open slots, 10 and 11 (its
-capabilities 6 and 7), which run programs from the SD card; they may send and grant to the
-display server with badges 10 and 11.
+Terminal also holds the launch capabilities for the open slots, 10 to 15 (its
+capabilities 6 to 11), which run programs from the SD card; they may send and grant to the
+display server with badges 10 to 15.
 
 Endpoint 1 is the file server's inbox. Task 8 (the file server) receives from it, and
 Notes, Terminal and Files may send to it and grant (a buffer, for one request), with
@@ -263,20 +263,25 @@ def initCaps : Nat → List Cap
   | 2 => snoc (frameCaps 2) (epCap 0 false true false 2)
   | 4 => snoc (snoc (snoc (frameCaps 4) (epCap 0 false true false 3)) (runCap devBase devPages Rights.rw))
            (irqCap uartIrq)
-  | 5 => snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5)) (epCap 1 false true true 5))
-           (launchCap 10)) (launchCap 11)
+  | 5 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5))
+           (epCap 1 false true true 5)) (launchCap 10)) (launchCap 11)) (launchCap 12)) (launchCap 13))
+           (launchCap 14)) (launchCap 15)
   | 6 => snoc (frameCaps 6) (epCap 0 false true true 6)
   | 7 => snoc (frameCaps 7) (epCap 0 false true true 7)
   | 8 => snoc (snoc (frameCaps 8) (epCap 1 true false false 0)) (blocksCap 0 diskBlocks)
   | 9 => snoc (snoc (frameCaps 9) (epCap 0 false true true 9)) (epCap 1 false true true 9)
   | 10 => snoc (frameCaps 10) (epCap 0 false true true 10)
   | 11 => snoc (frameCaps 11) (epCap 0 false true true 11)
+  | 12 => snoc (frameCaps 12) (epCap 0 false true true 12)
+  | 13 => snoc (frameCaps 13) (epCap 0 false true true 13)
+  | 14 => snoc (frameCaps 14) (epCap 0 false true true 14)
+  | 15 => snoc (frameCaps 15) (epCap 0 false true true 15)
   | i => frameCaps i
 
-/-- The open slots, 10 and 11: they run whatever program they are started with (Terminal
+/-- The open slots, 10 to 15: they run whatever program they are started with (Terminal
 loads one from the SD card), not a program the manifest names. What such a program may do
 is fixed here all the same: its own frames, and a window from the display server. -/
-def openSlot (i : Nat) : Bool := i == 10 || i == 11
+def openSlot (i : Nat) : Bool := Nat.ble 10 i && Nat.ble i 15
 
 /-- The largest program an open slot can be started with: its code run. -/
 def maxImage : Nat := 16 * 4096

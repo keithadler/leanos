@@ -1,15 +1,15 @@
-/* Files. Lists what the file server holds and shows the selected file. Click a file to
-   show it; click anywhere else to look again; Delete (or Backspace) removes the selected
-   file. It reaches the files only by asking the file server, one request at a time. */
+/* Files. Lists what the file server holds and shows the selected file. Click a file, or
+   use the up and down arrows (the list scrolls), to show it; click anywhere else to look
+   again; Delete (or Backspace) removes the selected file. It reaches the files only by asking the file server, one request at a time. */
 #include "app.h"
 #include "fs.h"
 
 #define FW 460
-#define FH 300
+#define FH 340
 #define LIST_W 184
-#define ROW_H 26
+#define ROW_H 22
 #define ROW_Y 40
-#define MAX_SHOWN 9
+#define MAX_SHOWN 12
 #define PREVIEW_MAX 4096
 enum { F_UI = 1, F_BOLD = 2, F_SMALL = 3, F_MONO = 4 };
 
@@ -20,6 +20,7 @@ struct files {
     struct fs_entry list[48];
     long count;
     int selected;                   /* -1: none */
+    int top;                        /* the first file the list shows */
     char preview[PREVIEW_MAX + 1];
     long size;                      /* of the selected file, -1 if it could not be read */
 };
@@ -45,13 +46,16 @@ static void draw(struct files *st) {
     put_s(&head, st->count == 1 ? " file" : " files");
     head.b[head.n] = 0;
     font_text(s, &st->bold, 16, 26, head.b, rgb(30, 30, 36));
-    for (int i = 0; i < st->count && i < MAX_SHOWN; i++) {
-        int y = ROW_Y + i * ROW_H, sel = i == st->selected;
+    if (st->selected >= 0 && st->selected < st->top) st->top = st->selected;
+    if (st->selected >= st->top + MAX_SHOWN) st->top = st->selected - MAX_SHOWN + 1;
+    for (int r = 0; r < MAX_SHOWN && st->top + r < st->count; r++) {
+        int i = st->top + r;
+        int y = ROW_Y + r * ROW_H, sel = i == st->selected;
         if (sel) round_rect(s, 8, y, LIST_W - 16, ROW_H - 2, 6, rgb(58, 110, 230), 255);
-        font_text(s, &st->ui, 16, y + 17, st->list[i].name, sel ? rgb(255, 255, 255) : rgb(40, 40, 48));
+        font_text(s, &st->ui, 16, y + 15, st->list[i].name, sel ? rgb(255, 255, 255) : rgb(40, 40, 48));
         char n[16];
         size_text(n, st->list[i].size);
-        font_text(s, &st->small, LIST_W - 16 - font_width(&st->small, n), y + 16, n,
+        font_text(s, &st->small, LIST_W - 16 - font_width(&st->small, n), y + 14, n,
                   sel ? rgb(220, 230, 255) : rgb(130, 130, 140));
     }
     if (st->count < 0) font_text(s, &st->small, 16, ROW_Y + 16, "The file server did not answer.", rgb(200, 60, 50));
@@ -130,6 +134,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->win = app_surface(FW, FH);
     fs_init(&st->fs, SPARE_PAGE);
     st->selected = -1;
+    st->top = 0;
     refresh(st, &l);
     show(st, &l, st->count > 0 ? 0 : -1);
     draw(st);
@@ -152,8 +157,12 @@ __attribute__((section(".text.start"))) void _start(void) {
         if (e.kind == EV_DOWN) {
             int x = (int)e.a, y = (int)e.b, row = (y - ROW_Y) / ROW_H;
             refresh(st, &l);
-            if (x < LIST_W && y >= ROW_Y && row < st->count && row < MAX_SHOWN) show(st, &l, row);
+            if (x < LIST_W && y >= ROW_Y && row < MAX_SHOWN && st->top + row < st->count) show(st, &l, st->top + row);
             else show(st, &l, st->selected);
+        } else if (e.kind == EV_KEY && (e.a == KEY_UP || e.a == KEY_DOWN) && st->count > 0) {
+            int to = st->selected + (e.a == KEY_DOWN ? 1 : -1);
+            if (to < 0 || to >= st->count) continue;
+            show(st, &l, to);
         } else if (e.kind == EV_KEY && (e.a == 127 || e.a == 8) && st->selected >= 0) {
             u64 r = fs_delete(&st->fs, st->list[st->selected].name);
             put_s(&l, "files: deleted ");

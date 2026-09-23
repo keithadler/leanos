@@ -163,6 +163,11 @@ partition table, and routes the UART to the header pins itself. `make test` chec
 file system is clean and that leanos, booted from the image, reads the data partition and
 leaves the boot partition alone. It has not run on a Pi yet.
 
+More on the card: a guided tour (`tour` in Terminal) that really tries a desktop attack on
+each page and compares the kernel's answer with a typical Linux desktop; `calc`, `snake`,
+`life` and `tiles` (2048); and a user guide. Six open slots now, and the arrow keys reach
+programs (the browser console sends them as a terminal would, ESC [ A to D).
+
 Next: a journal (so a power cut cannot lose a change halfway), more open slots and a way to give a program more authority on
 purpose (a file server endpoint, say) with the user's consent, the first boot on real Pi 4 hardware (EMMC2, colors,
 timings), USB keyboard and mouse, multiple cores, and the Pi 5.

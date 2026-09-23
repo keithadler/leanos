@@ -16,9 +16,19 @@ owns the screen; an input driver in user space owns the serial port and its inte
 alice's Notes app draws in her own memory and lends the display a read-only view of it.
 mallory tries to reach the screen, the keyboard and everyone's memory, and cannot.
 
+**Take the tour**: open Terminal and type `tour`. It is an untrusted program from the SD
+card that, page by page, really tries what malware does on a desktop (read your files,
+another program's memory, the disk, your keystrokes; run code it wrote; switch the machine
+off) and shows the kernel's answer next to what a typical Linux desktop allows, mitigations
+included, and ends with what Linux does better.
+
+Also on the card: `calc` (a calculator), `snake`, `life` (Conway's Game of Life), `tiles`
+(2048), `clock`, `hello`, and `guide.txt`, a short user guide. Up to six programs from the
+card run at once, each confined to its own memory and a window.
+
 The dock starts apps: **Files** lists and shows what the file server holds, **Terminal**
 answers from the kernel (`whoami`, `caps`, `boot`, `ps`, `uptime`), the file server (`ls`,
-`cat`, `write`, `rm`), and runs programs from the SD card (`run hello`, `run clock`), **Settings** changes the background, and **Security** shows every
+`cat`, `write`, `rm`), and runs programs from the SD card (`run calc`, `run snake`, ...), **Settings** changes the background, and **Security** shows every
 program's boot check and what is proved. Notes saves its note to the file server, so it
 is back when Notes starts again. An app is loaded and checked against the manifest each
 time it starts; closing its window stops it, and starting it again first takes back

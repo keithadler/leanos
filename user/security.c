@@ -2,8 +2,8 @@
    what is proved about the kernel. Clicking the window checks again. */
 #include "app.h"
 
-#define XW 460
-#define XH 352
+#define XW 420
+#define XH 376
 enum { F_UI = 1, F_BOLD = 2, F_SMALL = 3 };
 
 static const char *const proved[] = {
@@ -50,7 +50,7 @@ static void draw(struct security *st, int n[3]) {
     for (u64 k = 0; k < NSLOTS; k++) {
         struct res r = sys1(SYS_BOOTINFO, k);
         int kind = r.status == OK ? (int)r.x[1] : 0;
-        int y = 40 + (int)k * 16;
+        int y = 40 + (int)k * 14;
         mark(s, 20, y, kind);
         font_text(s, &st->ui, 44, y + 13, slot_name(k), rgb(40, 40, 48));
         char h[9];
@@ -61,10 +61,10 @@ static void draw(struct security *st, int n[3]) {
         font_text(s, &st->small, XW - 20 - font_width(&st->small, run), y + 12, run, rgb(120, 120, 130));
         n[kind == 1 || kind == 3 ? 0 : kind == 2 ? 1 : 2]++;
     }
-    fill(s, 20, 240, XW - 40, 1, rgb(224, 224, 230));
-    font_text(s, &st->bold, 20, 262, "Proved in Lean", rgb(30, 30, 36));
+    fill(s, 20, 272, XW - 40, 1, rgb(224, 224, 230));
+    font_text(s, &st->bold, 20, 294, "Proved in Lean", rgb(30, 30, 36));
     for (u64 i = 0; i < NPROVED; i++) {
-        int y = 280 + (int)i * 14;
+        int y = 312 + (int)i * 14;
         font_text(s, &st->small, 22, y, "\xe2\x80\xa2", rgb(58, 110, 230));
         font_text(s, &st->small, 34, y, proved[i], rgb(60, 60, 70));
     }

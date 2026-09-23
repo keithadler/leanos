@@ -224,7 +224,7 @@ APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
              *keys("abc"),
              *click(150, 400), b"run clock\r", wait_for("clock: ticked 3 times"),
              *click(444, 548), wait_for("files: opened"),
-             *click(386, 363), wait_for("files: showing hello.txt"),
+             *[b"\x1b[B"] * 10, wait_for("files: showing hello.txt"),
              *click(648, 548), wait_for("security: 12")]
 
 if __name__ == "__main__":

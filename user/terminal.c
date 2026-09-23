@@ -9,7 +9,7 @@
 /* Terminal's launch capabilities for the open slots, which run programs from the SD card. */
 #define LAUNCH_OPEN 6
 #define OPEN_FIRST 10
-#define OPEN_SLOTS 2
+#define OPEN_SLOTS 6
 #define IMAGE_OFFSET 192   /* the program image, in the spare run: pages 192-207 */
 
 #define TW 460
@@ -288,6 +288,7 @@ static void run(struct term *t, struct line *l) {
     if (starts(c, "help")) {
         say(t, "whoami caps boot ps uptime echo clear exit");
         say(t, "ls, cat FILE, write FILE TEXT, rm FILE, run PROGRAM");
+        say(t, "tour: why leanos is harder to attack than Linux");
     } else if (starts(c, "whoami")) {
         u64 me = sys0(SYS_WHOAMI).x[1];
         put_s(l, "task ");
@@ -304,6 +305,8 @@ static void run(struct term *t, struct line *l) {
         cmd_ps(t, l);
     } else if (starts(c, "run")) {
         cmd_run(t, l, c + 3);
+    } else if (starts(c, "tour")) {
+        cmd_run(t, l, " tour");
     } else if (starts(c, "ls")) {
         cmd_ls(t, l);
     } else if (starts(c, "cat")) {
@@ -345,7 +348,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     t->win = app_surface(TW, TH);
     fs_init(&t->fs, SPARE_PAGE);
     t->n = t->len = 0;
-    say(t, "leanos terminal. Type help.");
+    say(t, "leanos terminal. Type help, or tour.");
     draw(t);
     u64 opened = app_open(TW, TH, "Terminal");
     put_s(&l, "terminal: opened a window");

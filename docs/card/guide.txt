@@ -1,0 +1,30 @@
+leanos: a short guide
+
+The dock
+  Notes     a note that is saved to the SD card as you type
+  Files     every file on the card; click one to read it, Delete removes it
+  Terminal  commands; type help
+  Settings  the background
+  Security  what every program's boot check found, and what is proved
+
+The leanos menu
+  Click the logo at the top left: Restart, or Shut down.
+
+Terminal
+  ls, cat FILE, write FILE TEXT, rm FILE    files on the card
+  run PROGRAM                               start a program from the card
+  ps                                        every program slot, and what runs in it
+  whoami, caps, boot, uptime                what the kernel says about this program
+  tour                                      why leanos is harder to attack than Linux
+
+Programs on the card
+  tour    the guided tour: each page really tries an attack
+  calc    a calculator: type 2+3*4 and press Enter
+  snake   the arrow keys steer; space plays again
+  life    Conway's Game of Life; space pauses, a click adds a cell, r reseeds
+  tiles   2048: the arrow keys slide the tiles
+  clock   how long the Pi has been up
+  hello   the smallest program
+
+Every program from the card runs in an open slot: it gets its own memory and a window,
+and nothing else, whatever it was written to do. Up to six run at once.

@@ -124,7 +124,7 @@ mutant "manifest lets mallory start programs" \
 mutant "manifest lets the display restart the input driver" \
   "(launchCap 0)) (launchCap 5)" "(launchCap 4)) (launchCap 5)"
 mutant "manifest lets Terminal receive on the display's endpoint" \
-  "| 5 => snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5))" "| 5 => snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 true true true 5))"
+  "(snoc (frameCaps 5) (epCap 0 false true true 5))" "(snoc (frameCaps 5) (epCap 0 true true true 5))"
 mutant "drop keeps the pages it can no longer back" \
   "⟨setTask s s.cur { t with caps := cs, maps := keepBacked cs t.maps, result := 0 :: .nil }," "⟨setTask s s.cur { t with caps := cs, maps := t.maps, result := 0 :: .nil },"
 mutant "drop lets a task keep the capability and gain another" \
@@ -159,7 +159,7 @@ mutant "exec takes images larger than the code run" \
 mutant "exec loads a program into a manifest slot" \
   "  else len == 0" "  else true"
 mutant "Notes' slot counts as open" \
-  "def openSlot (i : Nat) : Bool := i == 10 || i == 11" "def openSlot (i : Nat) : Bool := i == 10 || i == 11 || i == 0"
+  "def openSlot (i : Nat) : Bool := Nat.ble 10 i && Nat.ble i 15" "def openSlot (i : Nat) : Bool := (Nat.ble 10 i && Nat.ble i 15) || i == 0"
 mutant "manifest lets Notes start programs from the SD card" \
   "  | 0 => snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)" "  | 0 => snoc (snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)) (launchCap 10)"
 mutant "an open slot's program may use the file server" \
@@ -167,9 +167,7 @@ mutant "an open slot's program may use the file server" \
 mutant "a tick wakes sleepers early" \
   "  | .sleeping u => if Nat.ble u now then" "  | .sleeping u => if true then"
 mutant "manifest gives Terminal the power capability" \
-  "  | 5 => snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5)) (epCap 1 false true true 5))
-           (launchCap 10)) (launchCap 11)" "  | 5 => snoc (snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5)) (epCap 1 false true true 5))
-           (launchCap 10)) (launchCap 11)) powerCap"
+  "           (launchCap 14)) (launchCap 15)" "           (launchCap 14)) powerCap"
 mutant "grant the power capability" \
   "      | .frames _ _ => some (some g)
       | _ => none" "      | .frames _ _ => some (some g)

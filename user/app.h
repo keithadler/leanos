@@ -11,6 +11,8 @@
 
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4 };
 enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5 };
+/* The arrow keys, as EV_KEY codes (the input driver turns ESC [ A..D into these). */
+enum { KEY_UP = 128, KEY_DOWN = 129, KEY_RIGHT = 130, KEY_LEFT = 131 };
 enum { SET_BACKGROUND = 1 };
 
 #define SPARE 3
@@ -20,7 +22,7 @@ enum { SET_BACKGROUND = 1 };
 
 struct event { u64 kind, a, b; };
 
-#define NSLOTS 12  /* program slots in the manifest */
+#define NSLOTS 16  /* program slots in the manifest */
 
 /* Map the spare run (read-write, the app's own) and return its assets. */
 static inline const unsigned char *app_assets(void) {
@@ -61,6 +63,7 @@ static inline struct event app_poll(int dirty) {
 static inline const char *slot_name(u64 k) {
     static const char *const names[NSLOTS] = {"Notes", "Display server", "Test: mallory", "Test: carol",
                                               "Input driver", "Terminal", "Settings", "Security",
-                                              "File server", "Files", "Open slot 10", "Open slot 11"};
+                                              "File server", "Files", "Open slot 10", "Open slot 11",
+                                              "Open slot 12", "Open slot 13", "Open slot 14", "Open slot 15"};
     return k < NSLOTS ? names[k] : "?";
 }

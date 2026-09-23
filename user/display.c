@@ -125,7 +125,7 @@ static const char *name_of(u64 badge) {
     return badge == BADGE_ALICE ? "alice" : badge == BADGE_MALLORY ? "mallory"
          : badge == BADGE_TERMINAL ? "Terminal" : badge == BADGE_SETTINGS ? "Settings"
          : badge == BADGE_SECURITY ? "Security" : badge == BADGE_FILES ? "Files"
-         : badge == 10 || badge == 11 ? "a program from the SD card" : "unknown";
+         : badge >= 10 && badge <= 15 ? "a program from the SD card" : "unknown";
 }
 
 /* The program slot a badge belongs to: the manifest gives each app its slot's number as its
@@ -133,7 +133,7 @@ static const char *name_of(u64 badge) {
 static int slot_of(u64 badge) {
     return badge == BADGE_ALICE ? 0
          : (badge >= BADGE_TERMINAL && badge <= BADGE_SECURITY) || badge == BADGE_FILES ||
-           badge == 10 || badge == 11 ? (int)badge : -1;
+           (badge >= 10 && badge <= 15) ? (int)badge : -1;
 }
 
 /* 0 not started, 1 running, 2 stopped, as the kernel sees slot k now. */
