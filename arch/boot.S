@@ -152,21 +152,30 @@ restore:
 .balign 16
 .global user_progs, user_prog_ends
 user_progs:
-    .quad prog0, prog1, prog2, prog3, prog4
+    .quad prog0, prog1, prog2, prog3, prog4, prog5, prog6, prog7
 user_prog_ends:
-    .quad prog0_end, prog1_end, prog2_end, prog3_end, prog4_end
+    .quad prog0_end, prog1_end, prog2_end, prog3_end, prog4_end, prog5_end, prog6_end, prog7_end
 .global user_assets, user_asset_ends
 user_assets:
-    .quad asset0, asset1, asset2, asset2, asset2
+    .quad asset0, asset1, noasset, noasset, noasset, asset5, asset6, asset7
 user_asset_ends:
-    .quad asset0_end, asset1_end, asset2, asset2, asset2
+    .quad asset0_end, asset1_end, noasset, noasset, noasset, asset5_end, asset6_end, asset7_end
 .balign 16
 asset0: .incbin "build/assets/alice.bin"
 asset0_end:
 .balign 16
 asset1: .incbin "build/assets/display.bin"
 asset1_end:
-asset2:
+.balign 16
+asset5: .incbin "build/assets/terminal.bin"
+asset5_end:
+.balign 16
+asset6: .incbin "build/assets/settings.bin"
+asset6_end:
+.balign 16
+asset7: .incbin "build/assets/security.bin"
+asset7_end:
+noasset:
 .balign 16
 prog0: .incbin "build/user/alice.bin"
 prog0_end:
@@ -182,3 +191,12 @@ prog3_end:
 .balign 16
 prog4: .incbin "build/user/input.bin"
 prog4_end:
+.balign 16
+prog5: .incbin "build/user/terminal.bin"
+prog5_end:
+.balign 16
+prog6: .incbin "build/user/settings.bin"
+prog6_end:
+.balign 16
+prog7: .incbin "build/user/security.bin"
+prog7_end:

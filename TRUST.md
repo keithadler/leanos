@@ -14,7 +14,8 @@ leanos splits the kernel in two:
 ## Proved
 
 These hold for every state the kernel can reach: `init`, then any sequence of system calls
-with any arguments, timer ticks, faults, and result loads. They are in
+(including starting and restarting programs) with any arguments, timer ticks, faults,
+interrupts, result loads, and boot checks with any measurement. They are in
 `LeanOS/Proofs.lean`.
 
 Tasks can hand each other memory, so the central guarantee is about where memory can go.
@@ -25,9 +26,9 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 |---|---|
 | `frame_flow` | A task holds a frame only if a chain of grant edges leads to it from the frame's owner at boot, and never with more rights than the owner had. |
 | `endpoints_fixed` | Endpoint capabilities never gain rights and keep their badge, so no task can forge who it is. |
-| `edge_iff` | In the demo manifest the only grant edge is alice to the server. |
-| `mallory_confined`, `carol_confined`, `alice_confined` | Each of these tasks only ever holds its own 64 frames. |
-| `server_frames` | The display server holds only its own frames, the framebuffer, and alice's. |
+| `edge_iff` | In the manifest the only grant edges are from the apps (Notes, Terminal, Settings, Security) to the display server. |
+| `confined` | Every task but the display server only ever holds its own 256 frames. (`mallory_confined`, `carol_confined`, `alice_confined` are the same for those three.) |
+| `server_frames` | The display server holds only its own frames, the framebuffer, and frames the apps granted it. |
 | `maps_backed` | Every page a task can see comes from one of its own capabilities, with that capability's rights. |
 | `no_write_execute` | No page is ever both writable and executable. |
 | `maps_in_range` | Every mapping is inside the 8192-page user window and the frame pool. |
@@ -41,6 +42,12 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `irqs_fixed` | Interrupt capabilities never move: a task holds one only if it held it at boot. |
 | `irq_wakes_holder` | An interrupt wakes only a task given that interrupt's capability at boot. |
 | `uart_confined`, `uart_irq_only_input` | Only the input driver can ever hold the UART's registers or its interrupt. |
+| `start_revokes` | When `start` has the machine layer load slot `k`, the slot holds the manifest's fresh, unverified task, and no other task holds a capability to or a mapping of any of the slot's frames, is waiting to send a message granting one, or holds a reply slot for the old run. |
+| `launch_fixed`, `only_display_launches` | Launch capabilities never move: only the display server can start programs, and only the apps. Nothing can restart the display server, the input driver or the tests. |
+
+Revocation rests on one more invariant: every run of frames a task holds stays inside one
+slot's memory (`RunOK`), so taking back the runs that start in a slot takes back exactly
+that slot's frames and nothing else.
 
 And down to the hardware, in `LeanOS/Tables.lean`. The Lean kernel computes every
 translation-table word. If the machine layer stores those words (the `Installed`
@@ -56,10 +63,11 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 31 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 42 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
-gives mallory one more right or the framebuffer, a framebuffer address that overlaps the
-pool, a kernel page-table entry missing its execute-never bit, and so on) and checks that the proofs reject every one.
+gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
+pool, a kernel page-table entry missing its execute-never bit, a `start` that forgets to take back
+mappings, capabilities, waiting grants or reply slots, and so on) and checks that the proofs reject every one.
 
 `make test` checks that each theorem rests only on Lean's standard axioms (`propext`,
 `Classical.choice`, `Quot.sound`) and never on `sorry`.
@@ -87,7 +95,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   use kernel memory but cannot exhaust it. If the heap runs out, the kernel panics, which
   denies service but never breaks isolation.
 
-**`arch/boot.S` and `arch/kmain.c` (~530 lines)**
+**`arch/boot.S` and `arch/kmain.c` (~800 lines)**
 - Storing the tables: `mmu_init`, `tables_init` and `build_user_pages` must store each
   word Lean computes at its index, in the page-aligned arrays whose addresses they pass to
   Lean (a level-1 table, a level-2 table, and 16 level-3 tables in one array). This is exactly the `Installed` hypothesis. The kernel is identity-mapped,
@@ -114,14 +122,25 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   code, then its assets, where they sit in its own frames) with SHA-256 (`arch/sha256.c`,
   checked against the FIPS 180-4 test vector at every boot) and hands the digest to Lean.
   Lean decides; `only_verified_runs` holds whatever digest it is given.
-- Assets: `load_programs` copies each task's asset blob (fonts and icons, built by
+- Assets: `load_program` copies each task's asset blob (fonts and icons, built by
   `tools/mkassets.py`) into the start of that task's own spare run, next to its code. The
   blob is data the task reads; it grants nothing.
+- Loading on demand: at boot only the programs `autostart` names are loaded; the apps are
+  loaded when a `start` Reply names their slot (`load`). The machine layer must then, in
+  this order, rebuild every task's tables from the revoked state, clear all 256 of the
+  slot's frames, copy in exactly that slot's program and assets, reset its saved
+  registers, and measure it, before any task runs again. `start_revokes` says no other
+  task can reach those frames once the tables are rebuilt; that the clearing and loading
+  touch only the slot's frames is this code's job.
+- The kernel stack: the Lean kernel recurses once per list element, and nothing proves a
+  bound. The stack is sized for the largest lists the proofs allow (2 MiB for 8192
+  mappings), painted at boot, and its bottom is checked on every return to user mode, so
+  an overflow stops the machine instead of corrupting kernel memory silently.
 - User mode may read the processor's virtual counter (CNTKCTL_EL1.EL0VCTEN), for
   animations and timeouts. This gives no new power: a task could already time itself by
   counting loops. Timing side channels remain out of scope.
 
-- The framebuffer: `fb_alloc` asks the firmware for 640 x 480 x 32 through the mailbox,
+- The framebuffer: `fb_alloc` asks the firmware for 1024 x 600 x 32 through the mailbox,
   once at boot, and passes the address to Lean only if the reply matches the request.
   The mailbox is a DMA path, so it never leaves this layer. Lean checks the address is
   aligned and past the frame pool before any framebuffer page can be mapped (proved), but
@@ -159,8 +178,11 @@ QEMU's model of them, because leanos has only run under QEMU.
   input driver reads whatever arrives on the UART.
 - Colors: the pixel order is set so QEMU shows 0x00RRGGBB correctly. A real Pi 4 may
   swap red and blue; that needs checking on hardware.
-- Endpoint capabilities are fixed by the boot manifest; tasks cannot create or pass them
-  yet (stage 5). Granted frames cannot be revoked yet.
+- Endpoint, interrupt and launch capabilities are fixed by the boot manifest; tasks cannot
+  create or pass them yet (stage 6, next). Granted frames are taken back only when their
+  owner's slot is started again; a running app cannot take back one grant on its own yet.
+- Which task *runs* is proved only up to the scheduler: nothing proves that a started app
+  eventually gets to run, or that the display server starts what the user clicked.
 - Confinement is about capabilities. A task that holds a frame can still copy its bytes
   into a message it sends, so the proofs bound what each task can *hold*, and a task on a
   grant path (the server, here) is trusted with what passes through it.

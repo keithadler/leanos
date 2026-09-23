@@ -6,6 +6,7 @@ by `tools/mkassets.py` and keep their own licenses. Nothing GPL-licensed goes in
 | Asset | Files | Source | License |
 |---|---|---|---|
 | Inter 4.1 (Regular, Medium, SemiBold, Bold) | `assets/fonts/*.ttf` | [rsms/inter](https://github.com/rsms/inter) release 4.1 | SIL Open Font License 1.1, [`assets/fonts/OFL.txt`](assets/fonts/OFL.txt) |
+| JetBrains Mono 2.304 (Regular), Terminal's font | `assets/fonts/JetBrainsMono-Regular.ttf` | [JetBrains/JetBrainsMono](https://github.com/JetBrains/JetBrainsMono) tag v2.304 | SIL Open Font License 1.1, [`assets/fonts/JetBrainsMono-OFL.txt`](assets/fonts/JetBrainsMono-OFL.txt) |
 | Fluent Emoji 3D: Memo, File folder, Laptop, Gear, Locked | `assets/icons/*.png` | [microsoft/fluentui-emoji](https://github.com/microsoft/fluentui-emoji) | MIT, [`assets/icons/LICENSE`](assets/icons/LICENSE) |
 
 The fonts are rasterized and the icons scaled at build time by `tools/mkassets.py`, which

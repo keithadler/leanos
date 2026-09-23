@@ -45,3 +45,32 @@ for k in (0, 1, 2, 4):
 print("ok: the boot screen shows carol refused and the others verified")
 PY
 echo "ok: a one-bit change to carol's code keeps carol from running"
+
+# The same attack on an app that is not loaded at boot: Security is only loaded, and checked,
+# when the dock starts it. It must be refused then, and nothing else may change.
+python3 - <<'PY' || fail "could not tamper with the image"
+image = open("build/kernel8.img", "rb").read()
+app = open("build/user/security.bin", "rb").read()
+at = image.find(app)
+assert at >= 0 and image.find(app, at + 1) < 0, "Security's code is not in the image exactly once"
+patched = bytearray(image)
+patched[at + len(app) // 2] ^= 0x01
+open("build/kernel8-tampered.img", "wb").write(patched)
+print(f"tampered: flipped one bit of Security's code at image offset {at + len(app) // 2:#x}")
+PY
+
+out=$(python3 - <<'PY'
+import sys
+sys.path.insert(0, "test")
+from run import boot, mouse, wait_for
+steps = [mouse("d", 648, 548), mouse("u", 648, 548), wait_for("display: Security was refused")]
+sys.exit(boot(60, steps=steps, until="display: Security was refused", image="build/kernel8-tampered.img"))
+PY
+)
+status=$?
+echo "$out" | grep -E "^(leanos: security|display: (start|Security))" | sed 's/^/  | /'
+[ $status -eq 0 ] || fail "the tampered app was not refused (status $status)"
+echo "$out" | grep -qx "leanos: security refused: what was loaded does not match the boot manifest" || fail "Security was not refused"
+echo "$out" | grep -qx "display: boot checks shown: 5 verified, 0 refused" || fail "the boot checks changed"
+echo "$out" | grep -q "^security: " && fail "the tampered Security ran"
+echo "ok: a one-bit change to an app keeps it from running when it is started"

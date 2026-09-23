@@ -7,7 +7,7 @@ graphical interface; [ROADMAP.md](ROADMAP.md) has the plan.
 The part that decides who may touch what is Lean code: capabilities, address spaces,
 system calls and the scheduler. It is compiled to C and linked into the kernel image. The
 theorems in `LeanOS/Proofs.lean` are about that same code, so there is no separate
-specification that could drift from what runs. Underneath, about 1,000 lines of C and
+specification that could drift from what runs. Underneath, about 1,250 lines of C and
 assembly boot the board, write page tables and switch tasks, but make no access decisions.
 
 Today it boots the Pi 4 (tested on QEMU's `raspi4b` machine) to a graphical desktop at
@@ -16,9 +16,15 @@ owns the screen; an input driver in user space owns the serial port and its inte
 alice's Notes app draws in her own memory and lends the display a read-only view of it.
 mallory tries to reach the screen, the keyboard and everyone's memory, and cannot.
 
+The dock starts apps: **Terminal** answers from the kernel (`whoami`, `caps`, `boot`,
+`uptime`), **Settings** changes the background, and **Security** shows every program's
+boot check and what is proved. An app is loaded and checked against the manifest each time
+it starts; closing its window stops it, and starting it again first takes back everything
+its last run shared.
+
 ![The leanos boot screen](docs/logo.png)
 
-![The leanos desktop after typing into Notes and dragging it](docs/screen.png)
+![The leanos desktop with Notes, Terminal and Security open, on the Graphite background](docs/screen.png)
 
 The serial console of that boot, with `make test` typing "Hi!" and dragging the window:
 
@@ -27,9 +33,9 @@ leanos © 2026 Keith Adler
 leanos: Raspberry Pi 4, booting on EL1
 leanos: framebuffer 1024x600 at 0x3c100000
 leanos: MMU on
-leanos: Lean kernel initialized, 5 tasks
+leanos: Lean kernel initialized, 8 tasks
 leanos: alice verified, sha256 0x8cfef5a3...
-leanos: display verified, sha256 0xbdf8b6fe...
+leanos: display verified, sha256 0xa553d603...
 leanos: mallory verified, sha256 0x982a4b6c...
 leanos: carol verified, sha256 0x1c54ae17...
 leanos: input verified, sha256 0x7b5792ff...
@@ -43,9 +49,9 @@ mallory: map the framebuffer (capability 5, which is the display's) -> refused, 
 mallory: map the endpoint as memory -> refused, not allowed
 mallory: asked for every right on the endpoint, got send
 carol: asked for write+execute on my data frame, got -w-
-input: listening on the UART
 carol: jumping into the instruction I wrote in my data page
 leanos: carol stopped: instruction fetch not allowed at 0x80010000
+input: listening on the UART
 display: boot checks shown: 5 verified, 0 refused
 display: boot logo drawn
 display: desktop drawn on the 1024x600 framebuffer
@@ -55,11 +61,41 @@ mallory: ask the display for a window without pixels -> ok
 mallory: writing to the screen's physical address 0x3c100000 directly
 leanos: mallory stopped: data access not allowed at 0x3c100000
 alice: opened a 300x200 window, read-only, 59 pages -> ok
-leanos: idle, 3 tasks waiting (53 system calls, 153 timer ticks, 0 device interrupts, kernel heap 112240 bytes live, 138864 peak)
+leanos: idle, 3 tasks waiting (64 system calls, 151 timer ticks, 0 device interrupts, kernel heap 121920 bytes live, 148544 peak, stack 66960 bytes peak)
 display: key 'H' to alice
 display: key 'i' to alice
 display: key '!' to alice
 display: moved alice's window to (276, 208)
+```
+
+And `make test` starting the apps from the dock: Terminal (asked `caps` and `boot`), then
+Settings, closing Terminal and starting it again, then Security. Keystrokes are left out.
+
+```
+leanos: terminal started
+leanos: terminal verified, sha256 0xcf8ce892...
+display: start Terminal -> ok
+terminal: opened a window -> ok
+terminal: caps -> 6 capabilities
+terminal: boot -> 6 verified
+leanos: settings started
+leanos: settings verified, sha256 0xac41809c...
+display: start Settings -> ok
+settings: opened a window -> ok
+display: background 1, as Settings asked
+settings: background set to Graphite -> ok
+display: closed Terminal's window
+terminal: window closed, exiting
+leanos: terminal started
+leanos: terminal verified, sha256 0xcf8ce892...
+display: start Terminal -> ok
+terminal: opened a window -> ok
+terminal: caps -> 6 capabilities
+leanos: security started
+leanos: security verified, sha256 0x8157c3f4...
+display: start Security -> ok
+security: opened a window -> ok
+security: 8 verified, 0 refused, 0 not loaded
 ```
 
 alice, mallory and carol are test personas: a legitimate app, an attacker, and a program
@@ -84,7 +120,11 @@ can reach, under any sequence of system calls with any arguments:
 - **Only verified code runs**: every task starts unverified; the kernel lets it run only if
   the SHA-256 of what it was loaded with matches the boot manifest, and nothing can make a
   refused task run later. The boot screen shows each verdict. `make test` flips one bit of a
-  program in the image and checks it is refused.
+  program in the image and checks it is refused, at boot and when an app is started.
+- **Starting an app takes back its memory**: only the display server can start programs,
+  and only the apps. Before an app's slot is loaded again, no other task keeps a
+  capability to its frames, a mapping of them, a waiting message that would grant one, or
+  a reply meant for the old run.
 - **Devices and interrupts stay with their owners**: only the display server can reach the
   screen, only the input driver the UART and its interrupt, and an interrupt wakes only a
   holder of its capability.
@@ -92,7 +132,7 @@ can reach, under any sequence of system calls with any arguments:
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
 MMU proves that user mode reaches exactly its own mappings, only the frame pool and the
 framebuffer (never the kernel or the peripherals), and shares a physical page with another
-task only along a grant path. `make mutants` breaks the kernel in 31 ways and checks the
+task only along a grant path. `make mutants` breaks the kernel in 42 ways and checks the
 proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
@@ -112,7 +152,7 @@ make run      # boot it on QEMU's Pi 4, headless: serial here, screen in the bro
 ```
 
 ```bash
-make test     # proofs, axiom check, boot, the transcript, the pixels on screen, and a tampered image
+make test     # proofs, axiom check, boot, the apps, the transcript, the pixels on screen, and tampered images
 ```
 
 To run it in a browser, start `python3 tools/serve.py` and open http://127.0.0.1:8796.
@@ -132,8 +172,8 @@ where leanos's input driver reads them (QEMU's Pi 4 has no USB).
 | `rt/runtime.c` | The bare-metal slice of Lean's runtime: allocator, reference counts, closures. |
 | `arch/boot.S` | Entry, exception vectors, entering and leaving user mode. |
 | `arch/kmain.c` | Boot, MMU, interrupt controller, timer; carries out what the Lean kernel returns. |
-| `user/` | The display server, the input driver, alice's Notes, and the test tasks mallory and carol; `gfx.h` draws, `font5x7.txt` is the font. |
-| `test/` | The boot check (transcript and screen), the axiom check, and the mutants. |
+| `user/` | The display server, the input driver, the apps (alice's Notes, Terminal, Settings, Security), and the test tasks mallory and carol; `gfx.h` draws, `assets.h` reads fonts and icons, `app.h` is the client side of the window protocol. |
+| `test/` | The boot check (transcript and screen), the apps, tampering, the axiom check, and the mutants. |
 | `tools/serve.py` | The browser console: runs QEMU and streams its serial output. |
 
 A trap works like this: the machine layer saves the task's registers and passes the Lean
@@ -162,15 +202,16 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 | 11 | `reply(slot, w0, w1, w2)` | answers a caller; carries no capability and never blocks |
 | 12 | `irqwait(cap)` | waits for the interrupt an interrupt capability names |
 | 13 | `irqack(cap)` | lets that interrupt fire again |
-| 14 | `bootinfo(task)` | whether that task's code matched the boot manifest, and the start of its hash |
+| 14 | `bootinfo(task)` | whether that task's code matched the boot manifest, the start of its hash, and whether it is running |
+| 15 | `start(cap)` | starts the program slot a launch capability names, if it is not running: takes back what its last run shared, then has it loaded and checked |
 
-Capabilities come in three kinds. Frame capabilities name a run of physical frames and carry read, write and execute rights.
-Each task starts with 64 frames (code, data, stack and 28 spare pages) and a 32 MiB
+Capabilities come in four kinds. Frame capabilities name a run of physical frames and carry read, write and execute rights.
+Each task starts with 256 frames (16 code, 8 data, 4 stack and 228 spare pages) and a 32 MiB
 window to map them in. Endpoint capabilities carry
 receive, send and grant rights, and a badge the kernel delivers with every message.
-Interrupt capabilities name an interrupt line; like endpoints, they are fixed by the boot
-manifest.
+Interrupt capabilities name an interrupt line, and launch capabilities a program slot;
+like endpoints, they are fixed by the boot manifest.
 
 ## License
 
-MIT, © 2026 Keith Adler. See [LICENSE](LICENSE). The font and icons keep their own licenses (OFL, MIT), listed in [THIRD_PARTY.md](THIRD_PARTY.md); nothing GPL-licensed goes into the system image.
+MIT, © 2026 Keith Adler. See [LICENSE](LICENSE). The fonts and icons keep their own licenses (OFL, MIT), listed in [THIRD_PARTY.md](THIRD_PARTY.md); nothing GPL-licensed goes into the system image.

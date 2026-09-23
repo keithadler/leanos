@@ -71,8 +71,14 @@ def mouse(kind, x, y):
     return f"\x1bm{kind}{x:03d}{y:03d}".encode()
 
 
+def wait_for(prefix):
+    """A step that types nothing: it waits until a serial line starts with `prefix`."""
+    return ("wait", prefix)
+
+
 def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None, image=None):
-    """steps: bytes to type once the system is idle, each followed by a short pause.
+    """steps: bytes to type once the system is idle, each followed by a short pause, or
+    wait_for(prefix) steps, which wait for a serial line.
     until: after the steps, wait for a serial line starting with this before the capture.
     snaps: {line prefix: file name}: also capture the screen, without stopping, when a line
     starting with that prefix appears."""
@@ -85,6 +91,9 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
     deadline = time.monotonic() + timeout
     status = None
     waiting_for = None
+    import threading
+    seen = []
+    cond = threading.Condition()
 
     def capture():
         ppm = os.path.join(ROOT, "build", "screen.ppm")
@@ -100,6 +109,9 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
             line = raw.decode(errors="replace").rstrip("\r\n")
             if line:
                 on_line(line)
+                with cond:
+                    seen.append(line)
+                    cond.notify_all()
             for prefix, name in (snaps or {}).items():
                 if line.startswith(prefix):
                     ppm = os.path.join(ROOT, "build", name + ".ppm")
@@ -113,10 +125,15 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
             if line.startswith("leanos: idle") and steps:
                 def type_steps():
                     for chunk in steps:
+                        if isinstance(chunk, tuple):
+                            with cond:
+                                cond.wait_for(lambda: any(l.startswith(chunk[1]) for l in seen),
+                                              timeout=max(0, deadline - time.monotonic()))
+                            time.sleep(0.2)
+                            continue
                         proc.stdin.write(chunk)
                         proc.stdin.flush()
                         time.sleep(0.15)
-                import threading
                 threading.Thread(target=type_steps, daemon=True).start()
                 waiting_for = until or "\0"
                 continue
@@ -147,10 +164,27 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
 DEMO_STEPS = [b"H", b"i", b"!", mouse("v", 120, 88), mouse("d", 120, 88), mouse("v", 200, 150),
               mouse("v", 300, 220), mouse("u", 300, 220)]
 
+# The apps: start Terminal from the dock and ask it things, pick a background in Settings,
+# close Terminal with its red button and start it again, then open Security.
+def keys(s):
+    return [c.encode() for c in s]
+
+
+APP_STEPS = [mouse("d", 512, 548), mouse("u", 512, 548), wait_for("terminal: opened"),
+             *keys("caps\r"), wait_for("terminal: caps"), *keys("boot\r"), wait_for("terminal: boot"),
+             mouse("d", 580, 548), mouse("u", 580, 548), wait_for("settings: opened"),
+             mouse("d", 356, 268), mouse("u", 356, 268), wait_for("settings: background"),
+             mouse("d", 154, 127), mouse("u", 154, 127), wait_for("terminal: window closed"),
+             mouse("v", 300, 300), mouse("d", 512, 548), mouse("u", 512, 548), wait_for("terminal: opened"),
+             *keys("caps\r"), wait_for("terminal: caps"),
+             mouse("d", 648, 548), mouse("u", 648, 548), wait_for("security: 8")]
+
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     demo = "--demo" in sys.argv
+    apps = "--apps" in sys.argv
     image = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--image=")), None)
-    sys.exit(boot(float(args[0]) if args else 30,
-                  steps=DEMO_STEPS if demo else (), until="display: moved" if demo else None,
+    steps = DEMO_STEPS if demo else APP_STEPS if apps else ()
+    until = "display: moved" if demo else "security: 8" if apps else None
+    sys.exit(boot(float(args[0]) if args else 30, steps=steps, until=until,
                   snaps={"display: boot logo drawn": "logo"}, image=image))

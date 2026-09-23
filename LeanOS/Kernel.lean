@@ -46,11 +46,13 @@ def rw : Rights := ⟨true, true, false⟩
 end Rights
 
 /-- What a capability names: a run of `count` physical 4 KiB frames starting at frame
-`base`, an endpoint messages pass through, or interrupt line `n`. -/
+`base`, an endpoint messages pass through, interrupt line `n`, or the right to start (and
+restart) the program in slot `k`. -/
 inductive Obj where
   | frames (base count : Nat)
   | endpoint (e : Nat)
   | irq (n : Nat)
+  | launch (k : Nat)
 
 /-- A capability: an object, what its holder may do with it, and a badge. The badge of an
 endpoint capability is delivered with every message sent through it, so a receiver knows
@@ -174,8 +176,8 @@ def maxWrite : Nat := 256
 without bound by deriving or being granted capabilities. -/
 def maxCaps : Nat := 64
 
-/-- The number of tasks in the manifest, and the most the frame pool has room for. -/
-def numTasks : Nat := 5
+/-- The number of program slots in the manifest, and the most the frame pool has room for. -/
+def numTasks : Nat := 8
 def maxTasks : Nat := 8
 
 /-- Each task owns 256 frames (1 MiB) of the pool: task `i` owns frames `256i` to `256i+255`. -/
@@ -211,6 +213,7 @@ def owner (f : Nat) : Nat :=
   if f < poolFrames then f / framesPerTask else if f < devBase then displayTask else inputTask
 def epCap (e : Nat) (recv send grant : Bool) (badge : Nat) : Cap := ⟨.endpoint e, ⟨recv, send, grant⟩, badge⟩
 def irqCap (n : Nat) : Cap := ⟨.irq n, ⟨true, true, false⟩, 0⟩
+def launchCap (k : Nat) : Cap := ⟨.launch k, ⟨true, true, false⟩, 0⟩
 
 /-- Task `i`'s frames, as four runs: 16 pages of code (read/execute), 8 of data, 4 of
 stack, and 228 spare pages it holds a capability to but has not mapped. The machine layer
@@ -220,19 +223,29 @@ def frameCaps (i : Nat) : List Cap :=
   runCap (256 * i) 16 Rights.rx :: runCap (256 * i + 16) 8 Rights.rw ::
     runCap (256 * i + 24) 4 Rights.rw :: runCap (256 * i + 28) 228 Rights.rw :: .nil
 
-/-- Endpoint 0 is the display server's inbox. Task 0 (alice) may send to it and grant
-frames, with badge 1. Task 1 (the display server) receives from it, and holds the
-framebuffer as capability 5. Task 2 (mallory) may send to it, without grant, with badge 2.
-Task 3 (carol) holds no endpoint. Task 4 (the input driver) may send to it with badge 3,
-and holds the UART's registers (capability 5) and its interrupt (capability 6). Each
-endpoint capability is capability 4 of its task. -/
+/-- Endpoint 0 is the display server's inbox. Task 0 (alice's Notes) may send to it and
+grant frames, with badge 1. Task 1 (the display server) receives from it, holds the
+framebuffer as capability 5, and may start Notes and the three apps (capabilities 6 to 9).
+Task 2 (mallory) may send to it, without grant, with badge 2. Task 3 (carol) holds no
+endpoint. Task 4 (the input driver) may send to it with badge 3, and holds the UART's
+registers (capability 5) and its interrupt (capability 6). Tasks 5 (Terminal), 6
+(Settings) and 7 (Security) may send and grant with badges 5, 6 and 7. Each endpoint
+capability is capability 4 of its task. -/
 def initCaps : Nat → List Cap
   | 0 => snoc (frameCaps 0) (epCap 0 false true true 1)
-  | 1 => snoc (snoc (frameCaps 1) (epCap 0 true false false 0)) (runCap poolFrames fbPages Rights.rw)
+  | 1 => snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 1) (epCap 0 true false false 0))
+           (runCap poolFrames fbPages Rights.rw)) (launchCap 0)) (launchCap 5)) (launchCap 6)) (launchCap 7)
   | 2 => snoc (frameCaps 2) (epCap 0 false true false 2)
   | 4 => snoc (snoc (snoc (frameCaps 4) (epCap 0 false true false 3)) (runCap devBase devPages Rights.rw))
            (irqCap uartIrq)
+  | 5 => snoc (frameCaps 5) (epCap 0 false true true 5)
+  | 6 => snoc (frameCaps 6) (epCap 0 false true true 6)
+  | 7 => snoc (frameCaps 7) (epCap 0 false true true 7)
   | i => frameCaps i
+
+/-- The programs the machine layer loads and checks at boot. The apps in slots 5 (Terminal),
+6 (Settings) and 7 (Security) wait until the display server launches them. -/
+def autostart (i : Nat) : Bool := i < 5
 
 /-- Code at pages 0–15, data at 16–23, the stack in the last four pages of the window. -/
 def initMaps (i : Nat) : List Mapping :=
@@ -380,10 +393,13 @@ structure Reply where
   remap : Bool
   /-- unmask interrupt line `unmask - 1` at the interrupt controller (0 = none) -/
   unmask : Nat
+  /-- load the program for slot `load - 1` into its frames, measure it and verify it; every
+  task's page tables must be rebuilt (0 = none) -/
+  load : Nat
 
 /-- The call returns to the caller with result registers `r`. -/
 def ret (s : KState) (t : Task) (r : List Nat) : Reply :=
-  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0⟩
+  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0, 0⟩
 
 /-- Where the frame pool starts: frame `f < poolFrames` is at `frameBase + f * pageSize`. -/
 def frameBase : Nat := 0x04000000
@@ -416,13 +432,13 @@ def sysMap (s : KState) (t : Task) (ci vpn : Nat) : Reply :=
       if vpn + count ≤ userPages && c.rights.r && validRun s base count then
         ⟨setTask s s.cur { t with maps := app (runMaps vpn base c.rights count)
                                                (dropRange vpn count t.maps),
-                                  result := 0 :: .nil }, 0, 0, true, 0⟩
+                                  result := 0 :: .nil }, 0, 0, true, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
 /-- Unmap pages `vpn` to `vpn + count - 1`. -/
 def sysUnmap (s : KState) (t : Task) (vpn count : Nat) : Reply :=
-  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0⟩
+  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0, 0⟩
 
 /-- The object a derived capability names: for a run of frames, the `count` frames from
 `offset` on (`count = 0`: all of them from `offset` on), if they lie inside the run. -/
@@ -448,8 +464,8 @@ def sysDerive (s : KState) (t : Task) (ci bits offset count : Nat) : Reply :=
           (0 :: len t.caps :: .nil)
       else ret s t (eFull :: .nil)
 
-/-- x1 = rights bits, x2 = kind (0 frames, 1 endpoint, 2 interrupt), x3 = number of frames,
-or the interrupt line. -/
+/-- x1 = rights bits, x2 = kind (0 frames, 1 endpoint, 2 interrupt, 3 launch), x3 = number of
+frames, the interrupt line, or the slot. -/
 def sysCapInfo (s : KState) (t : Task) (ci : Nat) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
@@ -458,6 +474,7 @@ def sysCapInfo (s : KState) (t : Task) (ci : Nat) : Reply :=
     | .frames _ n => ret s t (0 :: c.rights.toBits :: 0 :: n :: .nil)
     | .endpoint _ => ret s t (0 :: c.rights.toBits :: 1 :: 0 :: .nil)
     | .irq n => ret s t (0 :: c.rights.toBits :: 2 :: n :: .nil)
+    | .launch k => ret s t (0 :: c.rights.toBits :: 3 :: k :: .nil)
 
 /-- Virtual page `v` is mapped with read rights. -/
 def readableAt : List Mapping → Nat → Bool
@@ -476,7 +493,7 @@ def sysWrite (s : KState) (t : Task) (va n : Nat) : Reply :=
   else if n ≤ maxWrite ∧ userBase ≤ va ∧
       allReadable t.maps ((va - userBase) / pageSize)
         ((va + n - 1 - userBase) / pageSize + 1 - (va - userBase) / pageSize) = true then
-    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0⟩
+    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0, 0⟩
   else ret s t (eBadArg :: .nil)
 
 /-- The capability a send carries: none if `gi = 0`, else capability `gi - 1`, which must be
@@ -515,12 +532,12 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply
               | some u' =>
                 if call then
                   ⟨schedule (setTask (setTask s j u') s.cur { t with status := .awaiting j, result := .nil }),
-                    0, 0, false, 0⟩
+                    0, 0, false, 0, 0⟩
                 else ret (setTask s j u') t (0 :: .nil)
               | none => ret s t (eFull :: .nil)
             | none => ret s t (eBadArg :: .nil)
           | none =>
-            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0⟩
+            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -541,11 +558,11 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) : Reply :=
             | some t' =>
               let u' : Task := if m.call then { u with status := .awaiting s.cur, result := .nil }
                                else { u with status := .ready, result := 0 :: .nil }
-              ⟨setTask (setTask s j u') s.cur t', 0, 0, false, 0⟩
+              ⟨setTask (setTask s j u') s.cur t', 0, 0, false, 0, 0⟩
             | none => ret s t (eFull :: .nil)
           | none => ret s t (eBadArg :: .nil)
         | none =>
-          ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false, 0⟩
+          ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -582,7 +599,7 @@ def sysIrqWait (s : KState) (t : Task) (ci : Nat) : Reply :=
     match c.obj with
     | .irq n =>
       if hasLine n s.pending then ret { s with pending := dropLine n s.pending } t (0 :: .nil)
-      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0⟩
+      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0, 0⟩
     | _ => ret s t (eBadArg :: .nil)
 
 /-- The holder of an interrupt has dealt with it: let it fire again. -/
@@ -592,6 +609,78 @@ def sysIrqAck (s : KState) (t : Task) (ci : Nat) : Reply :=
   | some c =>
     match c.obj with
     | .irq n => { ret s t (0 :: .nil) with unmask := n + 1 }
+    | _ => ret s t (eBadArg :: .nil)
+
+/-! ## Starting programs, and taking back what they shared -/
+
+/-- A slot whose program may be (re)started: never started, or stopped. -/
+def startable : Status → Bool
+  | .unverified => true
+  | .dead => true
+  | _ => false
+
+/-- Frame `f` is one of slot `k`'s own frames. -/
+def inSlot (k f : Nat) : Bool := f < poolFrames && f / framesPerTask == k
+
+/-- A capability to frames in slot `k`. Runs never cross from one slot's frames into
+anything else (`RunOK` in the proofs), so looking at the first frame is enough. -/
+def capInSlot (k : Nat) (c : Cap) : Bool :=
+  match c.obj with
+  | .frames b _ => inSlot k b
+  | _ => false
+
+def dropCaps (k : Nat) : List Cap → List Cap
+  | .nil => .nil
+  | c :: cs => if capInSlot k c then dropCaps k cs else c :: dropCaps k cs
+
+def dropMaps (k : Nat) : List Mapping → List Mapping
+  | .nil => .nil
+  | m :: ms => if inSlot k m.frame then dropMaps k ms else m :: dropMaps k ms
+
+/-- A waiting sender's message loses a granted capability into slot `k`. -/
+def scrubStatus (k : Nat) : Status → Status
+  | .sending e m =>
+    .sending e { m with grant := match m.grant with
+                   | some c => if capInSlot k c then none else some c
+                   | none => none }
+  | st => st
+
+/-- Forget slot `k` as a caller waiting for a reply. The slot keeps its place, so the
+server's other reply slots keep their numbers, but a reply to it now wakes nobody: not the
+program that called, which is gone, and not a later run in the same slot. -/
+def forgetCaller (k : Nat) : List Nat → List Nat
+  | .nil => .nil
+  | x :: xs => (if x == k then noTask else x) :: forgetCaller k xs
+
+/-- Take back from a task everything that reaches into slot `k`'s frames, and any reply it
+owes slot `k`'s previous run. -/
+def revokeTask (k : Nat) (t : Task) : Task :=
+  { t with caps := dropCaps k t.caps, maps := dropMaps k t.maps, status := scrubStatus k t.status,
+           callers := forgetCaller k t.callers }
+
+def revokeAll (k : Nat) : List Task → List Task
+  | .nil => .nil
+  | t :: ts => revokeTask k t :: revokeAll k ts
+
+/-- Start (or restart) the program in slot `k`, named by launch capability `ci`. First every
+task loses whatever reaches into slot `k`'s frames, so nothing its previous run shared
+survives; then the slot gets the manifest's fresh task, unverified. The machine layer
+clears the frames, loads the program, measures it, and it runs only if it verifies. -/
+def sysStart (s : KState) (t : Task) (ci : Nat) : Reply :=
+  match nth? t.caps ci with
+  | none => ret s t (eNoCap :: .nil)
+  | some c =>
+    match c.obj with
+    | .launch k =>
+      match nth? s.tasks k with
+      | some u =>
+        if startable u.status && !(k == s.cur) then
+          let s1 : KState := setTask { s with tasks := revokeAll k s.tasks } k (mkTask k)
+          match nth? s1.tasks s.cur with
+          | some t1 => ⟨setTask s1 s.cur { t1 with result := 0 :: .nil }, 0, 0, true, 0, k + 1⟩
+          | none => ret s t (eBadArg :: .nil)
+        else ret s t (eBadArg :: .nil)
+      | none => ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
 /-- The first task (from index `j` on) waiting for interrupt line `n`. -/
@@ -616,7 +705,8 @@ def irqFired (s : KState) (n : Nat) : KState :=
 def irqLines : List Nat := uartIrq :: .nil
 
 /-- Task number `i`'s boot check: x1 = 0 not measured yet, 1 matches the manifest, 2
-refused; x2 and x3 = the first two words of its measured hash. -/
+refused; x2 and x3 = the first two words of its measured hash; x4 = 0 not started, 1
+running, 2 stopped. -/
 def sysBootInfo (s : KState) (t : Task) (i : Nat) : Reply :=
   match nth? s.tasks i with
   | none => ret s t (eBadArg :: .nil)
@@ -630,17 +720,21 @@ def sysBootInfo (s : KState) (t : Task) (i : Nat) : Reply :=
     let st := match u.hash with
       | .nil => 0
       | _ => if eqList u.hash (expectedHash i) then 1 else 2
-    ret s t (0 :: st :: w0 :: w1 :: .nil)
+    let run := match u.status with
+      | .unverified => 0
+      | .dead => 2
+      | _ => 1
+    ret s t (0 :: st :: w0 :: w1 :: run :: .nil)
 
 /-- The system calls of a running task. -/
 def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match num with
   | 0 => sysWrite s t a0 a1
-  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0⟩
+  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0⟩
   | 2 => sysMap s t a0 a1
   | 3 => sysUnmap s t a0 a1
   | 4 => sysDerive s t a0 a1 a2 a3
-  | 5 => ⟨killCurrent s, 0, 0, false, 0⟩
+  | 5 => ⟨killCurrent s, 0, 0, false, 0, 0⟩
   | 6 => sysCapInfo s t a0
   | 7 => ret s t (0 :: s.cur :: .nil)
   | 8 => sysSend s t a0 a1 a2 a3 a4 false
@@ -650,6 +744,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 12 => sysIrqWait s t a0
   | 13 => sysIrqAck s t a0
   | 14 => sysBootInfo s t a0
+  | 15 => sysStart s t a0
   | _ => ret s t (eNoCall :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
@@ -657,14 +752,15 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   4 derive(cap, rights, offset, count) · 5 exit · 6 capinfo(cap) · 7 whoami
   8 send(cap, w0, w1, w2, grant) · 9 recv(cap) · 10 call(cap, w0, w1, w2, grant)
   11 reply(slot, w0, w1, w2) · 12 irqwait(cap) · 13 irqack(cap) · 14 bootinfo(task)
+  15 start(cap)
 Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with
-  | none => ⟨s, 0, 0, false, 0⟩
+  | none => ⟨s, 0, 0, false, 0, 0⟩
   | some t =>
     match t.status with
     | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0⟩  -- only a running task makes system calls
+    | _ => ⟨s, 0, 0, false, 0, 0⟩  -- only a running task makes system calls
 
 /-- The machine layer has loaded task `j`'s result registers; forget them. -/
 def clearResult (s : KState) (j : Nat) : KState :=
@@ -693,6 +789,8 @@ before passing it in. -/
   | some n => n
   | none => 0
 @[export leanos_reply_unmask] def exRUnmask (r : Reply) : Nat := r.unmask
+@[export leanos_reply_load] def exRLoad (r : Reply) : Nat := r.load
+@[export leanos_autostart] def exAutostart (i : Nat) : Bool := autostart i
 /-- The screen the machine layer asks the firmware for. -/
 @[export leanos_fb_width] def exFbWidth (u : Nat) : Nat := fbWidth + u * 0
 @[export leanos_fb_height] def exFbHeight (u : Nat) : Nat := fbHeight + u * 0

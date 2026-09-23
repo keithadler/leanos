@@ -3,7 +3,7 @@
 #   make          build build/leanos.elf (and check every proof)
 #   make run      boot it in QEMU, headless (serial on the terminal; watch the screen in
 #                 the browser console, tools/serve.py)
-#   make test     boot it and check the transcript
+#   make test     boot it, start the apps, and check the transcripts and the screens
 #   make proofs   check the proofs only
 #   make mutants  break the kernel on purpose and check the proofs notice
 
@@ -30,13 +30,15 @@ INIT_C := $(patsubst %,build/c/Init_%.c,$(INIT_MODULES))
 INIT_O := $(INIT_C:.c=.o)
 
 KERNEL_LEAN_C := .lake/build/ir/LeanOS/Kernel.c
-USER_PROGS := alice display mallory carol input
+USER_PROGS := alice display mallory carol input terminal settings security
 USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
 ARCH_O := build/boot.o build/kmain.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
 
 .PHONY: all run test mutants proofs clean
-all: build/assets/display.bin build/assets/alice.bin build/kernel8.img proofs
+ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security)
+
+all: $(ASSET_BLOBS) build/kernel8.img proofs
 
 # The asset blobs are real outputs, not intermediates: a missing one must be rebuilt.
 .PRECIOUS: build/assets/%.bin
@@ -46,8 +48,10 @@ proofs: LeanOS/Manifest.lean
 
 # The boot manifest: what each task must be loaded with (code, then assets), hashed.
 MANIFEST_INPUTS := build/user/alice.bin+build/assets/alice.bin build/user/display.bin+build/assets/display.bin \
-  build/user/mallory.bin build/user/carol.bin build/user/input.bin
-LeanOS/Manifest.lean: tools/mkmanifest.py $(USER_BINS) build/assets/display.bin build/assets/alice.bin
+  build/user/mallory.bin build/user/carol.bin build/user/input.bin \
+  build/user/terminal.bin+build/assets/terminal.bin build/user/settings.bin+build/assets/settings.bin \
+  build/user/security.bin+build/assets/security.bin
+LeanOS/Manifest.lean: tools/mkmanifest.py $(USER_BINS) $(ASSET_BLOBS)
 	python3 tools/mkmanifest.py $@ $(MANIFEST_INPUTS)
 
 $(KERNEL_LEAN_C): LeanOS/Kernel.lean LeanOS/Manifest.lean
@@ -94,11 +98,28 @@ build/assets/display.bin: tools/mkassets.py Makefile $(wildcard assets/*/*)
 	@mkdir -p build/assets
 	python3 tools/mkassets.py $@ $(DISPLAY_ASSETS)
 
+TERMINAL_ASSETS := font:1:$(FONTS)/JetBrainsMono-Regular.ttf:14
+SETTINGS_ASSETS := font:1:$(FONTS)/Inter-Regular.ttf:14 font:2:$(FONTS)/Inter-SemiBold.ttf:16 \
+  font:3:$(FONTS)/Inter-Regular.ttf:12
+SECURITY_ASSETS := $(SETTINGS_ASSETS)
+
 build/assets/alice.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
 	@mkdir -p build/assets
 	python3 tools/mkassets.py $@ $(ALICE_ASSETS)
 
-build/boot.o: arch/boot.S $(USER_BINS) build/assets/display.bin build/assets/alice.bin
+build/assets/terminal.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
+	@mkdir -p build/assets
+	python3 tools/mkassets.py $@ $(TERMINAL_ASSETS)
+
+build/assets/settings.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
+	@mkdir -p build/assets
+	python3 tools/mkassets.py $@ $(SETTINGS_ASSETS)
+
+build/assets/security.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
+	@mkdir -p build/assets
+	python3 tools/mkassets.py $@ $(SECURITY_ASSETS)
+
+build/boot.o: arch/boot.S $(USER_BINS) $(ASSET_BLOBS)
 	@mkdir -p build
 	$(CC) $(TARGET) -c $< -o $@
 
@@ -106,7 +127,7 @@ build/user/font.h: user/font5x7.txt tools/mkfont.py
 	@mkdir -p build/user
 	python3 tools/mkfont.py $< $@
 
-build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/user.ld build/user/font.h
+build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/user.ld build/user/font.h
 	@mkdir -p build/user
 	$(CC) $(UCFLAGS) -Ibuild/user -c $< -o build/user/$*.o
 	$(LD) -T user/user.ld --gc-sections build/user/$*.o -o $@
@@ -129,6 +150,7 @@ run: build/kernel8.img
 
 test: all
 	./test/boot.sh
+	./test/apps.sh
 	./test/tamper.sh
 
 # Break the kernel in known ways and check the proofs catch every one (slow).

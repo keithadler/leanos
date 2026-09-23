@@ -32,3 +32,7 @@ open LeanOS
 #print axioms uart_irq_only_input
 #print axioms only_verified_runs
 #print axioms verify_refuses_mismatch
+#print axioms confined
+#print axioms start_revokes
+#print axioms launch_fixed
+#print axioms only_display_launches

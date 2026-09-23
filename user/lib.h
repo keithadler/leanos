@@ -8,7 +8,7 @@ struct res { u64 x[7]; };
 #define status x[0]
 
 enum { SYS_WRITE, SYS_YIELD, SYS_MAP, SYS_UNMAP, SYS_DERIVE, SYS_EXIT, SYS_CAPINFO, SYS_WHOAMI,
-       SYS_SEND, SYS_RECV, SYS_CALL, SYS_REPLY, SYS_IRQWAIT, SYS_IRQACK, SYS_BOOTINFO };
+       SYS_SEND, SYS_RECV, SYS_CALL, SYS_REPLY, SYS_IRQWAIT, SYS_IRQACK, SYS_BOOTINFO, SYS_START };
 enum { OK = 0, NO_CAP = 1, BAD_ARG = 2, NO_CALL = 3, FULL = 4 };
 /* Frame rights: read, write, execute. Endpoint rights use the same bits for receive,
    send, grant. */
@@ -16,7 +16,7 @@ enum { R = 1, W = 2, X = 4 };
 enum { RECV = 1, SEND = 2, GRANT = 4 };
 
 /* Every task's window: code at pages 0-15, data at 16-23, stack at the top. Capabilities
-   0-3 are runs of frames: code (16 pages), data (8), stack (4) and spare (36, unmapped).
+   0-3 are runs of frames: code (16 pages), data (8), stack (4) and spare (228, unmapped).
    Capability 4, if any, is the task's endpoint. */
 #define DATA PAGE(16)
 #define PAGE(n) (0x80000000UL + (n) * 4096UL)

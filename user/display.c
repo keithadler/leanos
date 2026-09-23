@@ -9,6 +9,14 @@
    The input driver sends it keys and mouse reports (badge 3). Keys go to the focused window;
    a click focuses and raises a window, and dragging its title bar moves it. The sender's
    badge, which the kernel sets, names every window, so no client can pass for another.
+   A click inside a window goes to its client (EV_DOWN, window coordinates); a click on the
+   red button asks the client to close (EV_CLOSE), and the window goes at once.
+
+   It holds a launch capability for each app (capabilities 6 to 9: Notes, Terminal,
+   Settings, Security). Clicking an app in the dock starts it if it is not running; the
+   kernel first takes back everything the app's last run shared, including its window, so
+   the server drops that window before it asks. SET (w0 = 3) changes the desktop, and only
+   Settings (badge 6) may ask.
 
    Its fonts and icons were loaded at boot into the start of its spare run (capability 3),
    which it maps read-only. The desktop's background is a pattern it computes itself. */
@@ -18,7 +26,8 @@
 
 #define FRAMEBUFFER 5
 #define FB_PAGE 1024
-#define WIN_PAGE 2048   /* window k's pixels are mapped at WIN_PAGE + 64 k */
+#define WIN_PAGE 2048   /* window k's pixels are mapped at WIN_PAGE + WIN_MAX_PAGES k */
+#define WIN_MAX_PAGES 160
 #define ASSET_PAGE 4096
 #define MAX_WIN 4
 #define TITLE_H 30
@@ -27,9 +36,12 @@
 #define H 600
 #define RADIUS 12
 
-enum { OP_OPEN = 1, OP_WAIT = 2 };
-enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4 };
-enum { BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3 };
+enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3 };
+enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5 };
+enum { BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
+       BADGE_SECURITY = 7 };
+enum { SET_BACKGROUND = 1 };
+#define LAUNCH_FIRST 6  /* launch capabilities: Notes, Terminal, Settings, Security */
 enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
 
 /* The dock. */
@@ -42,6 +54,14 @@ enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
 #define DOCK_X ((W - DOCK_W) / 2)
 #define DOCK_Y (H - DOCK_H - 10)
 static const char *const dock_names[DOCK_N] = {"Notes", "Files", "Terminal", "Settings", "Security"};
+static const int dock_slot[DOCK_N] = {0, -1, 5, 6, 7};    /* -1: not installed */
+static const int dock_launch[DOCK_N] = {LAUNCH_FIRST, -1, LAUNCH_FIRST + 1, LAUNCH_FIRST + 2, LAUNCH_FIRST + 3};
+
+/* The backgrounds Settings offers: top and bottom of the gradient, and the glow's color. */
+#define NTHEME 3
+static const unsigned theme_top[NTHEME] = {0x1e204e, 0x24262c, 0x3a2a5a};
+static const unsigned theme_bottom[NTHEME] = {0x0e4656, 0x0c0d10, 0xd98a5c};
+static const unsigned theme_glow[NTHEME] = {0x606ee6, 0x5a6482, 0xe07aa0};
 
 struct win {
     int used;
@@ -49,6 +69,7 @@ struct win {
     int x, y;                   /* outer frame */
     struct surface content;
     char title[9];
+    int closing;                /* closed on screen; the client hears EV_CLOSE when it next waits */
     u64 slot;                   /* reply slot + 1 while the client waits, else 0 */
     u64 queue[16][3];
     int qhead, qlen;
@@ -71,13 +92,25 @@ struct state {
     int drag, grab_x, grab_y, drag_x0, drag_y0;
     int hover;                  /* dock icon under the pointer + 1, or 0 */
     int verified;               /* how many programs the boot checks passed */
+    int theme;
 };
 
 static void say(struct line *l) { put_s(l, "\n"); flush(l); }
 
 static const char *name_of(u64 badge) {
-    return badge == BADGE_ALICE ? "alice" : badge == BADGE_MALLORY ? "mallory" : "unknown";
+    return badge == BADGE_ALICE ? "alice" : badge == BADGE_MALLORY ? "mallory"
+         : badge == BADGE_TERMINAL ? "Terminal" : badge == BADGE_SETTINGS ? "Settings"
+         : badge == BADGE_SECURITY ? "Security" : "unknown";
 }
+
+/* The program slot a badge belongs to: the manifest gives each app its slot's number as its
+   badge, except Notes (slot 0, badge 1). */
+static int slot_of(u64 badge) {
+    return badge == BADGE_ALICE ? 0 : badge >= BADGE_TERMINAL && badge <= BADGE_SECURITY ? (int)badge : -1;
+}
+
+/* 0 not started, 1 running, 2 stopped, as the kernel sees slot k now. */
+static u64 run_state(int k) { return k < 0 ? 0 : sys1(SYS_BOOTINFO, (u64)k).x[4]; }
 
 /* The leanos mark: a rounded tile, indigo to teal, with a white lambda. */
 static void logo(struct surface *s, int x, int y, int size) {
@@ -239,9 +272,8 @@ static void top_bar(struct state *st) {
 static int dock_icon_x(int i) { return DOCK_X + DOCK_PAD + i * (ICON + ICON_GAP); }
 
 static int running(struct state *st, int i) {
-    if (i != 0) return 0;
-    for (int k = 0; k < MAX_WIN; k++) if (st->win[k].used && st->win[k].badge == BADGE_ALICE) return 1;
-    return 0;
+    (void)st;
+    return run_state(dock_slot[i]) == 1;
 }
 
 static void dock(struct state *st) {
@@ -264,7 +296,8 @@ static void dock(struct state *st) {
 /* The background: indigo at the top to deep teal at the bottom, a soft glow toward the left,
    and a fine grid of dots over it. Built once; drawing it is two table lookups a pixel. */
 static void make_background(struct state *st) {
-    for (int y = 0; y < H; y++) st->bg_row[y] = mix(rgb(30, 32, 78), rgb(14, 70, 86), (unsigned)(y * 255 / (H - 1)));
+    int t = st->theme;
+    for (int y = 0; y < H; y++) st->bg_row[y] = mix(theme_top[t], theme_bottom[t], (unsigned)(y * 255 / (H - 1)));
     for (int x = 0; x < W; x++) {
         int d = x < 300 ? 0 : x - 300;              /* glow: strongest on the left third */
         int a = 70 - d * 70 / (W - 300);
@@ -287,7 +320,7 @@ static void background(struct state *st) {
         unsigned base = st->bg_row[y];
         const unsigned char *tile = st->bg_tile + (y & 31) * 32;
         for (int x = s->cx0; x < s->cx1; x++) {
-            unsigned c = mix(base, rgb(96, 110, 230), st->bg_glow[x]);
+            unsigned c = mix(base, theme_glow[st->theme], st->bg_glow[x]);
             unsigned dot = tile[x & 31];
             row[x] = dot ? mix(c, rgb(200, 220, 255), dot) : c;
         }
@@ -354,15 +387,105 @@ static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
 
 static void redraw_all(struct state *st) { composite(st, 0, 0, W, H); }
 
+/* Take window k off the screen and stop mapping its pixels. */
+static void hide(struct state *st, int k) {
+    int at = -1;
+    for (int i = 0; i < st->nz; i++) if (st->z[i] == k) at = i;
+    if (at >= 0) {
+        for (int i = at; i < st->nz - 1; i++) st->z[i] = st->z[i + 1];
+        st->nz--;
+    }
+    if (st->drag == k + 1) st->drag = 0;
+    sys2(SYS_UNMAP, WIN_PAGE + WIN_MAX_PAGES * (u64)k, WIN_MAX_PAGES);
+}
+
+/* Forget window k. A reply slot still held for it is answered, which frees it. */
+static void release(struct state *st, int k) {
+    struct win *w = &st->win[k];
+    hide(st, k);
+    if (w->slot) sys(SYS_REPLY, w->slot - 1, EV_CLOSE, 0, 0, 0);
+    w->slot = 0;
+    w->used = 0;
+    w->closing = 0;
+}
+
+/* The close button: the window goes now, and its client hears EV_CLOSE. */
+static void close_window(struct state *st, struct line *l, int k) {
+    struct win *w = &st->win[k];
+    put_s(l, "display: closed ");
+    put_s(l, name_of(w->badge));
+    put_s(l, "'s window");
+    say(l);
+    if (w->slot) release(st, k);
+    else {
+        hide(st, k);
+        w->closing = 1;
+    }
+    redraw_all(st);
+}
+
+/* Windows whose client has stopped (it exited, or faulted) are closed. */
+static void forget_stopped(struct state *st, struct line *l) {
+    for (int k = 0; k < MAX_WIN; k++) {
+        struct win *w = &st->win[k];
+        if (!w->used || run_state(slot_of(w->badge)) != 2) continue;
+        if (!w->closing) {
+            put_s(l, "display: ");
+            put_s(l, name_of(w->badge));
+            put_s(l, " stopped; its window is gone");
+            say(l);
+        }
+        release(st, k);
+        redraw_all(st);
+    }
+}
+
+/* Dock item i: show the app's window, or start the app. */
+static void launch(struct state *st, struct line *l, int i) {
+    int slot = dock_slot[i];
+    if (slot < 0) {
+        put_s(l, "display: ");
+        put_s(l, dock_names[i]);
+        put_s(l, " is not installed yet");
+        say(l);
+        return;
+    }
+    for (int k = 0; k < MAX_WIN; k++)
+        if (st->win[k].used && !st->win[k].closing && slot_of(st->win[k].badge) == slot) {
+            raise(st, k);
+            redraw_all(st);
+            return;
+        }
+    if (run_state(slot) == 1) return; /* started, not showing a window yet */
+    /* Starting takes back what the last run shared, its window's pixels too: drop it first. */
+    for (int k = 0; k < MAX_WIN; k++)
+        if (st->win[k].used && slot_of(st->win[k].badge) == slot) release(st, k);
+    struct res r = sys1(SYS_START, (u64)dock_launch[i]);
+    put_s(l, "display: start ");
+    put_s(l, dock_names[i]);
+    put_s(l, outcome(r.status));
+    say(l);
+    if (r.status == OK && sys1(SYS_BOOTINFO, (u64)slot).x[1] != 1) {
+        put_s(l, "display: ");
+        put_s(l, dock_names[i]);
+        put_s(l, " was refused: it does not match the boot manifest");
+        say(l);
+    }
+    composite(st, DOCK_X - 60, DOCK_Y - 44, DOCK_W + 120, DOCK_H + 44);
+}
+
 static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     if (kind == EV_KEY) {
         int k = focused(st);
         if (k < 0) return;
         deliver_event(&st->win[k], EV_KEY, a, 0);
-        put_s(l, "display: key '");
-        char ch[2] = {a >= 32 && a < 127 ? (char)a : '?', 0};
-        put_s(l, ch);
-        put_s(l, "' to ");
+        if (a == '\r' || a == '\n') put_s(l, "display: key return to ");
+        else {
+            put_s(l, "display: key '");
+            char ch[2] = {a >= 32 && a < 127 ? (char)a : '?', 0};
+            put_s(l, ch);
+            put_s(l, "' to ");
+        }
         put_s(l, name_of(st->win[k].badge));
         say(l);
         return;
@@ -372,19 +495,17 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     st->py = b < H ? (int)b : H - 1;
     if (kind == EV_DOWN) {
         int d = dock_at(st->px, st->py);
-        if (d == 1) {
-            for (int k = 0; k < MAX_WIN; k++)
-                if (st->win[k].used && st->win[k].badge == BADGE_ALICE) { raise(st, k); redraw_all(st); }
-        } else if (d) {
-            put_s(l, "display: ");
-            put_s(l, dock_names[d - 1]);
-            put_s(l, " is not installed yet");
-            say(l);
-        }
+        if (d) launch(st, l, d - 1);
         int k = d ? -1 : window_at(st, st->px, st->py);
         if (k >= 0) {
-            raise(st, k);
             struct win *w = &st->win[k];
+            if (st->px >= w->x + 12 && st->px < w->x + 24 && st->py >= w->y + 9 && st->py < w->y + 21) {
+                close_window(st, l, k);
+                return;
+            }
+            raise(st, k);
+            if (st->py >= w->y + TITLE_H)
+                deliver_event(w, EV_DOWN, (u64)(st->px - w->x), (u64)(st->py - w->y - TITLE_H));
             if (st->py < w->y + TITLE_H) {
                 st->drag = k + 1;
                 st->grab_x = st->px - w->x;
@@ -435,8 +556,9 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     for (int i = 0; i < MAX_WIN; i++) if (!st->win[i].used) { k = i; break; }
     struct res info = sys1(SYS_CAPINFO, cap - 1);
     u64 need = (w * h * 4 + 4095) / 4096;
-    if (k < 0 || w == 0 || h == 0 || w > 900 || h > 480 || info.x[2] != 0 || info.x[3] < need ||
-        need > 64 || sys2(SYS_MAP, cap - 1, WIN_PAGE + 64 * k).status != OK) {
+    if (k < 0 || slot_of(badge) < 0 || w == 0 || h == 0 || w > 900 || h > 480 || info.x[2] != 0 ||
+        info.x[3] < need || need > WIN_MAX_PAGES ||
+        sys2(SYS_MAP, cap - 1, WIN_PAGE + WIN_MAX_PAGES * (u64)k).status != OK) {
         put_s(l, "display: ");
         put_s(l, name_of(badge));
         put_s(l, " sent a window that does not fit its pixels; refused");
@@ -447,12 +569,15 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     struct win *wn = &st->win[k];
     wn->used = 1;
     wn->badge = badge;
-    wn->content = surface_of((unsigned *)PAGE(WIN_PAGE + 64 * k), (int)w, (int)h);
+    wn->content = surface_of((unsigned *)PAGE(WIN_PAGE + WIN_MAX_PAGES * (u64)k), (int)w, (int)h);
     for (int i = 0; i < 8; i++) wn->title[i] = (char)(title >> (8 * i));
     wn->title[8] = 0;
     wn->x = 96 + 40 * k;
     wn->y = 76 + 36 * k;
+    if (wn->x + (int)w > W - 8) wn->x = W - 8 - (int)w;
+    if (wn->y + (int)h + TITLE_H > DOCK_Y - 8) wn->y = DOCK_Y - 8 - (int)h - TITLE_H;
     wn->slot = 0;
+    wn->closing = 0;
     wn->qhead = wn->qlen = 0;
     st->z[st->nz++] = k;
     redraw_all(st);
@@ -474,6 +599,12 @@ static void on_wait(struct state *st, struct res *r) {
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
         if (!w->used || w->badge != badge) continue;
+        if (w->closing) {
+            sys(SYS_REPLY, slot - 1, EV_CLOSE, 0, 0, 0);
+            w->used = 0;
+            w->closing = 0;
+            return;
+        }
         if (dirty) composite_window(st, k);
         if (w->qlen) {
             u64 *e = w->queue[w->qhead];
@@ -486,6 +617,27 @@ static void on_wait(struct state *st, struct res *r) {
         return;
     }
     sys(SYS_REPLY, slot - 1, 0, 0, 0, 0); /* no window: nothing to wait for */
+}
+
+/* SET: only Settings may change the desktop. */
+static void on_set(struct state *st, struct line *l, struct res *r) {
+    u64 badge = r->x[1], what = r->x[3], value = r->x[4], slot = r->x[6];
+    if (badge != BADGE_SETTINGS || what != SET_BACKGROUND || value >= NTHEME) {
+        put_s(l, "display: ");
+        put_s(l, name_of(badge));
+        put_s(l, " may not change the desktop; refused");
+        say(l);
+        sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
+        return;
+    }
+    st->theme = (int)value;
+    make_background(st);
+    redraw_all(st);
+    put_s(l, "display: background ");
+    put_dec(l, value);
+    put_s(l, ", as Settings asked");
+    say(l);
+    sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
 }
 
 __attribute__((section(".text.start"))) void _start(void) {
@@ -508,6 +660,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     for (int i = 0; i < DOCK_N; i++) st->icons[i] = picture_of(assets, ASSET_ICON, 10 + i);
 
     st->screen = surface_of((unsigned *)PAGE(FB_PAGE), W, H);
+    st->theme = 0;
     make_background(st);
     st->px = W / 2;
     st->py = H / 2;
@@ -535,6 +688,8 @@ __attribute__((section(".text.start"))) void _start(void) {
             on_open(st, &l, &r);
         } else if (slot && op == OP_WAIT) {
             on_wait(st, &r);
+        } else if (slot && op == OP_SET) {
+            on_set(st, &l, &r);
         } else {
             put_s(&l, "display: ");
             put_s(&l, name_of(badge));
@@ -542,5 +697,6 @@ __attribute__((section(".text.start"))) void _start(void) {
             say(&l);
             if (slot) sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
         }
+        forget_stopped(st, &l);
     }
 }

@@ -371,7 +371,7 @@ theorem el0_mallory_isolated {s : KState} (h : Reachable s) {j : Nat} (hj2 : j �
   rcases reach_iff ha with rfl | ⟨_, h2⟩
   · rcases reach_iff hb with h3 | ⟨h0, h1⟩
     · exact hj2 h3.symm
-    · cases h0
+    · simp [App] at h0
   · cases h2
 
 /-- **Only the input driver touches the UART.** If a task's user mode can reach the UART's
@@ -388,6 +388,6 @@ theorem el0_uart_only_input {s : KState} (h : Reachable s) {i : Nat} {mem : Arm.
   rw [this] at hr
   rcases reach_iff hr with h1 | ⟨h0, _⟩
   · exact h1.symm
-  · cases h0
+  · simp [App, inputTask] at h0
 
 end LeanOS

@@ -40,7 +40,7 @@ the display server over IPC and hand it the memory they draw into.
 
 ## 4. Drivers in user space — done
 
-Capabilities name runs of frames; each task has 64 frames and a 32 MiB window. The
+Capabilities name runs of frames; each task has 256 frames (1 MiB) and a 32 MiB window. The
 framebuffer (1024×600, allocated at boot through the mailbox, which stays in trusted C
 because it is a DMA path) goes to the display server; the UART's registers and interrupt go
 to an input driver. Interrupt capabilities are fixed by the manifest; a fired line is
@@ -62,10 +62,24 @@ Next, on real hardware: sign the boot image for the Pi 4 bootloader's secure-boo
 (RSA-2048, key hash in the chip's OTP memory, which cannot be undone), so the manifest
 itself is covered by the chip's root of trust.
 
-## 6. Memory and processes from user space
+## 6. Memory and processes from user space — starting and stopping, done; building, next
 
-Untyped memory capabilities and retyping, so a root task builds the system: creating
-tasks, handing out frames, and revoking them (a capability derivation tree).
+Done: the manifest has eight program slots, and the apps (Terminal, Settings, Security)
+wait in theirs until started. A launch capability, fixed by the manifest and held only by
+the display server, starts or restarts a slot whose program is not running. Starting
+first takes back everything the slot's last run shared: every other task loses its
+capabilities to the slot's frames, its mappings of them, grants of them in messages still
+waiting to be delivered, and any reply slot it holds for the old run. Then the slot gets
+the manifest's fresh task, and the machine layer clears the frames, loads the program and
+measures it; it runs only if it matches. Proved: `start_revokes`, `only_display_launches`,
+`confined` (every task but the display server reaches only its own memory). To make
+revocation exact, every run of frames is proved to stay inside one slot's memory
+(`RunOK`). The dock starts apps, a window's close button stops its app, and the display
+closes the windows of apps that stop.
+
+Next: untyped memory capabilities and retyping, so a root task builds the system from
+user space: creating tasks and endpoints at run time instead of from the manifest, and a
+capability derivation tree for revoking what was derived, not just what a slot owns.
 
 ## 7. The GUI
 
@@ -79,7 +93,12 @@ the UART and USB comes after.
 
 Prove how much kernel memory each operation can use, and preallocate per task, so no
 system call can exhaust the kernel heap. Replace list-based state where it grows with
-the system.
+the system. The kernel stack is the same problem: the Lean kernel recurses once per list
+element, and a task can hold up to 8192 mappings. Today the stack is sized for that (2 MiB),
+painted at boot and checked on every return to user mode, so an overflow stops the machine
+instead of corrupting it; stage 6 found this the hard way, when revocation walked the
+display server's 900 mappings and overran the old 64 KiB stack. The fix that belongs here
+is to prove a bound, or make the walks iterative.
 
 ## 9. A system people can use
 

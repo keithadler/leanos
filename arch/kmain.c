@@ -34,6 +34,8 @@ lean_object *leanos_l3(lean_object *s, lean_object *i, lean_object *k);
 lean_object *leanos_reply_out_va(lean_object *r);
 lean_object *leanos_reply_out_len(lean_object *r);
 uint8_t leanos_reply_remap(lean_object *r);
+lean_object *leanos_reply_load(lean_object *r);
+uint8_t leanos_autostart(lean_object *i);
 lean_object *leanos_reply_state(lean_object *r);
 lean_object *leanos_reply_unmask(lean_object *r);
 lean_object *leanos_irq(lean_object *s, lean_object *n);
@@ -282,6 +284,7 @@ static void irq_init(void) {
 
 static struct frame saved[MAX_TASKS];
 static uint64_t code_len[MAX_TASKS], asset_len[MAX_TASKS];
+static int started[MAX_TASKS];      /* loaded at least once */
 static uint64_t ntasks;
 static uint64_t syscalls, ticks, device_irqs;
 
@@ -314,29 +317,31 @@ static void sync_icache(uint64_t start, uint64_t len) {
     ISB();
 }
 
-static void load_programs(void) {
-    memset((void *)FRAME_BASE, 0, NFRAMES * PAGE_SIZE);
-    for (uint64_t i = 0; i < ntasks; i++) {
-        uint64_t len = user_prog_ends[i] - user_progs[i];
-        code_len[i] = len;
-        if (len > CODE_PAGES * PAGE_SIZE) kpanic("user program larger than its code run");
-        uint64_t code = FRAME_BASE + FRAMES_PER_TASK * i * PAGE_SIZE; /* frame 64i, as `frameCaps` says */
-        memcpy((void *)code, (const void *)user_progs[i], len);
-        sync_icache(code, len);
-        /* The task's assets (fonts, icons, pictures), if any, at the start of its spare run,
-           where `frameCaps` in LeanOS/Kernel.lean puts capability 3. */
-        uint64_t alen = user_asset_ends[i] - user_assets[i];
-        asset_len[i] = alen;
-        if (alen > SPARE_PAGES * PAGE_SIZE) kpanic("assets larger than the spare run");
-        memcpy((void *)(FRAME_BASE + (FRAMES_PER_TASK * i + SPARE_FIRST) * PAGE_SIZE),
-               (const void *)user_assets[i], alen);
-        saved[i].elr = USER_BASE;
-        saved[i].sp = USER_BASE + USER_PAGES * PAGE_SIZE;
-        saved[i].spsr = 0; /* EL0, interrupts on */
-    }
+/* Load slot i's program into its frames, fresh: every frame cleared (nothing of a previous
+   run survives), the code, the assets, and registers that start at the program's entry. */
+static void load_program(uint64_t i) {
+    uint64_t base = FRAME_BASE + FRAMES_PER_TASK * i * PAGE_SIZE; /* frame 256i, as `frameCaps` says */
+    memset((void *)base, 0, FRAMES_PER_TASK * PAGE_SIZE);
+    uint64_t len = user_prog_ends[i] - user_progs[i];
+    code_len[i] = len;
+    if (len > CODE_PAGES * PAGE_SIZE) kpanic("user program larger than its code run");
+    memcpy((void *)base, (const void *)user_progs[i], len);
+    sync_icache(base, len);
+    /* The task's assets (fonts, icons, pictures), if any, at the start of its spare run,
+       where `frameCaps` in LeanOS/Kernel.lean puts capability 3. */
+    uint64_t alen = user_asset_ends[i] - user_assets[i];
+    asset_len[i] = alen;
+    if (alen > SPARE_PAGES * PAGE_SIZE) kpanic("assets larger than the spare run");
+    memcpy((void *)(base + SPARE_FIRST * PAGE_SIZE), (const void *)user_assets[i], alen);
+    memset(&saved[i], 0, sizeof saved[i]);
+    saved[i].elr = USER_BASE;
+    saved[i].sp = USER_BASE + USER_PAGES * PAGE_SIZE;
+    saved[i].spsr = 0; /* EL0, interrupts on */
+    started[i] = 1;
 }
 
-static const char *const names[] = {"alice", "display", "mallory", "carol", "input"};
+static const char *const names[] = {"alice", "display", "mallory", "carol", "input",
+                                    "terminal", "settings", "security"};
 
 /* SHA-256 of "abc", from FIPS 180-4: the hash must be right before anything relies on it. */
 static void sha256_self_test(void) {
@@ -382,6 +387,7 @@ static void do_syscall(uint64_t cur) {
     uint64_t out_len = nat(leanos_reply_out_len((lean_inc(r), r)));
     int remap = leanos_reply_remap((lean_inc(r), r));
     uint64_t unmask = nat(leanos_reply_unmask((lean_inc(r), r)));
+    uint64_t load = nat(leanos_reply_load((lean_inc(r), r)));
     K = leanos_reply_state(r);
     if (unmask) gic_enable((uint32_t)(unmask - 1));
 
@@ -391,7 +397,20 @@ static void do_syscall(uint64_t cur) {
         if (c == '\n') kputc('\r');
         kputc(c);
     }
-    if (remap) build_user_pages(cur);
+    if (load) {
+        /* `start`: the Lean kernel has already taken back every capability and mapping that
+           reached the slot's frames. Rebuild every task's tables from that state before the
+           frames are cleared and loaded, then measure what was loaded. */
+        uint64_t k = load - 1;
+        if (k >= ntasks || k == cur) kpanic("start of a slot the kernel should have refused");
+        for (uint64_t i = 0; i < ntasks; i++) build_user_pages(i);
+        load_program(k);
+        kputs("leanos: ");
+        kputs(names[k]);
+        kputs(" started\n");
+        measure_and_verify(k);
+        build_user_pages(k);
+    } else if (remap) build_user_pages(cur);
 }
 
 /* Load the result registers the Lean kernel left for task j (the outcome of its last
@@ -402,6 +421,33 @@ static void load_result(uint64_t j) {
     if (n > 31) kpanic("too many result registers");
     for (uint64_t k = 0; k < n; k++) saved[j].x[k] = nat(leanos_result(K1, lean_box(j), lean_box(k)));
     K = leanos_clear_result(K, lean_box(j));
+}
+
+/* ---- the kernel stack ----
+ * The Lean kernel recurses once per list element (a task's mappings, at most USER_PAGES of
+ * them), so the stack is sized for that (arch/kernel.ld). Nothing proves the bound, so it is
+ * checked instead: the stack is painted at boot, and every return to user mode checks that
+ * the bottom of the paint is intact. Running past it stops the machine rather than letting
+ * the stack grow into the kernel's other data. */
+extern char __stack_bottom[], __stack_top[];
+#define STACK_PAINT 0x5a5a5a5a5a5a5a5aUL
+#define STACK_GUARD 512   /* bytes at the bottom that must stay painted */
+
+static void stack_paint(void) {
+    uint64_t sp;
+    __asm__ volatile("mov %0, sp" : "=r"(sp));
+    for (uint64_t *p = (uint64_t *)__stack_bottom; (uint64_t)p < sp - 256; p++) *p = STACK_PAINT;
+}
+
+static void stack_check(void) {
+    for (uint64_t *p = (uint64_t *)__stack_bottom; (char *)p < __stack_bottom + STACK_GUARD; p++)
+        if (*p != STACK_PAINT) kpanic("kernel stack overflow");
+}
+
+static uint64_t stack_peak(void) {
+    uint64_t *p = (uint64_t *)__stack_bottom;
+    while ((char *)p < __stack_top && *p == STACK_PAINT) p++;
+    return (uint64_t)(__stack_top - (char *)p);
 }
 
 static void report(const char *what) {
@@ -416,7 +462,9 @@ static void report(const char *what) {
     kputdec(rt_heap_live());
     kputs(" bytes live, ");
     kputdec(rt_heap_peak());
-    kputs(" peak)\n");
+    kputs(" peak, stack ");
+    kputdec(stack_peak());
+    kputs(" bytes peak)\n");
 }
 
 /* No task is ready. If every task has stopped, power off. Otherwise wait for an interrupt:
@@ -428,7 +476,7 @@ static uint64_t idle_until_ready(void) {
     while (!ready(next)) {
         uint64_t waiting = 0;
         for (uint64_t i = 0; i < ntasks; i++)
-            if (!leanos_dead(K1, lean_box(i))) waiting++;
+            if (started[i] && !leanos_dead(K1, lean_box(i))) waiting++;
         if (waiting == 0) {
             report("leanos: every task has finished");
             poweroff();
@@ -480,7 +528,7 @@ void trap(struct frame *f, uint64_t kind) {
             do_syscall(cur);
         } else {
             kputs("leanos: ");
-            kputs(cur < 5 ? names[cur] : "task");
+            kputs(cur < ntasks ? names[cur] : "task");
             kputs(" stopped: ");
             kputs(fault_name(ec));
             kputs(" at ");
@@ -496,9 +544,11 @@ void trap(struct frame *f, uint64_t kind) {
     load_result(next);
     switch_to(next);
     *f = saved[next];
+    stack_check();
 }
 
 void kmain(void) {
+    stack_paint();
     uart_init();
     kputs("leanos \xc2\xa9 2026 Keith Adler\n");
     kputs("leanos: Raspberry Pi 4, booting on ");
@@ -536,9 +586,14 @@ void kmain(void) {
     kputdec(ntasks);
     kputs(" tasks\n");
 
-    load_programs();
+    memset((void *)FRAME_BASE, 0, NFRAMES * PAGE_SIZE);
     sha256_self_test();
-    for (uint64_t i = 0; i < ntasks; i++) measure_and_verify(i);
+    /* The programs that start at boot. The apps wait in their slots until started. */
+    for (uint64_t i = 0; i < ntasks; i++)
+        if (leanos_autostart(lean_box(i))) {
+            load_program(i);
+            measure_and_verify(i);
+        }
     for (uint64_t i = 0; i < ntasks; i++) {
         tables_init(i);
         build_user_pages(i);

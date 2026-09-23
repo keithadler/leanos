@@ -93,7 +93,7 @@ mutant "tasks start ready, unchecked" \
   "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .unverified, .nil, .nil, .nil⟩" "def mkTask (i : Nat) : Task := ⟨initCaps i, initMaps i, .ready, .nil, .nil, .nil⟩"
 mutant "a stopped task may make system calls" \
   "    | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
+    | _ => ⟨s, 0, 0, false, 0, 0⟩" "    | _ => runCall s t num a0 a1 a2 a3 a4"
 mutant "user pages always executable" \
   "privNoExec + (if m.rights.x then 0 else userNoExec)" "privNoExec + 0"
 mutant "read-only pages writable" \
@@ -104,6 +104,22 @@ mutant "kernel RAM readable from user mode" \
   "0 + dValid + attrNormal + shInner + accessFlag + userNoExec" "0 + dValid + attrNormal + apUserRO + shInner + accessFlag + userNoExec"
 mutant "scheduler may pick a waiting task" \
   "if isReady ts j then some j else findReady ts (j + 1) fuel" "some j"
+mutant "start leaves other tasks' mappings of the slot" \
+  "maps := dropMaps k t.maps" "maps := t.maps"
+mutant "start leaves other tasks' capabilities to the slot" \
+  "caps := dropCaps k t.caps" "caps := t.caps"
+mutant "start leaves grants of the slot's frames in waiting messages" \
+  "| some c => if capInSlot k c then none else some c" "| some c => some c"
+mutant "start leaves reply slots for the old run" \
+  "(if x == k then noTask else x) :: forgetCaller k xs" "x :: forgetCaller k xs"
+mutant "a task may restart itself" \
+  "if startable u.status && !(k == s.cur) then" "if startable u.status then"
+mutant "manifest lets mallory start programs" \
+  "| 2 => snoc (frameCaps 2) (epCap 0 false true false 2)" "| 2 => snoc (snoc (frameCaps 2) (epCap 0 false true false 2)) (launchCap 0)"
+mutant "manifest lets the display restart the input driver" \
+  "(launchCap 0)) (launchCap 5)" "(launchCap 4)) (launchCap 5)"
+mutant "manifest lets Terminal receive on the display's endpoint" \
+  "| 5 => snoc (frameCaps 5) (epCap 0 false true true 5)" "| 5 => snoc (frameCaps 5) (epCap 0 true true true 5)"
 
 cp "$backup" LeanOS/Kernel.lean
 lake build >/dev/null 2>&1 || { echo "FAIL: the unmutated kernel no longer builds"; exit 1; }
