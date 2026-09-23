@@ -139,3 +139,7 @@ Frame capabilities name a run of physical frames and carry read, write and execu
 Each task starts with 64 frames (code, data, stack and 28 spare pages) and a 32 MiB
 window to map them in. Endpoint capabilities carry
 receive, send and grant rights, and a badge the kernel delivers with every message.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Third-party assets, when added, keep their own licenses and are listed in `THIRD_PARTY.md`; nothing GPL-licensed goes into the system image.
