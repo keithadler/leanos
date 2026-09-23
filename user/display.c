@@ -10,8 +10,8 @@
    a click focuses and raises a window, and dragging its title bar moves it. The sender's
    badge, which the kernel sets, names every window, so no client can pass for another.
 
-   Its fonts, icons and wallpaper were loaded at boot into the start of its spare run
-   (capability 3), which it maps read-only. */
+   Its fonts and icons were loaded at boot into the start of its spare run (capability 3),
+   which it maps read-only. The desktop's background is a pattern it computes itself. */
 #include "lib.h"
 #include "gfx.h"
 #include "assets.h"
@@ -59,7 +59,11 @@ struct win {
 struct state {
     struct surface screen;
     struct font ui, ui_bold, small, huge, medium;
-    struct picture wallpaper, icons[DOCK_N];
+    struct picture icons[DOCK_N];
+    /* the background pattern: a color per row, a glow per column, and a 32 x 32 tile */
+    unsigned bg_row[H];
+    unsigned char bg_glow[W];
+    unsigned char bg_tile[32 * 32];
     struct win win[MAX_WIN];
     int z[MAX_WIN];             /* window indices, bottom to top */
     int nz;
@@ -206,11 +210,44 @@ static void dock(struct state *st) {
     }
 }
 
-/* Redraw one rectangle of the screen: wallpaper, bar, windows bottom to top, dock, pointer. */
+/* The background: indigo at the top to deep teal at the bottom, a soft glow toward the left,
+   and a fine grid of dots over it. Built once; drawing it is two table lookups a pixel. */
+static void make_background(struct state *st) {
+    for (int y = 0; y < H; y++) st->bg_row[y] = mix(rgb(30, 32, 78), rgb(14, 70, 86), (unsigned)(y * 255 / (H - 1)));
+    for (int x = 0; x < W; x++) {
+        int d = x < 300 ? 0 : x - 300;              /* glow: strongest on the left third */
+        int a = 70 - d * 70 / (W - 300);
+        st->bg_glow[x] = (unsigned char)(a < 0 ? 0 : a);
+    }
+    for (int j = 0; j < 32; j++)
+        for (int i = 0; i < 32; i++) {
+            /* a dot at the tile's center, 1.6 px across, anti-aliased */
+            int dx = (i - 16) * 16, dy = (j - 16) * 16;
+            int d = (int)isqrt((unsigned)(dx * dx + dy * dy));
+            int cover = 26 - d;                     /* radius 1.6 px in 1/16 px, with a soft edge */
+            st->bg_tile[j * 32 + i] = (unsigned char)(cover <= 0 ? 0 : cover >= 16 ? 38 : cover * 38 / 16);
+        }
+}
+
+static void background(struct state *st) {
+    struct surface *s = &st->screen;
+    for (int y = s->cy0; y < s->cy1; y++) {
+        unsigned *row = s->px + y * s->stride;
+        unsigned base = st->bg_row[y];
+        const unsigned char *tile = st->bg_tile + (y & 31) * 32;
+        for (int x = s->cx0; x < s->cx1; x++) {
+            unsigned c = mix(base, rgb(96, 110, 230), st->bg_glow[x]);
+            unsigned dot = tile[x & 31];
+            row[x] = dot ? mix(c, rgb(200, 220, 255), dot) : c;
+        }
+    }
+}
+
+/* Redraw one rectangle of the screen: background, bar, windows bottom to top, dock, pointer. */
 static void composite(struct state *st, int x, int y, int w, int h) {
     struct surface *s = &st->screen;
     clip_to(s, x, y, w, h);
-    stretch(s, &st->wallpaper);
+    background(st);
     if (s->cy0 < BAR_H + 1) top_bar(st);
     for (int i = 0; i < st->nz; i++) {
         struct win *wn = &st->win[st->z[i]];
@@ -417,10 +454,10 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->small = font_of(assets, F_SMALL);
     st->huge = font_of(assets, F_HUGE);
     st->medium = font_of(assets, F_MEDIUM);
-    st->wallpaper = picture_of(assets, ASSET_IMAGE, 30);
     for (int i = 0; i < DOCK_N; i++) st->icons[i] = picture_of(assets, ASSET_ICON, 10 + i);
 
     st->screen = surface_of((unsigned *)PAGE(FB_PAGE), W, H);
+    make_background(st);
     st->px = W / 2;
     st->py = H / 2;
     splash(st);

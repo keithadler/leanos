@@ -36,7 +36,10 @@ USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 ARCH_O := build/boot.o build/kmain.o build/runtime.o build/libc.o build/Kernel.o
 
 .PHONY: all run test mutants proofs clean
-all: build/kernel8.img proofs
+all: build/assets/display.bin build/assets/alice.bin build/kernel8.img proofs
+
+# The asset blobs are real outputs, not intermediates: a missing one must be rebuilt.
+.PRECIOUS: build/assets/%.bin
 
 proofs:
 	lake build
@@ -63,21 +66,21 @@ build/%.o: rt/%.c arch/arch.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -Wall -Wno-unused-parameter -c $< -o $@
 
-# Fonts, icons and the wallpaper, rasterized and scaled for each task that uses them.
+# Fonts and icons, rasterized and scaled for each task that uses them.
 FONTS := assets/fonts
 DISPLAY_ASSETS := font:1:$(FONTS)/Inter-Regular.ttf:15 font:2:$(FONTS)/Inter-SemiBold.ttf:15 \
   font:3:$(FONTS)/Inter-Regular.ttf:12 font:4:$(FONTS)/Inter-Bold.ttf:48 font:5:$(FONTS)/Inter-Medium.ttf:17 \
   icon:10:assets/icons/memo_3d.png:52 icon:11:assets/icons/file_folder_3d.png:52 \
   icon:12:assets/icons/laptop_3d.png:52 icon:13:assets/icons/gear_3d.png:52 \
-  icon:14:assets/icons/locked_3d.png:52 image:30:assets/wallpapers/earthrise-512x300.png
+  icon:14:assets/icons/locked_3d.png:52
 ALICE_ASSETS := font:5:$(FONTS)/Inter-SemiBold.ttf:20 font:6:$(FONTS)/Inter-Regular.ttf:17 \
   font:3:$(FONTS)/Inter-Regular.ttf:12
 
-build/assets/display.bin: tools/mkassets.py $(wildcard assets/*/*)
+build/assets/display.bin: tools/mkassets.py Makefile $(wildcard assets/*/*)
 	@mkdir -p build/assets
 	python3 tools/mkassets.py $@ $(DISPLAY_ASSETS)
 
-build/assets/alice.bin: tools/mkassets.py $(wildcard assets/fonts/*)
+build/assets/alice.bin: tools/mkassets.py Makefile $(wildcard assets/fonts/*)
 	@mkdir -p build/assets
 	python3 tools/mkassets.py $@ $(ALICE_ASSETS)
 

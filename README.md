@@ -11,7 +11,7 @@ specification that could drift from what runs. Underneath, about 1,000 lines of 
 assembly boot the board, write page tables and switch tasks, but make no access decisions.
 
 Today it boots the Pi 4 (tested on QEMU's `raspi4b` machine) to a graphical desktop at
-1024×600, set in Inter, with Apollo 8's Earthrise as wallpaper and a dock of Fluent icons. You can type into a window and drag it around. A display server in user space
+1024×600, set in Inter, over an indigo-to-teal dot pattern, with a dock of Fluent icons. You can type into a window and drag it around. A display server in user space
 owns the screen; an input driver in user space owns the serial port and its interrupt;
 alice's Notes app draws in her own memory and lends the display a read-only view of it.
 mallory tries to reach the screen, the keyboard and everyone's memory, and cannot.
@@ -162,4 +162,4 @@ manifest.
 
 ## License
 
-MIT, © 2026 Keith Adler. See [LICENSE](LICENSE). The font, icons and wallpaper keep their own licenses (OFL, MIT, public domain), listed in [THIRD_PARTY.md](THIRD_PARTY.md); nothing GPL-licensed goes into the system image.
+MIT, © 2026 Keith Adler. See [LICENSE](LICENSE). The font and icons keep their own licenses (OFL, MIT), listed in [THIRD_PARTY.md](THIRD_PARTY.md); nothing GPL-licensed goes into the system image.

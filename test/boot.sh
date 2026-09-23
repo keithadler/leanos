@@ -97,7 +97,13 @@ at = load("build/screen.ppm")
 # mallory wrote 0xbad over the first two pixels of the menu bar; they match their neighbors
 assert at(0, 0) == at(2, 0) == at(3, 0) and at(1, 0) == at(2, 0), ("menu bar", at(0, 0), at(2, 0))
 assert min(at(500, 214)) > 220, ("title bar after the drag", at(500, 214))
-assert max(at(150, 150)) < 40, ("where the window was: the night sky", at(150, 150))
+# where the window was: the background pattern again, a dot at every 32 px brighter than
+# the gradient between the dots
+r, g, b = at(150, 150)
+assert b > r + 40 and b > 90, ("background between the dots", (r, g, b))
+for x, y in ((144, 144), (16, 48), (976, 560)):
+    dot, between = at(x, y), at(x + 8, y + 8)
+    assert sum(dot) > sum(between) + 40, ("pattern dot", (x, y), dot, between)
 dark = sum(1 for y in range(292, 314) for x in range(292, 330) if max(at(x, y)) < 100)
 assert dark > 20, ("typed text", dark)
 assert max(at(376, 548)) > 120, ("the Notes icon in the dock", at(376, 548))
