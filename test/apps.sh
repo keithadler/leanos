@@ -135,4 +135,10 @@ echo "$nocard" | grep -qx "fs: no SD card; files are kept in memory only; ready,
 blank=$(python3 test/run.py 40 --blank-sd)
 [ $? -eq 0 ] || fail "the boot with a blank card did not reach idle"
 echo "$blank" | grep -qx "fs: made a new file system on the SD card; ready, 1 file" || fail "a blank card was not formatted"
-echo "ok: the files and the note survive a restart on the SD card, a blank card is formatted, and the system runs without one"
+# A card with no partition table is left alone: no data partition, so no disk.
+raw=$(python3 test/run.py 40 --raw-sd)
+[ $? -eq 0 ] || fail "the boot with an unpartitioned card did not reach idle"
+echo "$raw" | grep -qx "leanos: SD card has no data partition (type 0xDA); files stay in memory" || fail "an unpartitioned card was not noticed"
+echo "$raw" | grep -qx "fs: no SD card; files are kept in memory only; ready, 1 file" || fail "the file server used an unpartitioned card"
+python3 -c "import sys; d=open('build/sd-test.img','rb').read(); sys.exit(any(d))" || fail "something was written to the unpartitioned card"
+echo "ok: the files and the note survive a restart on the SD card, a blank card is formatted, an unpartitioned card is never written, and the system runs without a card"

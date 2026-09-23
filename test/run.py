@@ -79,8 +79,15 @@ def wait_for(prefix, times=1):
 TEST_CARD = os.path.join(ROOT, "build", "sd-test.img")
 
 
-def blank_card(path=TEST_CARD, size=8 * 1024 * 1024):
-    """A blank SD card image (the file server formats it on first boot)."""
+def blank_card(path=TEST_CARD):
+    """A card with a partition table and an empty data partition (the file server formats
+    it on first boot)."""
+    subprocess.run([sys.executable, os.path.join(ROOT, "tools", "mksd.py"), path, "--blank"], check=True)
+    return path
+
+
+def raw_card(path=TEST_CARD, size=8 * 1024 * 1024):
+    """A card with no partition table at all: the kernel must not write anywhere on it."""
     with open(path, "wb") as f:
         f.truncate(size)
     return path
@@ -228,7 +235,7 @@ if __name__ == "__main__":
     steps = DEMO_STEPS if demo else APP_STEPS if apps else ()
     # --keep-sd: boot with the card the last run left (build/sd-test.img); --no-sd: no card
     sd = (TEST_CARD if "--keep-sd" in sys.argv else "" if "--no-sd" in sys.argv
-          else blank_card() if "--blank-sd" in sys.argv else None)
+          else blank_card() if "--blank-sd" in sys.argv else raw_card() if "--raw-sd" in sys.argv else None)
     until = "display: the drag drew" if demo else "security: 12" if apps else None
     sys.exit(boot(float(args[0]) if args else 30, steps=steps, until=until,
                   snaps={"display: boot logo drawn": "logo"}, image=image, settle=2 if apps else 0.3, sd=sd))

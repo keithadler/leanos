@@ -607,6 +607,14 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
             put_s(l, restart ? "display: restarting, as the user asked"
                              : "display: switching off, as the user asked");
             say(l);
+            if (!restart) {
+                /* A Pi cannot cut its own power: the kernel halts. Say it is safe. */
+                struct surface *sc = &st->screen;
+                fill(sc, 0, 0, W, H, rgb(12, 14, 22));
+                const char *msg = "leanos has shut down. You can switch off the Pi.";
+                font_text(sc, &st->medium, W / 2 - font_width(&st->medium, msg) / 2, H / 2, msg,
+                          rgb(210, 214, 228));
+            }
             sys(SYS_POWER, POWER, restart ? POWER_RESTART : POWER_OFF, 0, 0, 0);
         }
         composite(st, ox, oy, 12, 19);

@@ -222,6 +222,29 @@ noVNC, over a localhost-only WebSocket) and streams the serial console alongside
 screen to type or drag windows: the page sends keys and mouse over the Pi's serial line,
 where leanos's input driver reads them (QEMU's Pi 4 has no USB).
 
+## Run it on a Raspberry Pi 4
+
+```bash
+tools/fetch-firmware.sh      # once: the Pi's boot firmware (start4.elf, fixup4.dat), from the Raspberry Pi Foundation
+```
+
+```bash
+make pi-image                # build/leanos-pi4.img: a FAT boot partition, and a data partition with the programs
+```
+
+Write `build/leanos-pi4.img` to a microSD card with Raspberry Pi Imager ("Use custom") or
+`dd`, and boot a Pi 4 with an HDMI screen. Until there is a USB driver, the keyboard and
+mouse come in over the serial console: a 3.3 V USB-serial adapter on the header's pins 6
+(ground), 8 (TX) and 10 (RX), at 115200 baud. Keys are plain bytes, and mouse reports use
+the browser console's protocol (see `user/input.c`).
+
+This image has never booted on real hardware yet, and several things may need fixing
+there: the SD driver on the Pi 4's EMMC2 controller, the screen's red and blue order, and
+the timings QEMU does not model. `make test` checks what can be checked without a Pi: the
+boot partition is a clean FAT file system with the four files the firmware reads, and
+leanos, booted with the image as its card, finds its data partition behind the boot
+partition and never writes to the boot partition.
+
 ## How it fits together
 
 | Path | What it is |

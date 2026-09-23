@@ -156,6 +156,13 @@ watchdog, or switches it off, with a power capability only the display server ho
 leftover byte could sit in the UART with its interrupt already cleared, and block every
 key and click after it; the input driver now drains the UART before it waits.
 
+And a card a Pi 4 boots: `make pi-image` builds an image with a FAT boot partition (the
+Pi's firmware, `config.txt`, `kernel8.img` built for hardware) and the data partition with
+the programs; the machine layer keeps all block I/O inside the data partition, found in the
+partition table, and routes the UART to the header pins itself. `make test` checks the FAT
+file system is clean and that leanos, booted from the image, reads the data partition and
+leaves the boot partition alone. It has not run on a Pi yet.
+
 Next: a journal (so a power cut cannot lose a change halfway), more open slots and a way to give a program more authority on
-purpose (a file server endpoint, say) with the user's consent, the SD card on real Pi 4
-hardware (EMMC2), multiple cores, and the Pi 5.
+purpose (a file server endpoint, say) with the user's consent, the first boot on real Pi 4 hardware (EMMC2, colors,
+timings), USB keyboard and mouse, multiple cores, and the Pi 5.

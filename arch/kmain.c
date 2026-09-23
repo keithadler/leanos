@@ -42,8 +42,9 @@ uint8_t leanos_open_slot(lean_object *i);
 lean_object *leanos_reply_io_block(lean_object *r);
 lean_object *leanos_io_failed(lean_object *s);
 int sd_init(void);
-int sd_read(uint64_t block, void *dst);
-int sd_write(uint64_t block, const void *src);
+uint64_t sd_partition(void);
+int sd_part_read(uint64_t block, void *dst);
+int sd_part_write(uint64_t block, const void *src);
 uint8_t leanos_autostart(lean_object *i);
 lean_object *leanos_reply_state(lean_object *r);
 lean_object *leanos_reply_unmask(lean_object *r);
@@ -84,7 +85,23 @@ static int ready(uint64_t i) { return leanos_ready(K1, lean_box(i)); }
 
 /* PL011 at 115200 8N1. The Pi 4 feeds the UART a 48 MHz clock: 48e6 / (16 * 115200)
    = 26.0417, so the divisor is 26 + 3/64. */
+/* Route the PL011 to the header's pins 8 and 10 (GPIO 14 TXD, 15 RXD): function ALT0, no
+   pull on TX, a pull-up on RX so an unconnected line reads idle. On a Pi 4 the firmware
+   gives the PL011 to Bluetooth otherwise; doing it here needs no device-tree overlay. */
+#define GPIO_BASE (PERIPHERAL_BASE + 0x200000)
+static void uart_pins(void) {
+    uint32_t sel = mmio_r32(GPIO_BASE + 0x04);                 /* GPFSEL1: pins 10-19 */
+    sel &= ~((7u << 12) | (7u << 15));
+    sel |= (4u << 12) | (4u << 15);                            /* ALT0 for 14 and 15 */
+    mmio_w32(GPIO_BASE + 0x04, sel);
+    uint32_t pull = mmio_r32(GPIO_BASE + 0xe4);                /* pulls, pins 0-15 */
+    pull &= ~((3u << 28) | (3u << 30));
+    pull |= 1u << 30;                                          /* 15: pull-up */
+    mmio_w32(GPIO_BASE + 0xe4, pull);
+}
+
 static void uart_init(void) {
+    uart_pins();
     mmio_w32(UART0 + 0x30, 0);          /* CR: off while configuring */
     mmio_w32(UART0 + 0x44, 0x7ff);      /* ICR: clear pending interrupts */
     mmio_w32(UART0 + 0x24, 26);         /* IBRD */
@@ -449,7 +466,7 @@ static void do_syscall(uint64_t cur) {
     /* Block I/O, still in `cur`'s address space: the kernel checked the 512 bytes at out_va
        are in a page `cur` has mapped writable (read) or readable (write). */
     if (io) {
-        int ok = io == 1 ? sd_read(io_block, (void *)out_va) : sd_write(io_block, (const void *)out_va);
+        int ok = io == 1 ? sd_part_read(io_block, (void *)out_va) : sd_part_write(io_block, (const void *)out_va);
         if (!ok) K = leanos_io_failed(K);
     }
     /* The display server asked (only it can: `only_display_powers`). Every file is already
@@ -644,7 +661,15 @@ void kmain(void) {
 
     mmu_init();
     kputs("leanos: MMU on\n");
-    kputs(sd_init() ? "leanos: SD card ready\n" : "leanos: no SD card\n");
+    if (!sd_init()) kputs("leanos: no SD card\n");
+    else {
+        uint64_t blocks = sd_partition();
+        if (blocks) {
+            kputs("leanos: SD card ready, data partition of ");
+            kputdec(blocks / 2048);
+            kputs(" MiB\n");
+        } else kputs("leanos: SD card has no data partition (type 0xDA); files stay in memory\n");
+    }
 
     K = leanos_init(lean_box(fb));
     ntasks = nat(leanos_ntasks(K1));

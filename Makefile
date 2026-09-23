@@ -35,7 +35,7 @@ USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
 ARCH_O := build/boot.o build/kmain.o build/sd.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
 
-.PHONY: all run test mutants proofs clean
+.PHONY: all run test mutants proofs clean pi-image
 ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files)
 
 all: $(ASSET_BLOBS) build/kernel8.img build/sd-template.img proofs
@@ -151,6 +151,23 @@ build/progs/%.elf: user/progs/%.c user/lib.h user/gfx.h user/assets.h user/app.h
 build/sd-template.img: tools/mksd.py $(DISK_ELFS)
 	python3 tools/mksd.py $@ $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf)
 
+# An SD card image a Raspberry Pi 4 boots (tools/mkpiimage.py); the firmware files come from
+# tools/fetch-firmware.sh, which you run once.
+pi-image: build/pi/kernel8.img $(DISK_ELFS) tools/mkpiimage.py tools/mksd.py
+	python3 tools/mkpiimage.py build/leanos-pi4.img --kernel build/pi/kernel8.img \
+	  $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf)
+
+# The kernel for a real Pi: the same, except that switching off halts instead of ending the
+# emulator through semihosting (a Pi has no debugger to take that call).
+build/pi/kmain.o: arch/kmain.c arch/arch.h
+	@mkdir -p build/pi
+	$(CC) $(filter-out -DLEANOS_QEMU,$(CFLAGS)) -Wall -Werror -c $< -o $@
+
+PI_ARCH_O := $(filter-out build/kmain.o,$(ARCH_O)) build/pi/kmain.o
+build/pi/kernel8.img: $(PI_ARCH_O) $(INIT_O) arch/kernel.ld
+	$(LD) -T arch/kernel.ld --gc-sections $(PI_ARCH_O) $(INIT_O) -o build/pi/leanos.elf
+	$(OBJCOPY) -O binary build/pi/leanos.elf $@
+
 build/user/%.bin: build/user/%.elf
 	$(OBJCOPY) -O binary $< $@
 
@@ -177,6 +194,7 @@ test: all
 	./test/boot.sh
 	./test/apps.sh
 	./test/power.sh
+	./test/piimage.sh
 	./test/tamper.sh
 
 # Break the kernel in known ways and check the proofs catch every one (slow).

@@ -156,3 +156,40 @@ int sd_write(uint64_t block, const void *src) {
     for (int i = 0; i < 128; i++) wr(DATA, p[i]);
     return wait_int(INT_DATA_DONE);
 }
+
+/* ---- the data partition ----
+ * A real card starts with a partition table and the FAT partition the Pi boots from, so
+ * the file server's blocks must never be the card's first blocks. At boot the machine layer
+ * reads the partition table (block 0) and looks for a partition of type 0xDA ("non-file-
+ * system data"); the Lean kernel's block numbers are then numbers inside that partition,
+ * and nothing outside it is ever read or written. A card with no such partition has no
+ * disk. */
+static uint64_t part_start, part_blocks;
+
+/* Find the data partition. Returns its size in blocks, 0 if there is none. */
+uint64_t sd_partition(void) {
+    static uint8_t mbr[512] __attribute__((aligned(8)));
+    part_start = part_blocks = 0;
+    if (!base || !sd_read(0, mbr)) return 0;
+    if (mbr[510] != 0x55 || mbr[511] != 0xAA) return 0;
+    for (int i = 0; i < 4; i++) {
+        const uint8_t *e = mbr + 446 + 16 * i;
+        uint32_t start = e[8] | e[9] << 8 | e[10] << 16 | (uint32_t)e[11] << 24;
+        uint32_t count = e[12] | e[13] << 8 | e[14] << 16 | (uint32_t)e[15] << 24;
+        if (e[4] == 0xDA && start != 0 && count != 0) {
+            part_start = start;
+            part_blocks = count;
+            return count;
+        }
+    }
+    return 0;
+}
+
+/* Block `block` of the data partition. */
+int sd_part_read(uint64_t block, void *dst) {
+    return block < part_blocks && sd_read(part_start + block, dst);
+}
+
+int sd_part_write(uint64_t block, const void *src) {
+    return block < part_blocks && sd_write(part_start + block, src);
+}

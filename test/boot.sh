@@ -84,7 +84,7 @@ for who in alice display mallory carol input fs; do
 done
 
 echo "$out" | grep -q "^leanos: framebuffer 1024x600 at 0x3c100000$" || fail "no framebuffer"
-echo "$out" | grep -qx "leanos: SD card ready" || fail "no SD card"
+echo "$out" | grep -qx "leanos: SD card ready, data partition of 7 MiB" || fail "no SD card data partition"
 echo "$out" | grep -q "^leanos: idle, 4 tasks waiting" || fail "did not settle with four tasks waiting"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 echo "$out" | grep -qE "SHOULD NOT|CHANGED" && fail "a protection failed"

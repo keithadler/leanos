@@ -135,6 +135,8 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   no power switch the kernel can reach, so it stops). Restarting writes the power-management
   block's watchdog for a full reset (`restart()`); both only when a Reply says so, and
   `only_display_powers` says only the display server's calls can.
+- The UART's pins: `uart_pins` routes the PL011 to GPIO 14 and 15, as a Pi 4 needs (its
+  firmware gives the PL011 to Bluetooth), with no device tree involved.
 - Programs from the SD card: for an open slot the machine layer copies the image from the
   starting task's memory (the Reply's `outVa` and `loadLen`, which
   `exec_reads_only_readable` bounds) into the slot's code frames, after rebuilding the
@@ -150,7 +152,9 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - The SD card (`arch/sd.c`, ~160 lines): an SDHCI driver by programmed I/O only, never
   DMA, because the controller can be told to write anywhere in physical memory. It must
   move exactly the 512 bytes at the address a Reply names, to or from exactly the block it
-  names, while the calling task's address space is live; `block_io_confined` says those
+  names, while the calling task's address space is live; block numbers are inside the
+  card's data partition (type 0xDA, found in the partition table at boot), and a block past
+  its end fails, so the boot partition a real Pi starts from is never read or written; `block_io_confined` says those
   are allowed, this code must do nothing else. A failed transfer is reported to Lean
   (`ioFailed`, a reachable transition), which gives the caller an I/O error. Tested only on
   QEMU, where the card sits on the older EMMC controller; the Pi 4's slot is on EMMC2, which
