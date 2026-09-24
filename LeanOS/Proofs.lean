@@ -1471,9 +1471,9 @@ def App (A : Nat) : Prop :=
   A = 0 ∨ A = 5 ∨ A = 6 ∨ A = 7 ∨ A = 9 ∨ A = 10 ∨ A = 11 ∨ A = 12 ∨ A = 13 ∨ A = 14 ∨ A = 15 ∨ A = 16
 
 /-- The tasks that may use the network service (endpoint 2, received by the USB driver):
-Terminal, and the open slots (10 to 15), which the USB driver answers only if Terminal
+Terminal and Apps (which say which program may use it), and the open slots (10 to 15), which the USB driver answers only if Terminal
 allowed the program running there. -/
-def NetClient (A : Nat) : Prop := A = 5 ∨ A = 10 ∨ A = 11 ∨ A = 12 ∨ A = 13 ∨ A = 14 ∨ A = 15
+def NetClient (A : Nat) : Prop := A = 5 ∨ A = 16 ∨ A = 10 ∨ A = 11 ∨ A = 12 ∨ A = 13 ∨ A = 14 ∨ A = 15
 
 /-- The tasks that may use the file server: Notes (0), Terminal (5), Files (9), Apps (16), and
 the open slots (10 to 15), which the file server lets reach only what they were given. -/
@@ -1560,8 +1560,10 @@ theorem edge_iff {A B : Nat} :
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 15,
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
-    · rcases hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl
+    · rcases hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
       · exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 5,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 16,
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 10,
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩

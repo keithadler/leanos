@@ -11,6 +11,7 @@
 #include "app.h"
 #include "fs.h"
 #include "elfload.h"
+#include "net.h"
 
 #define AW 480
 #define AH 336
@@ -47,6 +48,7 @@ struct launcher {
     struct picture builtin[NBUILTIN];
     struct surface win;
     struct fs_client fs;
+    struct net_client net;
     struct prog p[MAX_PROGS];
     int n;
     int pressed;           /* the cell drawn pressed: 0-4 built-in, 10 + i a card program, -1 none */
@@ -204,6 +206,9 @@ static void start(struct launcher *st, struct line *l, int i) {
             fs_unshare(&st->fs, OPEN_FIRST + (u64)k);
             fs_share(&st->fs, folder, OPEN_FIRST + (u64)k, FS_R | FS_W, 1);
             if (sys(SYS_EXEC, LAUNCH_OPEN + (u64)k, (u64)image, len, 0, 0).status != OK) continue;
+            /* the network: only for the browser (what ran in this slot before loses it) */
+            int wants = p->name[0] == 'w' && p->name[1] == 'e' && p->name[2] == 'b' && !p->name[3];
+            net_call(&st->net, NET_ALLOW, OPEN_FIRST + (u64)k | (u64)wants << 8, 0);
             p->slot = OPEN_FIRST + k + 1;
             why = 0;
             break;
@@ -262,6 +267,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     for (int i = 0; i < NBUILTIN; i++) st->builtin[i] = picture_of(assets, ASSET_ICON, 10 + (unsigned)i);
     st->win = app_surface_at(WIN_OFFSET, AW, AH);
     fs_init(&st->fs, SPARE_PAGE);
+    net_init(&st->net, SPARE_PAGE);
     st->pressed = -1;
     scan(st, &l);
     /* Started by a click on a program pinned in the dock? Then start that, and nothing else. */

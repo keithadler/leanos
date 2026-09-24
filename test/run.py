@@ -99,8 +99,8 @@ def usb_touch(x, y, down=None):
 
 
 # Where each dock icon's center is (user/display.c: DOCK_X + DOCK_PAD + ICON / 2 + 66 i).
-DOCK = {name: (248 + 66 * i, 548) for i, name in enumerate(
-    ["Notes", "Files", "Terminal", "Settings", "Security", "Apps", "Clock", "Calculator", "Tour"])}
+DOCK = {name: (215 + 66 * i, 548) for i, name in enumerate(
+    ["Notes", "Files", "Terminal", "Settings", "Security", "Apps", "Clock", "Calculator", "Tour", "Web"])}
 
 
 def wait_for(prefix, times=1):

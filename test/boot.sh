@@ -138,6 +138,6 @@ for x, y in ((144, 144), (16, 48), (976, 560)):
     assert sum(dot) > sum(between) + 40, ("pattern dot", (x, y), dot, between)
 dark = sum(1 for y in range(292, 314) for x in range(292, 330) if max(at(x, y)) < 100)
 assert dark > 20, ("typed text", dark)
-assert max(at(248, 548)) > 120, ("the Notes icon in the dock", at(248, 548))
+assert max(at(215, 548)) > 120, ("the Notes icon in the dock", at(215, 548))
 print("ok: the boot screen, the desktop, the dock, the typed note and the moved window are on screen; mallory's write never landed")
 PY

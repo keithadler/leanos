@@ -31,8 +31,10 @@ steps = [wait_for("usb: network: address"), *click(*DOCK["Terminal"]), wait_for(
          *keys("run web\r"), wait_for("web: opened"), *keys(url), wait_for("web: http"),
          *click(194, 163), wait_for("web: window closed"),       # its close button
          *click(150, 300), *keys("run -net web\r"), wait_for("web: opened", 2),
-         *keys(url), wait_for("web: http", 2), *keys("1\r"), wait_for("web: http", 3)]
-sys.exit(boot(180, net=True, steps=steps, until=f"web: http://10.0.2.2:{os.environ['PORT']}/page2", settle=1))
+         *keys(url), wait_for("web: http", 2), *keys("1\r"), wait_for("web: http", 3),
+         *click(194, 163), wait_for("web: window closed", 2),     # and from the dock, as Apps starts it
+         *click(*DOCK["Web"]), wait_for("web: opened", 3), *keys(url.replace(".html", ".html?dock"))]
+sys.exit(boot(200, net=True, steps=steps, until=f"web: http://10.0.2.2:{os.environ['PORT']}/index.html?dock", settle=1))
 PY
 )
 status=$?
@@ -45,4 +47,5 @@ echo "$out" | grep -qx "usb: network: slot 10 may use the network" || fail "run 
 echo "$out" | grep -qE "^web: http://10.0.2.2:$port/index.html -> [0-9]+ bytes, HTTP 200, 2 links, [0-9]+ lines: leanos test$" \
   || fail "the page did not load with its title and two links"
 echo "$out" | grep -qE "^web: http://10.0.2.2:$port/page2.html -> [0-9]+ bytes, HTTP 200, 0 links" || fail "link 1 did not lead to page 2"
-echo "ok: web is refused the network until Terminal allows it, then loads a page and follows a link"
+echo "$out" | grep -qE "^web: http://10.0.2.2:$port/index.html\?dock -> [0-9]+ bytes, HTTP 200" || fail "web from the dock did not load the page"
+echo "ok: web is refused the network until Terminal allows it, then loads a page and follows a link; from the dock it may"

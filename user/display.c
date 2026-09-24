@@ -62,7 +62,7 @@ enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
 
 /* The dock. */
 #define DOCK_N 6        /* the built-in apps */
-#define NPIN 3          /* programs from the card kept in the dock */
+#define NPIN 4          /* programs from the card kept in the dock */
 #define DOCK_ALL (DOCK_N + NPIN)
 #define ICON 52
 #define ICON_GAP 14
@@ -72,10 +72,10 @@ enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
 #define DOCK_X ((W - DOCK_W) / 2)
 #define DOCK_Y (H - DOCK_H - 10)
 static const char *const dock_names[DOCK_ALL] = {"Notes", "Files", "Terminal", "Settings", "Security", "Apps",
-                                                  "Clock", "Calculator", "Tour"};
+                                                  "Clock", "Calculator", "Tour", "Web"};
 /* The pinned programs' files on the card. The display cannot read the card or start a
    program from it: a click asks Apps, which can, to start it (OP_PENDING, EV_LAUNCH). */
-static const char *const pin_files[NPIN] = {"clock", "calc", "tour"};
+static const char *const pin_files[NPIN] = {"clock", "calc", "tour", "web"};
 #define APPS_DOCK 5
 static const int dock_slot[DOCK_N] = {0, 9, 5, 6, 7, 16};
 static const int dock_launch[DOCK_N] = {LAUNCH_FIRST, LAUNCH_FIRST + 4, LAUNCH_FIRST + 1, LAUNCH_FIRST + 2,

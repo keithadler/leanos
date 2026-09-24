@@ -321,9 +321,9 @@ def initCaps : Nat → List Cap
            (epCap 2 false true true 15)
   | 17 => snoc (snoc (snoc (snoc (snoc (frameCaps 17) (epCap 0 false true false 17)) (irqCap usbIrq)) usbCap)
            (epCap 2 true false false 0)) wallCap
-  | 16 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 16) (epCap 0 false true true 16))
+  | 16 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 16) (epCap 0 false true true 16))
            (epCap 1 false true true 16)) (launchCap 10)) (launchCap 11)) (launchCap 12)) (launchCap 13))
-           (launchCap 14)) (launchCap 15)
+           (launchCap 14)) (launchCap 15)) (epCap 2 false true true 16)
   | i => frameCaps i
 
 /-- The open slots, 10 to 15: they run whatever program they are started with (Terminal

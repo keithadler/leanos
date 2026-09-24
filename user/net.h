@@ -7,7 +7,8 @@
    A program from the card is answered only if Terminal allowed it (`run -net`): the USB
    driver keeps, per open slot, the hash of the program allowed there (the kernel measured
    it, `bootinfo`), and refuses anything else in that slot with NET_DENIED. Setting the
-   time and allowing are Terminal's alone. */
+   time is Terminal's alone; allowing, Terminal's (`run -net`) and Apps' (for web, started
+   from the dock or the Apps window). */
 #pragma once
 #include "lib.h"
 
@@ -35,7 +36,7 @@ struct net_info {
 #define NET_BODY_MAX (512 * 1024)
 
 #ifndef NET_SERVER
-#define NET_ENDPOINT 12     /* Terminal's capability to endpoint 2 */
+#define NET_ENDPOINT 12     /* Terminal's and Apps' capability to endpoint 2 */
 #define NET_ENDPOINT_OPEN 6 /* an open slot's */
 
 struct net_client { u64 cap, ep; char *buf; };

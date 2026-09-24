@@ -575,7 +575,7 @@ static int allowed(struct usb *u, u64 badge) {
 static u64 request(struct usb *u, u64 badge, u64 op, u64 arg, char *buf, u64 *v2, u64 *v3) {
     buf[239] = 0;
     if (!allowed(u, badge)) return NET_DENIED;
-    if ((op == NET_TIME || op == NET_ALLOW) && badge != 5) return NET_DENIED;
+    if ((op == NET_TIME && badge != 5) || (op == NET_ALLOW && badge != 5 && badge != 16)) return NET_DENIED;
     if (op == NET_ALLOW) {
         u64 slot = arg & 255;
         if (slot < 10 || slot > 15) return NET_BAD;

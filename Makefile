@@ -93,7 +93,8 @@ DISPLAY_ASSETS := font:1:$(FONTS)/Inter-Regular.ttf:15 font:2:$(FONTS)/Inter-Sem
   icon:10:assets/icons/memo_3d.png:52 icon:11:assets/icons/file_folder_3d.png:52 \
   icon:12:assets/icons/laptop_3d.png:52 icon:13:assets/icons/gear_3d.png:52 \
   icon:14:assets/icons/locked_3d.png:52 icon:15:assets/icons/rocket_3d.png:52 \
-  icon:16:assets/icons/alarm_clock_3d.png:52 icon:17:assets/icons/abacus_3d.png:52 icon:18:assets/icons/shield_3d.png:52
+  icon:16:assets/icons/alarm_clock_3d.png:52 icon:17:assets/icons/abacus_3d.png:52 icon:18:assets/icons/shield_3d.png:52 \
+  icon:19:assets/icons/globe_with_meridians_3d.png:52
 ALICE_ASSETS := font:5:$(FONTS)/Inter-SemiBold.ttf:20 font:6:$(FONTS)/Inter-Regular.ttf:17 \
   font:3:$(FONTS)/Inter-Regular.ttf:12
 
