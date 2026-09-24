@@ -59,3 +59,4 @@ open LeanOS
 #print axioms usb_dma_own_memory
 #print axioms usb_writes_safe
 #print axioms LeanOS.Journal.crash_atomic
+#print axioms file_server_knows_the_sender

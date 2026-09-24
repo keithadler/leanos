@@ -23,5 +23,5 @@ echo "$out" | grep -E "^(leanos © |leanos: (restarting|switching)|display: (res
 echo "$out" | grep -qx "display: restarting, as the user asked" || fail "the menu did not ask to restart"
 echo "$out" | grep -qx "leanos: restarting, as the display server asked" || fail "the kernel did not restart"
 echo "$out" | grep -qx "leanos: switching off, as the display server asked" || fail "the kernel did not switch off"
-[ "$(echo "$out" | grep -c "^fs: ready, 18 files on the SD card")" = 2 ] || fail "the second boot did not find the card"
+[ "$(echo "$out" | grep -c "^fs: ready, 20 files on the SD card")" = 2 ] || fail "the second boot did not find the card"
 echo "ok: the leanos menu restarts the machine and switches it off"

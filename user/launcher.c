@@ -198,6 +198,11 @@ static void start(struct launcher *st, struct line *l, int i) {
         why = "no free slot: close a program first";
         for (int k = 0; k < OPEN_SLOTS; k++) {
             if (sys1(SYS_BOOTINFO, OPEN_FIRST + (u64)k).x[4] == 1) continue;
+            /* its own folder on the card, apps/NAME, and nothing else */
+            char folder[FS_PATH_MAX + 1] = "apps/";
+            for (int i = 0; p->name[i] && i < FS_NAME_MAX; i++) { folder[5 + i] = p->name[i]; folder[6 + i] = 0; }
+            fs_unshare(&st->fs, OPEN_FIRST + (u64)k);
+            fs_share(&st->fs, folder, OPEN_FIRST + (u64)k, FS_R | FS_W, 1);
             if (sys(SYS_EXEC, LAUNCH_OPEN + (u64)k, (u64)image, len, 0, 0).status != OK) continue;
             p->slot = OPEN_FIRST + k + 1;
             why = 0;

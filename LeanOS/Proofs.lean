@@ -1423,8 +1423,9 @@ Security (7), Files (9), the programs in the open slots (10 to 15), and Apps (16
 def App (A : Nat) : Prop :=
   A = 0 ∨ A = 5 ∨ A = 6 ∨ A = 7 ∨ A = 9 ∨ A = 10 ∨ A = 11 ∨ A = 12 ∨ A = 13 ∨ A = 14 ∨ A = 15 ∨ A = 16
 
-/-- The apps that may use the file server: Notes (0), Terminal (5), Files (9) and Apps (16). -/
-def FsClient (A : Nat) : Prop := A = 0 ∨ A = 5 ∨ A = 9 ∨ A = 16
+/-- The tasks that may use the file server: Notes (0), Terminal (5), Files (9), Apps (16), and
+the open slots (10 to 15), which the file server lets reach only what they were given. -/
+def FsClient (A : Nat) : Prop := A = 0 ∨ A = 5 ∨ A = 9 ∨ A = 16 ∨ A = 10 ∨ A = 11 ∨ A = 12 ∨ A = 13 ∨ A = 14 ∨ A = 15
 
 /-- Who may receive on an endpoint at boot: the display server on endpoint 0, the file
 server on endpoint 1, nobody else. (One pass over the manifest, not one per sender.) -/
@@ -1482,7 +1483,7 @@ theorem edge_iff {A B : Nat} : Edge A B ↔ (App A ∧ B = 1) ∨ (FsClient A �
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 16,
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
-    · rcases hA with rfl | rfl | rfl | rfl
+    · rcases hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 1,
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 5,
@@ -1490,6 +1491,18 @@ theorem edge_iff {A B : Nat} : Edge A B ↔ (App A ∧ B = 1) ∨ (FsClient A �
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 9,
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 16,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 10,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 11,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 12,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 13,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 14,
+          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+      · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 15,
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
 
 /-- Memory moves at most one step: from an app to the display server, or from a client to
@@ -2966,5 +2979,32 @@ theorem usb_writes_safe {s : KState} {num a0 a1 a2 a3 a4 : Nat}
       · exact hd ⟨hi, Or.inl hr⟩
       · exact hd ⟨hi, Or.inr hr⟩
   · omega
+
+/-! ## The file server knows who is asking -/
+
+/-- The badge task `j` sends to the file server with: Notes sends as 1, everyone else as its
+own number. -/
+def fsBadge (j : Nat) : Nat := if j = 0 then 1 else j
+
+/-- **The file server knows who is asking.** In every reachable state, any capability to the
+file server's endpoint (endpoint 1) that task `j` holds with the send right carries `j`'s own
+badge, and the kernel delivers that badge with every message. So the file server can decide
+what each program may reach by its badge: a program from the card, in open slot `k`,
+arrives as `k` and nothing else, and cannot pass for Terminal, Files, Apps or Notes. -/
+theorem file_server_knows_the_sender {s : KState} (h : Reachable s) {j : Nat} {t : Task}
+    (ht : nth? s.tasks j = some t) {c : Cap} (hc : c ∈ t.caps) (he : c.obj = .endpoint 1)
+    (hw : c.rights.w = true) : c.badge = fsBadge j := by
+  obtain ⟨c0, hc0, ho, hle, hb⟩ := endpoints_fixed h ht hc he
+  have hw0 : c0.rights.w = true := by
+    have := hle.2.1; simp_all
+  rw [← hb]
+  have hj := (reachable_inv h).lt ht
+  revert hc0 ho hw0
+  generalize c0 = c0
+  intro hc0 ho hw0
+  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc0 <;>
+    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp_all [fsBadge]
 
 end LeanOS

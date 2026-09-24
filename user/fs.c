@@ -78,6 +78,13 @@ struct jhead {
     unsigned target[JMAX];
 };
 
+/* What a program from the card (open slot 10 to 15) was given: a path, and everything
+   under it if it is a folder, with read and/or write. Terminal, Files and Apps give; the
+   kernel's badges say who asks (`file_server_knows_the_sender`), so a program reaches
+   nothing else. Given paths are kept normalized: no leading, trailing or doubled '/'. */
+#define MAX_GRANTS 48
+struct grant { unsigned char slot, rights; char path[FS_PATH_MAX + 1]; };
+
 /* Clusters in memory: a small cache of STAGES pages. A changed cluster stays until the
    request commits; an unchanged one can be dropped when another needs its page. */
 struct stage { unsigned cl; int dirty, live; };
@@ -94,6 +101,8 @@ struct server {
     const char *tx_src[JMAX];
     int ntx, overflow;
     unsigned char seen_ino[MAX_INODES / 8];      /* the check: inodes found in the tree */
+    struct grant grants[MAX_GRANTS];
+    unsigned char refusals[16];                  /* per open slot, for the log */
 };
 
 /* A program's image is read-only: everything it changes lives in its data pages. */
@@ -495,6 +504,48 @@ static unsigned walk(const char *path, char *last) {
     }
 }
 
+/* ---- who may reach what ---- */
+
+/* A path ends within FS_PATH_MAX bytes (what follows its 0 may be anything). */
+static int terminated(const char *p) {
+    for (int i = 0; i <= FS_PATH_MAX; i++) if (!p[i]) return 1;
+    return 0;
+}
+
+enum { BADGE_NOTES = 1, BADGE_TERMINAL = 5, BADGE_FILES = 9, BADGE_APPS = 16 };
+static int trusted(u64 badge) {
+    return badge == BADGE_NOTES || badge == BADGE_TERMINAL || badge == BADGE_FILES || badge == BADGE_APPS;
+}
+static int sharer(u64 badge) { return badge == BADGE_TERMINAL || badge == BADGE_FILES || badge == BADGE_APPS; }
+static int open_slot(u64 badge) { return badge >= 10 && badge <= 15; }
+
+/* `path` without leading, trailing or doubled '/'. */
+static void normalize(const char *path, char *out) {
+    int n = 0;
+    for (int i = 0; path[i] && n < FS_PATH_MAX; i++) {
+        if (path[i] == '/' && (n == 0 || out[n - 1] == '/')) continue;
+        out[n++] = path[i];
+    }
+    while (n > 0 && out[n - 1] == '/') n--;
+    out[n] = 0;
+}
+
+/* Whether `badge` may do what needs `rights` to `path`. */
+static int allowed(u64 badge, const char *path, unsigned rights) {
+    if (trusted(badge)) return 1;
+    if (!open_slot(badge)) return 0;
+    char p[FS_PATH_MAX + 1];
+    normalize(path, p);
+    for (int g = 0; g < MAX_GRANTS; g++) {
+        struct grant *gr = &S->grants[g];
+        if (gr->slot != badge || (gr->rights & rights) != rights || !gr->path[0]) continue;
+        int i = 0;
+        while (gr->path[i] && gr->path[i] == p[i]) i++;
+        if (!gr->path[i] && (p[i] == 0 || p[i] == '/')) return 1;
+    }
+    return 0;
+}
+
 /* Whether the path `to` passes through folder `ino` (so a move there would put a folder
    inside itself). */
 static int inside(const char *to, unsigned ino) {
@@ -530,10 +581,27 @@ static int load_metadata(void) {
 }
 
 static u64 serve_op(u64 op, u64 arg, char *buf, u64 *value, u64 *more);
+static u64 share_op(u64 badge, u64 op, u64 arg, char *buf, u64 *value);
 
 /* A request that fails part way leaves the card as it was (nothing was committed), and
    its changes to the copies in memory are dropped: they are read back from the card. */
-static u64 serve(u64 op, u64 arg, char *buf, u64 *value, u64 *more) {
+static u64 serve(u64 badge, u64 op, u64 arg, char *buf, u64 *value, u64 *more, struct line *l) {
+    if (op >= FS_SHARE) return share_op(badge, op, arg, buf, value);
+    if (!terminated(buf)) return FS_BAD;                          /* a path too long */
+    if (op == FS_RENAME && !terminated(buf + FS_DATA_OFF)) return FS_BAD;
+    unsigned need = op == FS_LIST || op == FS_READ || op == FS_STAT ? FS_R : FS_W;
+    if (!allowed(badge, buf, need) || (op == FS_RENAME && !allowed(badge, buf + FS_DATA_OFF, FS_W))) {
+        if (open_slot(badge) && S->refusals[badge] < 4) {
+            S->refusals[badge]++;
+            put_s(l, "fs: refused the program in slot ");
+            put_dec(l, badge);
+            put_s(l, need == FS_R ? " a read of " : " a change to ");
+            put_s(l, buf[0] ? buf : "the top folder");
+            put_s(l, ": not given to it\n");
+            flush(l);
+        }
+        return FS_DENIED;
+    }
     u64 code = serve_op(op, arg, buf, value, more);
     if (code != FS_OK && op != FS_LIST && op != FS_READ && op != FS_STAT) {
         load_metadata();
@@ -640,6 +708,68 @@ static u64 serve_op(u64 op, u64 arg, char *buf, u64 *value, u64 *more) {
         if ((code = (u64)dir_add(todir, toname, ino, kind)) != FS_OK) return code;
     } else return FS_BAD;
     if (!commit()) return S->overflow ? FS_FULL : FS_IO;
+    return FS_OK;
+}
+
+/* SHARE, UNSHARE, GRANTS. */
+static u64 share_op(u64 badge, u64 op, u64 arg, char *buf, u64 *value) {
+    char p[FS_PATH_MAX + 1];
+    if (!terminated(buf)) return FS_BAD;
+    normalize(buf, p);
+    if (op == FS_GRANTS) {
+        char *out = buf + FS_DATA_OFF;
+        u64 n = 0, at = 0;
+        for (int g = 0; g < MAX_GRANTS; g++) {
+            struct grant *gr = &S->grants[g];
+            if (gr->slot != badge || !open_slot(badge)) continue;
+            int len = 0;
+            while (gr->path[len]) len++;
+            if (at + (u64)len + 2 > FS_CHUNK) break;
+            out[at++] = (char)gr->rights;
+            for (int i = 0; i <= len; i++) out[at++] = gr->path[i];
+            n++;
+        }
+        *value = n;
+        return FS_OK;
+    }
+    if (!sharer(badge)) return FS_DENIED;
+    u64 slot = arg & 255;
+    if (!open_slot(slot)) return FS_BAD;
+    if (op == FS_UNSHARE) {
+        for (int g = 0; g < MAX_GRANTS; g++) if (S->grants[g].slot == slot) S->grants[g].slot = 0;
+        S->refusals[slot] = 0;
+        return FS_OK;
+    }
+    if (op != FS_SHARE || !p[0]) return FS_BAD;
+    if ((arg >> 16) & 1) {                /* the folder, and the folders it is in */
+        char part[FS_PATH_MAX + 1];
+        u64 v, m;
+        for (int i = 0;; i++) {
+            if (p[i] == '/' || !p[i]) {
+                for (int k = 0; k < i; k++) part[k] = p[k];
+                part[i] = 0;
+                for (int k = 0; k <= i; k++) buf[k] = part[k];
+                u64 code = serve_op(FS_STAT, 0, buf, &v, &m);
+                if (code == FS_NOT_FOUND) code = serve_op(FS_MKDIR, 0, buf, &v, &m);
+                else if (m != FS_DIR) code = FS_NOT_DIR;
+                if (code != FS_OK) return code;
+            }
+            if (!p[i]) break;
+        }
+    }
+    int free = -1;
+    for (int g = 0; g < MAX_GRANTS; g++) {
+        struct grant *gr = &S->grants[g];
+        int i = 0;
+        while (gr->path[i] && gr->path[i] == p[i]) i++;
+        if (gr->slot == slot && !gr->path[i] && !p[i]) { gr->rights = (unsigned char)((arg >> 8) & 3); return FS_OK; }
+        if (!gr->slot && free < 0) free = g;
+    }
+    if (free < 0) return FS_FULL;
+    struct grant *gr = &S->grants[free];
+    gr->slot = (unsigned char)slot;
+    gr->rights = (unsigned char)((arg >> 8) & 3);
+    for (int i = 0; i <= FS_PATH_MAX; i++) { gr->path[i] = p[i]; if (!p[i]) break; }
     return FS_OK;
 }
 
@@ -834,6 +964,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     sys2(SYS_MAP, SPARE, BITMAP_PAGE);
     sv->errors = 0;
     sv->ram = 0;
+    for (int g = 0; g < MAX_GRANTS; g++) sv->grants[g].slot = 0;
+    for (int i = 0; i < 16; i++) sv->refusals[i] = 0;
     sv->rover = 1;
 
     /* The card, if there is one: its file system, or a new one. */
@@ -855,11 +987,12 @@ __attribute__((section(".text.start"))) void _start(void) {
             "a restart. Notes saves here, Terminal can ls, cat, write and rm, and Files shows "
             "them all.";
         char *buf = (char *)PAGE(20);           /* a data page: the cluster pages are busy */
+        zero(buf, FS_DATA_OFF);
         copy(buf, "welcome.txt", 12);
         *(u64 *)(buf + FS_OFFSET_AT) = 0;
         copy(buf + FS_DATA_OFF, welcome, sizeof welcome - 1);
         u64 v, m;
-        serve(FS_WRITE, sizeof welcome - 1, buf, &v, &m);
+        serve(BADGE_TERMINAL, FS_WRITE, sizeof welcome - 1, buf, &v, &m, &l);
         files = 1;
         if (sv->on_disk) put_s(&l, "fs: made a new file system on the SD card; ready, 1 file\n");
         else put_s(&l, "fs: no SD card; files are kept in memory only; ready, 1 file\n");
@@ -885,14 +1018,14 @@ __attribute__((section(".text.start"))) void _start(void) {
 
     for (;;) {
         struct res r = sys1(SYS_RECV, EP);
-        u64 op = r.x[2], arg = r.x[3], grant = r.x[5], slot = r.x[6];
+        u64 badge = r.x[1], op = r.x[2], arg = r.x[3], grant = r.x[5], slot = r.x[6];
         if (!slot) continue;              /* a plain send: nobody to answer */
         u64 code = FS_BAD, value = 0, more = 0;
         if (grant) {
             struct res info = sys1(SYS_CAPINFO, grant - 1);
             if (info.x[2] == 0 && info.x[3] == FS_BUF_PAGES && (info.x[1] & (R | W)) == (R | W) &&
                 sys2(SYS_MAP, grant - 1, BUF_PAGE).status == OK) {
-                code = serve(op, arg, (char *)PAGE(BUF_PAGE), &value, &more);
+                code = serve(badge, op, arg, (char *)PAGE(BUF_PAGE), &value, &more, &l);
                 sys2(SYS_UNMAP, BUF_PAGE, FS_BUF_PAGES);
             }
             sys1(SYS_DROP, grant - 1);

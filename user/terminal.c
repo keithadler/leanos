@@ -395,9 +395,37 @@ static void cmd_ps(struct term *t, struct line *l) {
 }
 
 /* Read a program from the SD card, make its image, and start it in a free open slot. */
+/* What a program from the card gets from the file server when it starts in open slot
+   `slot`: its own folder, apps/NAME, read-write (made if new), and the files named after
+   it on the command line, read-write; nothing else. Whatever the slot's last program was
+   given is taken back first. */
+static void give(struct term *t, struct line *l, u64 slot, const char *name, const char *files) {
+    fs_unshare(&t->fs, slot);
+    char folder[FS_PATH_MAX + 1] = "apps/";
+    const char *last = name;
+    for (const char *p = name; *p; p++) if (*p == '/') last = p + 1;
+    int n = 5;
+    for (int i = 0; last[i] && n < FS_PATH_MAX; i++) folder[n++] = last[i];
+    folder[n] = 0;
+    fs_share(&t->fs, folder, slot, FS_R | FS_W, 1);
+    while (*files) {
+        char word[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+        files = word_of(files, word, FS_PATH_MAX);
+        if (!word[0]) break;
+        resolve(t, word, path);
+        u64 st = fs_share(&t->fs, path, slot, FS_R | FS_W, 0);
+        put_s(l, "terminal: gave ");
+        put_s(l, last);
+        put_s(l, " ");
+        put_s(l, path);
+        put_s(l, st == FS_OK ? " -> ok\n" : " -> refused\n");
+        flush(l);
+    }
+}
+
 static void cmd_run(struct term *t, struct line *l, const char *args) {
     char name[FS_NAME_MAX + 1];
-    word_of(args, name, FS_NAME_MAX);
+    const char *files = word_of(args, name, FS_NAME_MAX);
     if (name[0] && app_raise(name)) {
         say(t, "already open: brought it to the front");
         fs_log(l, "run", name, "already open");
@@ -433,6 +461,7 @@ static void cmd_run(struct term *t, struct line *l, const char *args) {
     image_add_icon(image, &len, (const unsigned char *)fs_data(&t->fs), isize > 0 ? (u64)isize : 0, name);
     for (int i = 0; i < OPEN_SLOTS; i++) {
         if (sys1(SYS_BOOTINFO, OPEN_FIRST + (u64)i).x[4] == 1) continue;   /* in use */
+        give(t, l, OPEN_FIRST + (u64)i, name, files);
         struct res r = sys(SYS_EXEC, LAUNCH_OPEN + (u64)i, (u64)image, len, 0, 0);
         if (r.status != OK) continue;
         put_s(l, "started ");

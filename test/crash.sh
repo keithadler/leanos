@@ -54,6 +54,11 @@ echo "$out" | grep "^cut " | grep -q "fs: repaired" && fail "a power cut left so
 echo "$out" | grep "^cut " | grep -q "mixed" && fail "a power cut left half of one version and half of another"
 echo "$out" | grep "^cut " | grep -vq "fs: checked" && fail "a boot did not check the card"
 echo "$out" | grep "^cut " | grep -q ", LOST;" && fail "a change the file server had committed was lost"
-bad=$(echo "$out" | grep "^cut " | grep "terminal: verify f -> " | grep -v "terminal: verify f -> 204800 bytes of '[a-j]'")
+# a cut before the first fill finished leaves no f yet (and then no fill was logged: a
+# logged fill with f missing is caught as LOST above)
+bad=$(echo "$out" | grep "^cut " | grep "terminal: verify f -> " | grep -v "terminal: verify f -> 204800 bytes of '[a-j]'" | grep -v "verify f -> no such file")
 [ -z "$bad" ] || fail "f was not one whole version: $bad"
+# and the rewrites really happened: most cuts find a whole f (a fill that never succeeds
+# would leave no f at all, and prove nothing)
+[ "$(echo "$out" | grep "^cut " | grep -c "verify f -> 204800 bytes of")" -ge 6 ] || fail "the fills did not run"
 echo "ok: twelve power cuts in the middle of writes, and every time the card was consistent and the file whole"

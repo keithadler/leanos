@@ -227,6 +227,10 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                 status = 124
                 break
     finally:
+        try:
+            proc.stdin.close()                  # QEMU may be gone already: nothing to say
+        except (BrokenPipeError, OSError, ValueError):
+            pass
         if proc.poll() is None:
             try:
                 proc.wait(timeout=5)
@@ -272,7 +276,7 @@ APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
              *keys("abc"),
              *click(150, 400), b"run clock\r", wait_for("clock: ticked 3 times"),
              *click(*DOCK["Files"]), wait_for("files: opened"),
-             *[b"\x1b[B"] * 19, wait_for("files: showing hello.txt"),
+             *[b"\x1b[B"] * 21, wait_for("files: showing hello.txt"),
              *click(*DOCK["Security"]), wait_for("security: 12")]
 
 if __name__ == "__main__":

@@ -239,6 +239,10 @@ QEMU's model of them, because leanos has only run under QEMU.
   owner's slot is started again; a running app cannot take back one grant on its own yet.
 - Which task *runs* is proved only up to the scheduler: nothing proves that a started app
   eventually gets to run, or that the display server starts what the user clicked.
+- The file server decides what each program from the card may reach: its own folder
+  (`apps/NAME`) and the paths Terminal, Files or Apps shared with its slot, read and/or
+  write. The kernel proves who is asking (`file_server_knows_the_sender`); the rule itself
+  is the file server's C (`allowed` in `user/fs.c`), trusted, not proved.
 - The file server is trusted with what its clients store: it can read and change any
   file, and it sees each client's buffer while it answers that client. The proofs bound
   what it can *hold* (its own frames, a client's buffer only as that client granted it,

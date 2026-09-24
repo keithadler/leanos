@@ -139,8 +139,10 @@ mutant "Notes' slot counts as open" \
   "def openSlot (i : Nat) : Bool := Nat.ble 10 i && Nat.ble i 15" "def openSlot (i : Nat) : Bool := (Nat.ble 10 i && Nat.ble i 15) || i == 0"
 mutant "manifest lets Notes start programs from the SD card" \
   "  | 0 => snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)" "  | 0 => snoc (snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)) (launchCap 10)"
-mutant "an open slot's program may use the file server" \
-  "  | 10 => snoc (frameCaps 10) (epCap 0 false true true 10)" "  | 10 => snoc (snoc (frameCaps 10) (epCap 0 false true true 10)) (epCap 1 false true true 10)"
+mutant "an open slot may receive the file server's mail" \
+  "  | 10 => snoc (snoc (frameCaps 10) (epCap 0 false true true 10)) (epCap 1 false true true 10)" "  | 10 => snoc (snoc (frameCaps 10) (epCap 0 false true true 10)) (epCap 1 true true true 10)"
+mutant "an open slot sends to the file server as Terminal" \
+  "  | 12 => snoc (snoc (frameCaps 12) (epCap 0 false true true 12)) (epCap 1 false true true 12)" "  | 12 => snoc (snoc (frameCaps 12) (epCap 0 false true true 12)) (epCap 1 false true true 5)"
 mutant "a tick wakes sleepers early" \
   "  | .sleeping u => if Nat.ble u now then" "  | .sleeping u => if true then"
 mutant "manifest gives Terminal the power capability" \

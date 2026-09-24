@@ -156,6 +156,12 @@ journal's protocol is modeled in Lean (`LeanOS/JournalModel.lean`) with the proo
 cut after any number of block writes, then recovery, gives the state before or after the
 change (`crash_atomic`); four mutants of the model are caught.
 
+Done too: files for programs from the card. The open slots hold the file server's endpoint,
+each with its own badge (`file_server_knows_the_sender`), and the file server lets a program
+reach only its own folder, `apps/NAME`, and what Terminal, Files or Apps gave it
+(`run edit notes.txt`). The tour's first page asks for your note and is refused. `edit`, a
+text editor on the card, edits what it was given and saves by itself.
+
 Done too: programs from the SD card. They are ELF files on the card (`tools/mksd.py`
 writes a card with them, the way programs are copied onto any computer's disk); Terminal's
 `run` reads one, checks and flattens it in user space, and starts it with `exec` in one of

@@ -23,11 +23,14 @@ off) and shows the kernel's answer next to what a typical Linux desktop allows, 
 included, and ends with what Linux does better.
 
 Also on the card: `calc` (a calculator), `snake`, `life` (Conway's Game of Life), `tiles`
-(2048), `clock`, `hello`, `fuzz` (20,000 system calls with made-up arguments, every
-answer checked against the proofs), and `guide.txt`, a short user guide. Every program has
+(2048), `clock`, `hello`, `edit` (a text editor that saves by itself), `fuzz` (20,000
+system calls with made-up arguments, every answer checked against the proofs), and `guide.txt`, a short user guide. Every program has
 an icon, in the Apps window, its title bar and the dock. Up to six programs from the card
 run at once, each confined to its own memory and a window; starting one that is already
-open brings its window to the front. Clock, Calculator and the Tour are pinned in the dock.
+open brings its window to the front. A program from the card reaches only its own folder
+on the card (`apps/NAME`) and the files you hand it: `run edit notes.txt` gives the editor
+that one file. The file server refuses the rest, and knows who is asking because the
+kernel's badges cannot be faked (`file_server_knows_the_sender`). Clock, Calculator and the Tour are pinned in the dock.
 
 The dock starts apps: **Files** lists and shows what the file server holds, **Terminal**
 answers from the kernel (`whoami`, `caps`, `boot`, `ps`, `uptime`), the file server (`ls`,
@@ -219,6 +222,11 @@ can reach, under any sequence of system calls with any arguments:
   with the right the direction needs; the writes that could aim DMA anywhere else (device
   mode, descriptor DMA, descriptor lists) are never passed on; and only the driver holds
   the controller, which nobody can pass memory to. The driver tries all of it at start.
+- **The file server knows who is asking**: every capability to its endpoint carries its
+  holder's own badge, fixed by the manifest, so a program from the card (open slot 10 to
+  15) can never pass for Terminal, Files, Apps or Notes. The file server gives each one
+  only its own folder and the files it was handed (that part is the file server's C, not
+  proved).
 - **A power cut never leaves a change half done**, for a model of the file server's journal:
   cut its block writes anywhere, recover, and every block outside the journal is as before
   the change or as after it (`crash_atomic`, in `LeanOS/Journal.lean`). The C file server

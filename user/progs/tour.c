@@ -8,6 +8,7 @@
    The comparisons are about Linux as most desktops ship it; where Linux has a mitigation
    that closes the gap when it is switched on, the page names it. */
 #include "../ui.h"
+#include "../fs.h"
 
 #define TW 640
 #define TH 288
@@ -31,8 +32,8 @@ static const struct page pages[] = {
      "attack, and you see what the kernel answered.",
      "Next: right arrow, Enter or a click. Back: left arrow. Close the window to stop."},
     {"Your files", TRY_FILES,
-     "A program gets only the capabilities its slot is given. This one was never given the "
-     "file server, so it has nothing to ask with.",
+     "A program from the card reaches only its own folder and the files you hand it (run "
+     "edit notes.txt). The kernel tells the file server who is asking; it cannot be faked.",
      "Every program you run has all of your user's rights: ~/.ssh, your browser profile, "
      "every document. Unless you sandbox it (Flatpak, SELinux)."},
     {"Other programs' memory", TRY_MEMORY,
@@ -87,6 +88,7 @@ static const struct page pages[] = {
 struct tour {
     struct ui ui;
     struct surface win;
+    struct fs_client fs;
     int page;
     char what[96];       /* what the attempt was */
     char said[96];       /* what the kernel said */
@@ -114,9 +116,15 @@ static void attempt(struct tour *t) {
     t->verdict = -1;
     t->what[0] = t->said[0] = 0;
     switch (pages[t->page].try) {
-    case TRY_FILES:        /* the file server's endpoint would be a capability this program lacks */
-        result(t, "Ask the file server for your files", sys(SYS_CALL, 20, 1, 0, 0, 0).status);
+    case TRY_FILES: {      /* your note, which nobody gave it; then its own folder, which it has */
+        fs_path(&t->fs, "notes.txt");
+        u64 note = fs_call(&t->fs, FS_READ, 0).x[1];
+        u64 own = fs_write(&t->fs, "apps/tour/visited.txt", "yes", 3);
+        result(t, "Read your note (notes.txt)", note == FS_DENIED && own == FS_OK ? BAD_ARG : OK);
+        if (note == FS_DENIED && own == FS_OK)
+            copy(t->said, "not given to it (its own folder, apps/tour: allowed)", sizeof t->said);
         break;
+    }
     case TRY_MEMORY: {
         u64 a = sys2(SYS_MAP, 20, 1000).status;                       /* someone else's frames */
         u64 b = sys(SYS_DERIVE, 1, R, 0, 9, 0).status;                /* 9 pages of an 8-page run */
@@ -257,6 +265,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     struct line l = {.n = 0};
     ui_load(&t->ui, app_assets());
     t->win = app_surface_at(WIN_OFFSET, TW, TH);
+    fs_init(&t->fs, SPARE_PAGE);
     t->page = 0;
     t->what[0] = 0;
     t->verdict = -1;

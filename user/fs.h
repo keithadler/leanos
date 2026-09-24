@@ -23,9 +23,15 @@ enum {
     FS_MKDIR = 6,     /* a new folder at path */
     FS_STAT = 7,      /* x2 = size, x3 = kind */
     FS_RENAME = 8,    /* path becomes the path in the data area, in one step */
+    FS_SHARE = 9,     /* give open slot (arg & 255) path, with rights (arg >> 8 & 3), making it a
+                         folder first if (arg >> 16 & 1); only Terminal, Files and Apps may */
+    FS_UNSHARE = 10,  /* take back everything open slot `arg` was given */
+    FS_GRANTS = 11,   /* what the caller was given: x2 entries in the data area, each a rights
+                         byte then a path and a 0 */
 };
 enum { FS_OK = 0, FS_NOT_FOUND = 1, FS_FULL = 2, FS_BAD = 3, FS_NO_SERVER = 4, FS_EXISTS = 5,
-       FS_NOT_EMPTY = 6, FS_NOT_DIR = 7, FS_IS_DIR = 8, FS_IO = 9 };
+       FS_NOT_EMPTY = 6, FS_NOT_DIR = 7, FS_IS_DIR = 8, FS_IO = 9, FS_DENIED = 10 };
+enum { FS_R = 1, FS_W = 2 };
 enum { FS_FILE = 1, FS_DIR = 2 };
 
 #define FS_BUF_PAGES 4
@@ -159,6 +165,26 @@ static inline long fs_list_dir(struct fs_client *c, const char *dir, u64 from, u
     if (r.x[1] != FS_OK) return -1;
     if (total) *total = r.x[3];
     return (long)r.x[2];
+}
+
+/* Give open slot `slot` the path, with rights FS_R and/or FS_W; `folder`: make it a folder
+   first. Only Terminal, Files and Apps may. */
+static inline u64 fs_share(struct fs_client *c, const char *path, u64 slot, u64 rights, int folder) {
+    fs_path(c, path);
+    return fs_call(c, FS_SHARE, slot | rights << 8 | (u64)(folder ? 1 : 0) << 16).x[1];
+}
+
+static inline u64 fs_unshare(struct fs_client *c, u64 slot) {
+    fs_path(c, "");
+    return fs_call(c, FS_UNSHARE, slot).x[1];
+}
+
+/* What this program was given (a program from the card): how many, each in the data area as
+   a rights byte, then the path and a 0. -1 if the file server did not answer. */
+static inline long fs_grants(struct fs_client *c) {
+    fs_path(c, "");
+    struct res r = fs_call(c, FS_GRANTS, 0);
+    return r.x[1] == FS_OK ? (long)r.x[2] : -1;
 }
 
 /* The top folder's first entries. */
