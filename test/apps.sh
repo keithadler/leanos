@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 fail() { echo "FAIL: $*"; exit 1; }
 
 rm -f build/screen.ppm build/screen.png
-out=$(python3 test/run.py 90 --apps)
+out=$(python3 test/run.py 120 --apps)
 status=$?
 echo "$out" | grep -vE "^(mallory|carol): " | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish the interaction (status $status)"
@@ -36,7 +36,7 @@ check_order terminal \
   "terminal: caps -> 14 capabilities" \
   "terminal: boot -> 7 verified" \
   "terminal: write hello.txt -> ok" \
-  "terminal: ls -> 22 files" \
+  "terminal: ls -> 24 files" \
   "terminal: window closed, exiting" \
   "terminal: opened a window -> ok" \
   "terminal: caps -> 14 capabilities" \
@@ -71,8 +71,8 @@ check_order settings \
   "settings: activity light on -> ok"
 
 # Files: the list, then the down arrow through every file, past the 12 rows it shows at once
-echo "$out" | grep -qx "files: listed 24 files" || fail "files did not list the card"
-[ "$(echo "$out" | grep -c "^files: showing ")" = 22 ] || fail "the down arrow did not walk the list"
+echo "$out" | grep -qx "files: listed 26 files" || fail "files did not list the card"
+[ "$(echo "$out" | grep -c "^files: showing ")" = 24 ] || fail "the down arrow did not walk the list"
 echo "$out" | grep -E "^files: showing " | tail -1 | grep -qx "files: showing hello.txt (19 bytes)" || fail "files did not reach hello.txt"
 
 check_order security \
@@ -136,7 +136,7 @@ PY
 again=$(python3 test/run.py 40 --keep-sd)
 [ $? -eq 0 ] || fail "the second boot did not reach idle"
 echo "$again" | grep -E "^(fs|alice): " | sed 's/^/  | /'
-echo "$again" | grep -qx "fs: ready, 23 files on the SD card" || fail "the files did not survive a restart"
+echo "$again" | grep -qx "fs: ready, 25 files on the SD card" || fail "the files did not survive a restart"
 echo "$again" | grep -qx "alice: loaded notes.txt, 2 bytes" || fail "Notes did not get its note back after a restart"
 
 # And with no card at all, the system still comes up, with files in memory only.

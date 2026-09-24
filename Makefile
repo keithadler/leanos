@@ -159,7 +159,7 @@ build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/f
 	$(LD) -T user/user.ld --gc-sections build/user/$*.o -o $@
 
 # Programs that live on the SD card, not in the kernel image: stripped ELF files.
-DISK_PROGS := hello clock tour calc snake life tiles fuzz edit
+DISK_PROGS := hello clock tour calc snake life tiles fuzz edit web
 DISK_ELFS := $(patsubst %,build/progs/%.elf,$(DISK_PROGS))
 build/progs/%.elf: user/progs/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/user.ld build/user/font.h
 	@mkdir -p build/progs
@@ -180,6 +180,7 @@ ICON_SRC_clock := alarm_clock_3d
 ICON_SRC_hello := waving_hand_3d_default
 ICON_SRC_fuzz := lady_beetle_3d
 ICON_SRC_edit := pencil_3d
+ICON_SRC_web := globe_with_meridians_3d
 DISK_ICONS := $(patsubst %,build/icons/%.icon,$(DISK_PROGS))
 build/icons/%.icon: tools/mkicon.py tools/mkassets.py
 	@mkdir -p build/icons
@@ -243,6 +244,7 @@ test: all
 	./test/edit.sh
 	./test/net.sh
 	./test/kill.sh
+	./test/web.sh
 
 # Break the kernel in known ways and check the proofs catch every one (slow).
 mutants:

@@ -4,8 +4,12 @@
 typedef unsigned long u64;
 
 /* x0 is the status (0 = ok); the rest depend on the call. */
-struct res { u64 x[7]; };
-#define status x[0]
+struct res {
+    union {
+        u64 x[7];
+        u64 status;          /* x[0], by name */
+    };
+};
 
 enum { SYS_WRITE, SYS_YIELD, SYS_MAP, SYS_UNMAP, SYS_DERIVE, SYS_EXIT, SYS_CAPINFO, SYS_WHOAMI,
        SYS_SEND, SYS_RECV, SYS_CALL, SYS_REPLY, SYS_IRQWAIT, SYS_IRQACK, SYS_BOOTINFO, SYS_START, SYS_DROP,
@@ -36,7 +40,7 @@ static inline struct res sys(u64 n, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
                      : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "=r"(x5), "=r"(x6)
                      : "r"(x8)
                      : "memory");
-    return (struct res){{x0, x1, x2, x3, x4, x5, x6}};
+    return (struct res){.x = {x0, x1, x2, x3, x4, x5, x6}};
 }
 #define sys0(n) sys(n, 0, 0, 0, 0, 0)
 #define sys1(n, a) sys(n, a, 0, 0, 0, 0)

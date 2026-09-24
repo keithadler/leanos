@@ -1,7 +1,13 @@
 /* The network service's protocol, both sides. The USB driver serves it on endpoint 2
-   (it owns the network adapter); Terminal calls it, as capability 12, granting its 4-page
-   buffer with every request, as with the file server: a host name or URL at byte 0, data
-   from byte 256. The reply: x1 = status, x2 and x3 as each request says. */
+   (it owns the network adapter); Terminal calls it, as capability 12, and so may a program
+   from the card (capability 6 in an open slot), granting its 4-page buffer with every
+   request, as with the file server: a host name or URL at byte 0, data from byte 256. The
+   reply: x1 = status, x2 and x3 as each request says.
+
+   A program from the card is answered only if Terminal allowed it (`run -net`): the USB
+   driver keeps, per open slot, the hash of the program allowed there (the kernel measured
+   it, `bootinfo`), and refuses anything else in that slot with NET_DENIED. Setting the
+   time and allowing are Terminal's alone. */
 #pragma once
 #include "lib.h"
 
@@ -10,11 +16,12 @@ enum {
     NET_PING = 2,     /* ping the host at byte 0 once: x2 = milliseconds */
     NET_GET = 3,      /* fetch the http:// URL at byte 0: x2 = the body's size, x3 = the HTTP status */
     NET_READ = 4,     /* the body of the last GET, from offset `arg`, into the data area: x2 = bytes */
+    NET_ALLOW = 6,    /* Terminal: allow (arg >> 8 & 1) the program now in open slot (arg & 255) */
     NET_TIME = 5,     /* ask the time server at byte 0 (host[:port]) and set the kernel's time of
                          day from it: x2 = Unix seconds */
 };
 enum { NET_OK = 0, NET_NO_DEVICE = 1, NET_NO_ADDRESS = 2, NET_NO_HOST = 3, NET_NO_ANSWER = 4,
-       NET_UNSUPPORTED = 5, NET_BAD = 6, NET_NO_SERVICE = 7 };
+       NET_UNSUPPORTED = 5, NET_BAD = 6, NET_NO_SERVICE = 7, NET_DENIED = 8 };
 
 struct net_info {
     unsigned ip, mask, gateway, dns;
@@ -29,14 +36,22 @@ struct net_info {
 
 #ifndef NET_SERVER
 #define NET_ENDPOINT 12     /* Terminal's capability to endpoint 2 */
+#define NET_ENDPOINT_OPEN 6 /* an open slot's */
 
-struct net_client { u64 cap; char *buf; };
+struct net_client { u64 cap, ep; char *buf; };
 
 /* The buffer: the same 4 pages of the spare run the file server's client uses (never both at
    once: each request is over before the next). */
 static inline void net_init(struct net_client *c, u64 spare_page) {
     c->cap = 0;
+    c->ep = NET_ENDPOINT;
     c->buf = (char *)PAGE(spare_page + 224);
+}
+
+/* For a program from the card: the same, through its own capability to the service. */
+static inline void net_init_open(struct net_client *c, u64 spare_page) {
+    net_init(c, spare_page);
+    c->ep = NET_ENDPOINT_OPEN;
 }
 
 static inline struct res net_call(struct net_client *c, u64 op, u64 arg, const char *text) {
@@ -48,7 +63,7 @@ static inline struct res net_call(struct net_client *c, u64 op, u64 arg, const c
     int i = 0;
     for (; text && text[i] && i < 240; i++) c->buf[i] = text[i];
     c->buf[i] = 0;
-    struct res r = sys(SYS_CALL, NET_ENDPOINT, op, arg, 0, c->cap);
+    struct res r = sys(SYS_CALL, c->ep, op, arg, 0, c->cap);
     if (r.status != OK) r.x[1] = NET_NO_SERVICE;
     return r;
 }

@@ -91,6 +91,8 @@ struct usb {
     struct dev netdev;
     u64 body_len;
     int body_status;
+    u64 body_owner;              /* the badge that fetched it: only it may read it */
+    struct { u64 h0, h1; int on; } allow[6];   /* the program allowed in each open slot */
     struct net net;
 };
 
@@ -560,8 +562,35 @@ static unsigned set_time(struct usb *u, const char *host, int tries) {
     return secs;
 }
 
-static u64 request(struct usb *u, u64 op, u64 arg, char *buf, u64 *v2, u64 *v3) {
+/* May the caller with this badge use the network? Terminal, yes; a program from the card,
+   only the one Terminal allowed in its slot (the same program: the kernel's hash of it). */
+static int allowed(struct usb *u, u64 badge) {
+    if (badge == 5) return 1;
+    if (badge < 10 || badge > 15) return 0;
+    struct res b = sys1(SYS_BOOTINFO, badge);
+    int k = (int)badge - 10;
+    return u->allow[k].on && b.x[4] == 1 && b.x[2] == u->allow[k].h0 && b.x[3] == u->allow[k].h1;
+}
+
+static u64 request(struct usb *u, u64 badge, u64 op, u64 arg, char *buf, u64 *v2, u64 *v3) {
     buf[239] = 0;
+    if (!allowed(u, badge)) return NET_DENIED;
+    if ((op == NET_TIME || op == NET_ALLOW) && badge != 5) return NET_DENIED;
+    if (op == NET_ALLOW) {
+        u64 slot = arg & 255;
+        if (slot < 10 || slot > 15) return NET_BAD;
+        struct res b = sys1(SYS_BOOTINFO, slot);
+        int k = (int)slot - 10;
+        u->allow[k].on = (int)(arg >> 8 & 1) && b.x[4] == 1;
+        u->allow[k].h0 = b.x[2];
+        u->allow[k].h1 = b.x[3];
+        put_s(&u->l, "usb: network: slot ");
+        put_dec(&u->l, slot);
+        put_s(&u->l, u->allow[k].on ? " may use the network" : " may not use the network");
+        say(u);
+        return NET_OK;
+    }
+    if (op == NET_READ && badge != u->body_owner) return NET_DENIED;
     if (op == NET_INFO) {
         struct net_info *i = (struct net_info *)(buf + NET_DATA_OFF);
         i->ip = u->net.ip; i->mask = u->net.mask; i->gateway = u->net.gw; i->dns = u->net.dns;
@@ -607,6 +636,7 @@ static u64 request(struct usb *u, u64 op, u64 arg, char *buf, u64 *v2, u64 *v3) 
         for (long k = 0; k < n; k++) u->dma[BODY_OFF + k] = u->dma[BODY_OFF + body + (u64)k];
         u->body_len = (u64)n;
         u->body_status = http_status;
+        u->body_owner = badge;
         *v2 = (u64)n;
         *v3 = (u64)http_status;
         return NET_OK;
@@ -640,13 +670,13 @@ static void serve(struct usb *u) {
         u64 wait = u->nhid || u->has_net ? 8 : 1000;
         struct res r = sys(SYS_RECVT, NETEP, wait, 0, 0, 0);
         if (r.status == OK) {
-            u64 op = r.x[2], arg = r.x[3], grant = r.x[5], slot = r.x[6];
+            u64 badge = r.x[1], op = r.x[2], arg = r.x[3], grant = r.x[5], slot = r.x[6];
             u64 code = NET_BAD, v2 = 0, v3 = 0;
             if (grant) {
                 struct res info = sys1(SYS_CAPINFO, grant - 1);
                 if (info.x[2] == 0 && info.x[3] == NET_BUF_PAGES && (info.x[1] & (R | W)) == (R | W) &&
                     sys2(SYS_MAP, grant - 1, REQ_PAGE).status == OK) {
-                    code = request(u, op, arg, (char *)PAGE(REQ_PAGE), &v2, &v3);
+                    code = request(u, badge, op, arg, (char *)PAGE(REQ_PAGE), &v2, &v3);
                     sys2(SYS_UNMAP, REQ_PAGE, NET_BUF_PAGES);
                 }
                 sys1(SYS_DROP, grant - 1);
@@ -667,6 +697,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     u->my = 300;
     u->has_net = u->net_armed = 0;
     u->body_len = 0;
+    u->body_owner = 0;
+    for (int k = 0; k < 6; k++) u->allow[k].on = 0;
     u->net.up = 0;
     u->net.ip = u->net.mask = u->net.gw = u->net.dns = 0;
     u->net.arp_next = 0;

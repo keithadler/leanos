@@ -175,6 +175,12 @@ capability, marks the slot's program stopped; `sysStop_only` and `only_launchers
 it reaches only the named program and only from the tasks that may start it. Terminal has
 `kill SLOT`; the display server takes the window back.
 
+Done too: the network for programs from the card, by consent, and a browser. Every open
+slot holds a send capability to the network service (the grant-edge proofs now list them);
+the USB driver answers a slot only if Terminal allowed the program there with `run -net`,
+tied to the hash the kernel measured, so a different program in that slot is refused.
+`web` is a text browser on the card (headings, lists, numbered links, no scripts).
+
 Done too: the time of day. The kernel keeps when tick 0 was in Unix seconds (`wall`), set
 only through a time capability the USB driver alone holds (`only_usb_driver_sets_time`); the
 driver asks a time server over NTP after DHCP. The menu bar and Clock show the date and time

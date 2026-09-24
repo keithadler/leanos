@@ -71,7 +71,7 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 93 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 94 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a `start` that forgets to take back

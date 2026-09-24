@@ -382,6 +382,7 @@ static const char *net_error(u64 code) {
     return code == NET_NO_DEVICE ? "no network adapter" : code == NET_NO_ADDRESS ? "no address from the network"
          : code == NET_NO_HOST ? "no such host" : code == NET_NO_ANSWER ? "no answer"
          : code == NET_UNSUPPORTED ? "only http:// (no https yet)" : code == NET_NO_SERVICE ? "the network service did not answer"
+         : code == NET_DENIED ? "not allowed"
          : "not understood";
 }
 
@@ -598,6 +599,10 @@ static void give(struct term *t, struct line *l, u64 slot, const char *name, con
 
 static void cmd_run(struct term *t, struct line *l, const char *args) {
     char name[FS_NAME_MAX + 1];
+    /* -net: let it use the network (the USB driver answers only the program allowed) */
+    while (*args == ' ') args++;
+    int net = args[0] == '-' && args[1] == 'n' && args[2] == 'e' && args[3] == 't' && (args[4] == ' ' || !args[4]);
+    if (net) args += 4;
     const char *files = word_of(args, name, FS_NAME_MAX);
     if (name[0] && app_raise(name)) {
         say(t, "already open: brought it to the front");
@@ -637,15 +642,20 @@ static void cmd_run(struct term *t, struct line *l, const char *args) {
         give(t, l, OPEN_FIRST + (u64)i, name, files);
         struct res r = sys(SYS_EXEC, LAUNCH_OPEN + (u64)i, (u64)image, len, 0, 0);
         if (r.status != OK) continue;
+        /* the network: allowed for this program, or taken from whatever ran here before */
+        u64 slot = OPEN_FIRST + (u64)i;
+        int netok = net_call(&t->net, NET_ALLOW, slot | (u64)net << 8, 0).x[1] == NET_OK && net;
         put_s(l, "started ");
         put_s(l, name);
         put_s(l, " in slot ");
-        put_dec(l, OPEN_FIRST + (u64)i);
+        put_dec(l, slot);
+        if (net) put_s(l, netok ? ", with the network" : ", but the network service did not answer");
         out(t, l);
         put_s(l, "terminal: run ");
         put_s(l, name);
         put_s(l, " -> slot ");
-        put_dec(l, OPEN_FIRST + (u64)i);
+        put_dec(l, slot);
+        if (netok) put_s(l, ", with the network");
         put_s(l, "\n");
         flush(l);
         return;
@@ -661,7 +671,7 @@ static void run(struct term *t, struct line *l) {
     if (starts(c, "help")) {
         say(t, "whoami caps boot ps uptime echo clear exit");
         say(t, "ls [FOLDER], cat FILE, write FILE TEXT, rm FILE");
-        say(t, "mkdir FOLDER, cd FOLDER, pwd, mv FROM TO, run PROGRAM");
+        say(t, "mkdir FOLDER, cd FOLDER, pwd, mv FROM TO, run [-net] PROGRAM [FILE...]");
         say(t, "fill FILE KB CHAR, verify FILE");
         say(t, "ip, ping HOST, get http://URL [FILE], kill SLOT");
         say(t, "date, ntp [HOST[:PORT]]");

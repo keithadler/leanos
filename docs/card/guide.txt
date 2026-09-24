@@ -17,6 +17,7 @@ Terminal
   mv FROM TO                                move or rename, in one step
   fill FILE KB CHAR, verify FILE            a big test file, and checking one
   ip, ping HOST, get http://URL [FILE]      the network (a USB network adapter)
+  date, ntp [HOST]                          the time of day (set from a time server)
   run PROGRAM [FILE...]                     start a program from the card, giving it
                                             those files (and its own folder, apps/NAME)
   ps                                        every program slot, and what runs in it
@@ -34,6 +35,7 @@ Programs on the card
   hello   the smallest program
   fuzz    20,000 system calls with made-up arguments, each answer checked
   edit    a text editor: run edit FILE gives it that file; it saves by itself
+  web     a text web browser: run -net web lets it use the network
 
 Every program from the card runs in an open slot: it gets its own memory and a window,
 and nothing else, whatever it was written to do. Up to six run at once.

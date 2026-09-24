@@ -29,6 +29,11 @@ an icon, in the Apps window, its title bar and the dock. Up to six programs from
 run at once, each confined to its own memory and a window; starting one that is already
 open brings its window to the front.
 
+**web**, a text browser on the card: `run -net web` in Terminal, type an address, click a
+link or type its number. A program from the card reaches the network only if you allow it
+with `-net`: the USB driver answers only the program allowed in that slot (by the hash the
+kernel measured), and `run web` alone is refused (`test/web.sh`).
+
 **The time of day**: a Pi 4 has no clock that runs while it is off, so the USB driver asks a
 time server (NTP, pool.ntp.org) once it has an address, and tells the kernel through a time
 capability only it holds (`only_usb_driver_sets_time`). The menu bar and Clock show the date
@@ -270,7 +275,7 @@ can reach, under any sequence of system calls with any arguments:
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
 MMU proves that user mode reaches exactly its own mappings, only the frame pool and the
 framebuffer (never the kernel or the peripherals), and shares a physical page with another
-task only along a grant path. `make mutants` breaks the kernel in 93 ways and checks the
+task only along a grant path. `make mutants` breaks the kernel in 94 ways and checks the
 proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the

@@ -140,9 +140,9 @@ mutant "Notes' slot counts as open" \
 mutant "manifest lets Notes start programs from the SD card" \
   "  | 0 => snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)" "  | 0 => snoc (snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)) (launchCap 10)"
 mutant "an open slot may receive the file server's mail" \
-  "  | 10 => snoc (snoc (frameCaps 10) (epCap 0 false true true 10)) (epCap 1 false true true 10)" "  | 10 => snoc (snoc (frameCaps 10) (epCap 0 false true true 10)) (epCap 1 true true true 10)"
+  "  | 10 => snoc (snoc (snoc (frameCaps 10) (epCap 0 false true true 10)) (epCap 1 false true true 10))" "  | 10 => snoc (snoc (snoc (frameCaps 10) (epCap 0 false true true 10)) (epCap 1 true true true 10))"
 mutant "an open slot sends to the file server as Terminal" \
-  "  | 12 => snoc (snoc (frameCaps 12) (epCap 0 false true true 12)) (epCap 1 false true true 12)" "  | 12 => snoc (snoc (frameCaps 12) (epCap 0 false true true 12)) (epCap 1 false true true 5)"
+  "  | 12 => snoc (snoc (snoc (frameCaps 12) (epCap 0 false true true 12)) (epCap 1 false true true 12))" "  | 12 => snoc (snoc (snoc (frameCaps 12) (epCap 0 false true true 12)) (epCap 1 false true true 5))"
 mutant "a tick wakes sleepers early" \
   "  | .sleeping u => if Nat.ble u now then" "  | .sleeping u => if true then"
 mutant "manifest gives Terminal the power capability" \
@@ -209,6 +209,8 @@ mutant "Security is given the time of day" \
   "  | 7 => snoc (frameCaps 7) (epCap 0 false true true 7)" "  | 7 => snoc (snoc (frameCaps 7) (epCap 0 false true true 7)) wallCap"
 mutant "time sets the time of day" \
   "  ret s t (0 :: s.now :: ms ::" "  ret { s with wall := s.now } t (0 :: s.now :: ms ::"
+mutant "an open slot may receive on the network endpoint" \
+  "           (epCap 2 false true true 13)" "           (epCap 2 true true true 13)"
 mutant "the scheduler ignores what the other cores run" \
   "def runnable (busy : List Nat) (ts : List Task) (j : Nat) : Bool := isReady ts j && !memNat j busy" "def runnable (busy : List Nat) (ts : List Task) (j : Nat) : Bool := isReady ts j"
 mutant "enter forgets one core" \
