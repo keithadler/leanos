@@ -1122,6 +1122,20 @@ theorem inv_usbDone {s : KState} (hs : Inv s) (v : Nat) : Inv (usbDone s v) := b
   · rename_i t ht; exact inv_setTask hs ((hs.tasks _ t ht).result _)
   · exact hs
 
+theorem inv_sysStop {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
+    (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysStop s t ci).state := by
+  unfold sysStop
+  split
+  · exact inv_ret hs ht _
+  · split
+    · split
+      · rename_i u hu
+        split
+        · exact inv_ret (inv_setTask hs ((hs.tasks _ u hu).setStatus .dead trivial (fun h => h.elim) _)) ht _
+        · exact inv_ret hs ht _
+      · exact inv_ret hs ht _
+    · exact inv_ret hs ht _
+
 theorem inv_boardDone {s : KState} (hs : Inv s) (a b c d e : Nat) : Inv (boardDone s a b c d e) := by
   unfold boardDone
   split
@@ -1213,6 +1227,7 @@ theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
       · exact inv_sysBoard hs hto
       · exact inv_sysUsb hs hto
       · exact inv_sysRecv hs ht hmt
+      · exact inv_sysStop hs hto
       · exact inv_ret hs hto _
     · exact hs
 
@@ -1920,6 +1935,9 @@ theorem outLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
       | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
          all_goals simp at h
          done)
+      | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
+         all_goals simp at h
+         done)
       | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
          all_goals simp at h
          done)
@@ -2048,6 +2066,9 @@ theorem io_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
            all_goals simp at h
            done)
         | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
@@ -2222,6 +2243,9 @@ theorem power_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
         | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
+        | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
@@ -2356,6 +2380,9 @@ theorem loadLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
            all_goals simp at h
            done)
         | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
@@ -2540,6 +2567,8 @@ theorem syscall_now (s : KState) (num a0 a1 a2 a3 a4 : Nat) :
         | (unfold sysTime; simp [ret_now])
         | (unfold sysUsb usbReply; repeat' (first | split | dsimp only)
            all_goals simp [ret_now])
+        | (unfold sysStop; repeat' (first | split | dsimp only)
+           all_goals simp [ret_now])
         | (unfold sysBoard; repeat' (first | split | dsimp only)
            all_goals simp [ret_now])
     · rfl
@@ -2664,6 +2693,9 @@ theorem board_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
            all_goals simp at h
            done)
         | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
@@ -2837,6 +2869,9 @@ theorem usb_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
            all_goals simp at h
            done)
         | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
+           all_goals simp at h
+           done)
+        | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
            all_goals simp at h
            done)
         | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
@@ -3060,5 +3095,42 @@ theorem file_server_knows_the_sender {s : KState} (h : Reachable s) {j : Nat} {t
     simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc0 <;>
     rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp_all [fsBadge]
+
+/-! ## Stopping a program -/
+
+/-- A stop changes only the program it names: every other task but the caller is as it was,
+and the named one only if the caller holds the launch capability for it. -/
+theorem sysStop_only {s : KState} {t : Task} {ci j : Nat} (hj : j ≠ s.cur)
+    (hch : nth? (sysStop s t ci).state.tasks j ≠ nth? s.tasks j) :
+    ∃ c ∈ t.caps, c.obj = .launch j := by
+  unfold sysStop at hch
+  split at hch
+  · simp [ret, setTask, nth?_setNth, Ne.symm hj] at hch
+  · rename_i c hc
+    split at hch
+    · rename_i k hk
+      split at hch
+      · split at hch
+        · by_cases hjk : j = k
+          · subst hjk; exact ⟨c, nth?_mem hc, hk⟩
+          · exfalso; apply hch
+            simp [ret, setTask, nth?_setNth, Ne.symm hj, Ne.symm hjk]
+        · simp [ret, setTask, nth?_setNth, Ne.symm hj] at hch
+      · simp [ret, setTask, nth?_setNth, Ne.symm hj] at hch
+    · simp [ret, setTask, nth?_setNth, Ne.symm hj] at hch
+
+/-- **Only the right task can stop a program.** When `stop` changes any task but the caller,
+the caller is the display server stopping one of the apps it starts, or Terminal or Apps
+stopping a program from the card: nothing can stop the display server, the input driver,
+the file server, the USB driver or the tests. -/
+theorem only_launchers_stop {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks s.cur = some t)
+    (hrd : t.status = .ready) {a0 a1 a2 a3 a4 j : Nat} (hj : j ≠ s.cur)
+    (hch : nth? (syscall s 26 a0 a1 a2 a3 a4).state.tasks j ≠ nth? s.tasks j) :
+    (s.cur = displayTask ∧ App j ∧ openSlot j = false) ∨ ((s.cur = 5 ∨ s.cur = 16) ∧ openSlot j = true) := by
+  have hs : syscall s 26 a0 a1 a2 a3 a4 = sysStop s t a0 := by
+    unfold syscall; rw [ht]; simp only [hrd]; rfl
+  rw [hs] at hch
+  obtain ⟨c, hc, hk⟩ := sysStop_only hj hch
+  exact only_display_launches h ht hc hk
 
 end LeanOS

@@ -20,6 +20,7 @@ Terminal
   run PROGRAM [FILE...]                     start a program from the card, giving it
                                             those files (and its own folder, apps/NAME)
   ps                                        every program slot, and what runs in it
+  kill SLOT                                 stop a program from the card (10 to 15), answering or not
   whoami, caps, boot, uptime                what the kernel says about this program
   tour                                      why leanos is harder to attack than Linux
 

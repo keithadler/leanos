@@ -217,6 +217,10 @@ can reach, under any sequence of system calls with any arguments:
   and only the apps. Before an app's slot is loaded again, no other task keeps a
   capability to its frames, a mapping of them, a waiting message that would grant one, or
   a reply meant for the old run.
+- **Only the right task can stop a program**: `stop` changes only the program its launch
+  capability names (`sysStop_only`), so the display server can stop its apps and Terminal
+  and Apps the programs from the card, and nothing can stop the servers
+  (`only_launchers_stop`).
 - **Only the display server can switch the machine off or restart it**: the power
   capability is the manifest's, never moves, and only the display server holds it.
 - **Only Settings touches the Raspberry Pi's own settings**, and only as listed: the
@@ -359,6 +363,7 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 | 21 | `power(cap, action)` | switches the machine off (0) or restarts it (1), through the power capability |
 | 22 | `time()` | the kernel's clock: timer ticks since boot, milliseconds, and hours, minutes and seconds |
 | 24 | `usb(cap, op, reg, value)` | reads (0) or writes (1) a register of the USB host controller, through the USB capability; a channel starts only with a DMA range in the caller's own frames |
+| 26 | `stop(cap)` | stops the program in the slot a launch capability names, answering or not (never the caller) |
 | 25 | `recvt(cap, ms)` | like `recv`, but gives up after that many milliseconds (0: do not wait at all) |
 | 23 | `board(cap, what, value)` | through the board capability: the board (model, serial, memory, firmware), its sensors (temperature, CPU clock, throttling), the CPU clock (600, 1000 or 1500 MHz), or the activity light |
 

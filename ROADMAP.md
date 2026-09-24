@@ -170,6 +170,11 @@ theorem now covers receivers that time out), the DMA check takes only the driver
 frames, and the grant-edge proofs carry a third server. Next here: TCP that takes data out
 of order, a listening socket, and the Pi 4's own Ethernet (GENET).
 
+Done too: stopping a program that does not answer. `stop` (26), through a launch
+capability, marks the slot's program stopped; `sysStop_only` and `only_launchers_stop` say
+it reaches only the named program and only from the tasks that may start it. Terminal has
+`kill SLOT`; the display server takes the window back.
+
 Done too: programs from the SD card. They are ELF files on the card (`tools/mksd.py`
 writes a card with them, the way programs are copied onto any computer's disk); Terminal's
 `run` reads one, checks and flattens it in user space, and starts it with `exec` in one of

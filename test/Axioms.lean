@@ -61,3 +61,5 @@ open LeanOS
 #print axioms LeanOS.Journal.crash_atomic
 #print axioms file_server_knows_the_sender
 #print axioms net_server_frames
+#print axioms sysStop_only
+#print axioms only_launchers_stop

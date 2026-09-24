@@ -241,6 +241,7 @@ test: all
 	./test/bigprog.sh
 	./test/edit.sh
 	./test/net.sh
+	./test/kill.sh
 
 # Break the kernel in known ways and check the proofs catch every one (slow).
 mutants:

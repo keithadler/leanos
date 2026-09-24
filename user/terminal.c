@@ -487,6 +487,25 @@ static void cmd_get(struct term *t, struct line *l, const char *args) {
     flush(l);
 }
 
+/* kill SLOT: stop the program from the card in open slot SLOT (10 to 15), answering or not.
+   Terminal holds those slots' launch capabilities; the kernel lets nothing else stop them
+   (`only_launchers_stop`). */
+static void cmd_kill(struct term *t, struct line *l, const char *args) {
+    char num[8];
+    word_of(args, num, 6);
+    u64 k = 0;
+    int digits = 0;
+    for (int i = 0; num[i] >= '0' && num[i] <= '9'; i++, digits++) k = k * 10 + (u64)(num[i] - '0');
+    if (!digits || k < OPEN_FIRST || k >= OPEN_FIRST + OPEN_SLOTS) {
+        say(t, "kill a slot from ps: 10 to 15");
+        fs_log(l, "kill", num, "not an open slot");
+        return;
+    }
+    struct res r = sys1(SYS_STOP, LAUNCH_OPEN + (k - OPEN_FIRST));
+    say(t, r.status == OK ? "stopped" : "nothing running there");
+    fs_log(l, "kill", num, r.status == OK ? "stopped" : "nothing running");
+}
+
 /* Every program slot and what the kernel says about it. */
 static void cmd_ps(struct term *t, struct line *l) {
     int running = 0;
@@ -604,7 +623,7 @@ static void run(struct term *t, struct line *l) {
         say(t, "ls [FOLDER], cat FILE, write FILE TEXT, rm FILE");
         say(t, "mkdir FOLDER, cd FOLDER, pwd, mv FROM TO, run PROGRAM");
         say(t, "fill FILE KB CHAR, verify FILE");
-        say(t, "ip, ping HOST, get http://URL [FILE]");
+        say(t, "ip, ping HOST, get http://URL [FILE], kill SLOT");
         say(t, "tour: why leanos is harder to attack than Linux");
     } else if (starts(c, "whoami")) {
         u64 me = sys0(SYS_WHOAMI).x[1];
@@ -636,6 +655,8 @@ static void run(struct term *t, struct line *l) {
         put_s(l, "/");
         put_s(l, t->cwd);
         out(t, l);
+    } else if (starts(c, "kill")) {
+        cmd_kill(t, l, c + 4);
     } else if (starts(c, "ip")) {
         cmd_ip(t, l);
     } else if (starts(c, "ping")) {

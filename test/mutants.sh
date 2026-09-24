@@ -202,6 +202,9 @@ mutant "grant the USB capability" \
       | .usbHost => some (some g)
       | _ => none"
 
+mutant "stop stops the slot after the one it names" \
+  "          ret (setTask s k { u with status := .dead, result := .nil }) t (0 :: .nil)" "          ret (setTask s (k + 1) { u with status := .dead, result := .nil }) t (0 :: .nil)"
+
 mutant_journal "the journal writes home before the commit" \
   "  jw J 0 (t.map Prod.snd) ++
     (J, .header t.length (t.map Prod.fst) (csum (t.map Prod.snd))) :: (t ++ (J, clean) :: .nil)" "  jw J 0 (t.map Prod.snd) ++ t ++

@@ -1079,6 +1079,25 @@ def sysStart (s : KState) (t : Task) (ci src len : Nat) : Reply :=
       | none => ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
+/-- Stop the program in slot `k`, named by launch capability `ci`: for a program that does
+not answer (its window's close button, Terminal's `kill`). It is marked stopped, as a fault
+would; nothing else changes (the display server takes its window back, as for any stopped
+program; the next `start` or `exec` takes back what it shared). Not the caller itself, and
+not a slot that is not running. -/
+def sysStop (s : KState) (t : Task) (ci : Nat) : Reply :=
+  match nth? t.caps ci with
+  | none => ret s t (eNoCap :: .nil)
+  | some c =>
+    match c.obj with
+    | .launch k =>
+      match nth? s.tasks k with
+      | some u =>
+        if !(k == s.cur) && !startable u.status then
+          ret (setTask s k { u with status := .dead, result := .nil }) t (0 :: .nil)
+        else ret s t (eBadArg :: .nil)
+      | none => ret s t (eBadArg :: .nil)
+    | _ => ret s t (eBadArg :: .nil)
+
 /-- The first task (from index `j` on) waiting for interrupt line `n`. -/
 def findIrqWaiter (n : Nat) : List Task → Nat → Option Nat
   | .nil, _ => none
@@ -1151,6 +1170,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 23 => sysBoard s t a0 a1 a2
   | 24 => sysUsb s t a0 a1 a2 a3
   | 25 => sysRecv s t a0 (!(a1 == 0)) (s.now + (a1 + tickMs - 1) / tickMs)
+  | 26 => sysStop s t a0
   | _ => ret s t (eNoCall :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
@@ -1164,6 +1184,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   23 board(cap, what, value): read the board or its sensors, set the CPU clock or the light
   24 usb(cap, op, reg, value): read (op 0) or write (op 1) a USB host controller register
   25 recvt(cap, ms): like recv, but gives up after `ms` milliseconds (0: do not wait)
+  26 stop(cap): stop the program in the slot a launch capability names
 Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with
