@@ -29,6 +29,11 @@ an icon, in the Apps window, its title bar and the dock. Up to six programs from
 run at once, each confined to its own memory and a window; starting one that is already
 open brings its window to the front.
 
+**Touchscreens**: a USB touchscreen or tablet (an absolute pointer) works as a mouse
+whose position is where you touch: the USB driver reads the device's report descriptor to
+find X, Y and the touch in its reports (`test/touch.sh`, with QEMU's tablet). On a Pi 4
+that means the USB-C port for now; the USB-A ports need the xHCI driver that is next.
+
 **All four cores** run tasks. One core at a time is in the Lean kernel, which is told
 which task each core runs, so every proof's "the calling task" is the right one on every
 core.

@@ -88,6 +88,16 @@ def usb_mouse(dx=0, dy=0, button=None):
             [{"type": "rel", "data": {"axis": "x", "value": dx}}, {"type": "rel", "data": {"axis": "y", "value": dy}}]})
 
 
+def usb_touch(x, y, down=None):
+    """A step that puts the USB tablet at screen position (x, y) (1024 x 600), touching
+    (down=True) or not (False), or only moving (None)."""
+    ev = [{"type": "abs", "data": {"axis": "x", "value": x * 0x7fff // 1023}},
+          {"type": "abs", "data": {"axis": "y", "value": y * 0x7fff // 599}}]
+    if down is not None:
+        ev.append({"type": "btn", "data": {"down": down, "button": "left"}})
+    return ("qmp", "input-send-event", {"events": ev})
+
+
 # Where each dock icon's center is (user/display.c: DOCK_X + DOCK_PAD + ICON / 2 + 66 i).
 DOCK = {name: (248 + 66 * i, 548) for i, name in enumerate(
     ["Notes", "Files", "Terminal", "Settings", "Security", "Apps", "Clock", "Calculator", "Tour"])}
@@ -123,7 +133,7 @@ def fresh_card(path=TEST_CARD):
 
 
 def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None, image=None,
-         settle=0.3, sd=None, usb=False, cut=False, net=False):
+         settle=0.3, sd=None, usb=False, cut=False, net=False, touch=False):
     """sd: the SD card image to boot with (a fresh copy of the programs card if None; ""
     for no card). cut: at the timeout, kill QEMU at once (a power cut), not after a grace."""
     if sd is None:
@@ -141,7 +151,9 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
         # usb: a USB keyboard and mouse on the DWC2 (QEMU puts them behind a hub)
         + (["-device", "usb-kbd,id=kbd", "-device", "usb-mouse,id=mouse"] if usb else [])
         # net: a USB network adapter on QEMU's user network (10.0.2.0/24; the host is 10.0.2.2)
-        + (["-device", "usb-net,netdev=n0", "-netdev", "user,id=n0"] if net else []),
+        + (["-device", "usb-net,netdev=n0", "-netdev", "user,id=n0"] if net else [])
+        # touch: an absolute pointer, as a touchscreen is (QEMU's tablet)
+        + (["-device", "usb-tablet,id=tablet"] if touch else []),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     qmp = Qmp(sock)
     deadline = time.monotonic() + timeout

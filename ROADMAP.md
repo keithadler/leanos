@@ -175,6 +175,11 @@ capability, marks the slot's program stopped; `sysStop_only` and `only_launchers
 it reaches only the named program and only from the tasks that may start it. Terminal has
 `kill SLOT`; the display server takes the window back.
 
+Done too: touchscreens and tablets. The USB driver reads a HID device's report
+descriptor when it does not speak the boot protocol, finds the absolute X and Y and the
+button or tip switch, and scales them to the screen; a 7-inch 1024x600 HDMI touchscreen
+matches the desktop exactly.
+
 Done too: all four cores. Every core runs tasks; one at a time is in the Lean kernel,
 under a lock the machine layer takes on the way in. On the way in it tells the kernel which
 task this core runs and which the others run (`enter`), and the scheduler never picks one

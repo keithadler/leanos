@@ -11,7 +11,8 @@
 
    What it knows: the controller in host mode with buffer DMA; control transfers; hubs
    (their ports powered, reset and enumerated, no hot-plug after that); HID keyboards and
-   mice in the boot protocol, read by interrupt transfers. */
+   mice in the boot protocol, and touchscreens and tablets (absolute pointers, found by
+   reading their report descriptors), read by interrupt transfers. */
 #include "lib.h"
 #define NET_SERVER
 #include "net.h"
@@ -69,12 +70,17 @@ enum { CONTROL = 0, INTERRUPT = 3 };
 #define MAX_HID 4
 
 struct dev { int addr, mps0, ls; };
-struct hid { struct dev d; int kind, ep, mps, ch, pid, idle; unsigned char *buf; };  /* kind 1 keyboard, 2 mouse */
+/* Where an absolute pointer's report keeps what matters: a field is a bit offset and size,
+   with the logical range for X and Y. */
+struct field { int off, size, min, max; };
+struct abs { int id, has_btn; struct field x, y, btn; };
+/* kind 1 keyboard, 2 mouse, 3 touchscreen or tablet */
+struct hid { struct dev d; int kind, ep, mps, ch, pid, idle; unsigned char *buf; struct abs a; };
 
 struct usb {
     struct line l;
     unsigned char *dma;          /* the DMA area: the spare run, mapped */
-    int next_addr, nhid, keyboards, mice;
+    int next_addr, nhid, keyboards, mice, touch;
     struct hid hid[MAX_HID];
     unsigned char prev[8];       /* the keyboard's last report */
     int mx, my, buttons;
@@ -153,9 +159,81 @@ static int get_descriptor(struct usb *u, const struct dev *d, int type, int len)
     return control(u, d, 0x80, 6, type << 8, 0, len);
 }
 
+/* A HID report descriptor: find the first absolute X and Y on the generic desktop page,
+   and the first button 1 or digitizer tip switch, in the same report. Returns 1 if there
+   are X and Y. (Short items only; a long item ends the walk.) */
+static int parse_report(const unsigned char *d, int n, struct abs *a) {
+    int page = 0, size = 0, count = 0, id = 0, lmin = 0, lmax = 0;
+    int usages[16], nu = 0, umin = -1, umax = -1;
+    int off[16] = {0};                   /* the bit offset so far, per report ID (low 4 bits) */
+    int found = 0;
+    a->has_btn = 0;
+    a->id = -1;
+    for (int i = 0; i < n;) {
+        int b = d[i], sz = b & 3, type = (b >> 2) & 3, tag = b >> 4;
+        if (b == 0xFE) break;
+        if (sz == 3) sz = 4;
+        if (i + 1 + sz > n) break;
+        unsigned v = 0;
+        for (int k = 0; k < sz; k++) v |= (unsigned)d[i + 1 + k] << (8 * k);
+        int sv = sz == 1 ? (signed char)v : sz == 2 ? (short)v : (int)v;
+        i += 1 + sz;
+        if (type == 1) {                                   /* global */
+            if (tag == 0) page = (int)v;
+            else if (tag == 1) lmin = sv;
+            else if (tag == 2) lmax = sz == 4 ? (int)v : sv < lmin ? (int)v : sv;
+            else if (tag == 7) size = (int)v;
+            else if (tag == 8) id = (int)v;
+            else if (tag == 9) count = (int)v;
+        } else if (type == 2) {                            /* local */
+            if (tag == 0 && nu < 16) usages[nu++] = (int)v;
+            else if (tag == 1) umin = (int)v;
+            else if (tag == 2) umax = (int)v;
+        } else if (type == 0) {                            /* main */
+            if (tag == 8) {                                /* input */
+                int *o = &off[id & 15];
+                for (int k = 0; k < count; k++) {
+                    int us = k < nu ? usages[k] : umin >= 0 && umin + k <= umax ? umin + k : nu ? usages[nu - 1] : -1;
+                    int upage = us > 0xFFFF ? us >> 16 : page;
+                    us &= 0xFFFF;
+                    int constant = v & 1, relative = (v >> 2) & 1;
+                    struct field f = {*o + k * size, size, lmin, lmax};
+                    if (!constant && found < 2 && (a->id < 0 || a->id == id)) {
+                        if (upage == 1 && us == 0x30 && !relative && !a->x.size) { a->x = f; a->id = id; found++; }
+                        else if (upage == 1 && us == 0x31 && !relative && !a->y.size) { a->y = f; a->id = id; found++; }
+                    }
+                    if (!constant && !a->has_btn && ((upage == 9 && us == 1) || (upage == 0x0D && us == 0x42)) &&
+                        (a->id < 0 || a->id == id)) {
+                        a->btn = f;
+                        a->has_btn = 1;
+                    }
+                }
+                *o += size * count;
+            }
+            nu = 0;
+            umin = umax = -1;
+        }
+    }
+    return a->x.size && a->y.size;
+}
+
+static int bits(const unsigned char *r, int n, struct field f) {
+    unsigned v = 0;
+    for (int k = 0; k < f.size && k < 32; k++) {
+        int bit = f.off + k;
+        if (bit / 8 < n && (r[bit / 8] >> (bit % 8) & 1)) v |= 1u << k;
+    }
+    return (int)v;
+}
+
 static void add_hid(struct usb *u, const struct dev *d, int kind, int iface, int ep, int mps) {
     if (u->nhid >= MAX_HID) return;
-    control(u, d, 0x21, 0x0B, 0, iface, 0);          /* SET_PROTOCOL: boot */
+    struct abs a = {0};
+    if (kind == 3) {                                  /* report protocol: read what it sends */
+        int len = control(u, d, 0x81, 6, 0x22 << 8, iface, 900);
+        if (len <= 0 || !parse_report(u->dma + 64, len, &a)) return;
+        control(u, d, 0x21, 0x0A, 0, iface, 0);   /* SET_IDLE: only on change */
+    } else control(u, d, 0x21, 0x0B, 0, iface, 0);          /* SET_PROTOCOL: boot */
     if (kind == 1) control(u, d, 0x21, 0x0A, 0, iface, 0);   /* SET_IDLE: only on change */
     struct hid *h = &u->hid[u->nhid];
     h->d = *d;
@@ -166,12 +244,14 @@ static void add_hid(struct usb *u, const struct dev *d, int kind, int iface, int
     h->pid = PID_DATA0;
     h->idle = 0;
     h->buf = u->dma + 2048 + 256 * u->nhid;
+    h->a = a;
     u->nhid++;
     if (kind == 1) u->keyboards++;
-    else u->mice++;
+    else if (kind == 2) u->mice++;
+    else u->touch++;
     put_s(&u->l, "usb: device ");
     put_dec(&u->l, (u64)d->addr);
-    put_s(&u->l, kind == 1 ? ": keyboard" : ": mouse");
+    put_s(&u->l, kind == 1 ? ": keyboard" : kind == 2 ? ": mouse" : ": touchscreen or tablet");
     say(u);
 }
 
@@ -249,6 +329,7 @@ static void enumerate(struct usb *u, int ls, int depth) {
             if (in_data) data_iface = iface;
             if (cfg[i + 5] == 9) { hub(u, &d, depth); return; }
             if (cfg[i + 5] == 3 && cfg[i + 6] == 1 && (cfg[i + 7] == 1 || cfg[i + 7] == 2)) kind = cfg[i + 7];
+            else if (cfg[i + 5] == 3 && cfg[i + 6] == 0) kind = 3;     /* not boot: maybe absolute */
         } else if (cfg[i + 1] == 0x24 && i + 4 <= total && cfg[i + 2] == 0x0F) {
             mac_string = cfg[i + 3];                             /* CDC Ethernet: its MAC, as a string */
         } else if (cfg[i + 1] == 5 && i + 7 <= total && in_data && (cfg[i + 3] & 3) == BULK) {
@@ -335,6 +416,34 @@ static void mouse(struct usb *u, const unsigned char *r, int n) {
     }
 }
 
+/* A touchscreen or tablet: where it says, scaled to the screen; touching (or its button)
+   is the left button. */
+static void absolute(struct usb *u, struct hid *h, const unsigned char *r, int n) {
+    struct abs *a = &h->a;
+    if (a->id > 0) {
+        if (n < 1 || r[0] != a->id) return;
+        r++;
+        n--;
+    }
+    int rx = bits(r, n, a->x) , ry = bits(r, n, a->y);
+    int wx = a->x.max > a->x.min ? a->x.max - a->x.min : 1, wy = a->y.max > a->y.min ? a->y.max - a->y.min : 1;
+    int x = (int)((long)(rx - a->x.min) * 1023 / wx), y = (int)((long)(ry - a->y.min) * 599 / wy);
+    if (x < 0) x = 0;
+    if (x > 1023) x = 1023;
+    if (y < 0) y = 0;
+    if (y > 599) y = 599;
+    if (x != u->mx || y != u->my) {
+        u->mx = x;
+        u->my = y;
+        event(EV_MOVE, (u64)x, (u64)y);
+    }
+    int down = a->has_btn && bits(r, n, a->btn) != 0;
+    if (down != u->buttons) {
+        u->buttons = down;
+        event(down ? EV_DOWN : EV_UP, (u64)x, (u64)y);
+    }
+}
+
 static void arm(struct hid *h) {
     start(h->ch, &h->d, h->ep, 1, INTERRUPT, h->mps, h->pid, h->buf, h->mps);
 }
@@ -352,7 +461,8 @@ static void poll_hid(struct usb *u) {
             int n = h->mps - (int)(t & 0x7ffff);
             h->pid = (int)(t >> 29) & 3;
             if (h->kind == 1) keyboard(u, h->buf, n);
-            else mouse(u, h->buf, n);
+            else if (h->kind == 2) mouse(u, h->buf, n);
+            else absolute(u, h, h->buf, n);
         }
         if (st & (XFERCOMPL | CHHLTD)) arm(h);
     }
@@ -513,7 +623,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     struct usb *u = (struct usb *)DATA;
     u->l.n = 0;
     u->next_addr = 1;
-    u->nhid = u->keyboards = u->mice = u->buttons = 0;
+    u->nhid = u->keyboards = u->mice = u->touch = u->buttons = 0;
     u->mx = 512;
     u->my = 300;
     u->has_net = u->net_armed = 0;
@@ -593,6 +703,11 @@ __attribute__((section(".text.start"))) void _start(void) {
     put_s(&u->l, u->keyboards == 1 ? " keyboard, " : " keyboards, ");
     put_dec(&u->l, (u64)u->mice);
     put_s(&u->l, u->mice == 1 ? " mouse" : " mice");
+    if (u->touch) {
+        put_s(&u->l, ", ");
+        put_dec(&u->l, (u64)u->touch);
+        put_s(&u->l, u->touch == 1 ? " touchscreen or tablet" : " touchscreens or tablets");
+    }
     put_s(&u->l, u->has_net ? ", a network adapter" : "");
     say(u);
     serve(u);

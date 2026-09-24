@@ -237,6 +237,7 @@ test: all
 	./test/tamper.sh
 	./test/fuzz.sh
 	./test/usb.sh
+	./test/touch.sh
 	./test/crash.sh
 	./test/bigprog.sh
 	./test/edit.sh
