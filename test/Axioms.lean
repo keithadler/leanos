@@ -16,6 +16,8 @@ open LeanOS
 #print axioms server_frames
 #print axioms write_reads_only_readable
 #print axioms schedule_picks_ready
+#print axioms schedule_not_on_other_core
+#print axioms enter_only_cores
 #print axioms walk_eq_view
 #print axioms el0_only_pool_fb_uart
 #print axioms physOf_inj

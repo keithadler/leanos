@@ -1275,6 +1275,8 @@ inductive Reachable : KState → Prop
   | ioFail {s} : Reachable s → Reachable (ioFailed s)
   | board {s} (a b c d e : Nat) : Reachable s → Reachable (boardDone s a b c d e)
   | usb {s} (v : Nat) : Reachable s → Reachable (usbDone s v)
+  | enter {s} (c b0 b1 b2 : Nat) : Reachable s → Reachable (enter s c b0 b1 b2)
+  | resched {s} : Reachable s → Reachable (schedule s)
 
 theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   induction h with
@@ -1288,6 +1290,8 @@ theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   | ioFail _ ih => exact inv_ioFailed ih
   | board a b c d e _ ih => exact inv_boardDone ih a b c d e
   | usb v _ ih => exact inv_usbDone ih v
+  | enter c b0 b1 b2 _ ih => exact ⟨ih.len, ih.tasks⟩
+  | resched _ ih => exact inv_schedule ih
 
 /-! ## The guarantees -/
 
@@ -2425,20 +2429,20 @@ theorem exec_reads_only_readable (s : KState) (num a0 a1 a2 a3 a4 : Nat)
 
 /-! ## Scheduling -/
 
-theorem findReady_ready : ∀ {ts : List Task} {i fuel j : Nat},
-    findReady ts i fuel = some j → isReady ts j = true
-  | ts, i, 0, j, h => by simp [findReady] at h
-  | ts, i, fuel + 1, j, h => by
+theorem findReady_ready : ∀ {busy : List Nat} {ts : List Task} {i fuel j : Nat},
+    findReady busy ts i fuel = some j → runnable busy ts j = true
+  | _, ts, i, 0, j, h => by simp [findReady] at h
+  | _, ts, i, fuel + 1, j, h => by
     simp only [findReady] at h
     split at h
     · simp at h; subst h; assumption
     · exact findReady_ready h
 
-/-- If the search finds nothing, none of the `fuel` tasks it looked at is ready. -/
-theorem findReady_none : ∀ {ts : List Task} {i fuel : Nat},
-    findReady ts i fuel = none → ∀ k < fuel, isReady ts ((i + k) % len ts) = false
-  | ts, i, 0, _, k, hk => by omega
-  | ts, i, fuel + 1, h, k, hk => by
+/-- If the search finds nothing, none of the `fuel` tasks it looked at may run here. -/
+theorem findReady_none : ∀ {busy : List Nat} {ts : List Task} {i fuel : Nat},
+    findReady busy ts i fuel = none → ∀ k < fuel, runnable busy ts ((i + k) % len ts) = false
+  | _, ts, i, 0, _, k, hk => by omega
+  | _, ts, i, fuel + 1, h, k, hk => by
     simp only [findReady] at h
     split at h
     · simp at h
@@ -2467,16 +2471,22 @@ theorem hits_every (i j n : Nat) (hj : j < n) : ∃ k < n, (i + k) % n = j := by
     rw [Nat.add_mod, Nat.mod_eq_of_lt (a := j + n - i % n) (by omega),
       show i % n + (j + n - i % n) = j + n by omega, Nat.add_mod_right, Nat.mod_eq_of_lt hj]
 
-/-- **The scheduler never runs a waiting or stopped task while a ready one exists.** -/
-theorem schedule_picks_ready (s : KState) (h : ∃ i, isReady s.tasks i = true) :
-    isReady (schedule s).tasks (schedule s).cur = true := by
+/-- **The scheduler never runs a waiting or stopped task while a ready one exists, and never
+one another core is running.** If some task is ready and no other core runs it, the task the
+scheduler picks is ready and no other core runs it. -/
+theorem schedule_picks_ready (s : KState) (h : ∃ i, runnable s.busy s.tasks i = true) :
+    runnable (schedule s).busy (schedule s).tasks (schedule s).cur = true := by
   obtain ⟨i, hi⟩ := h
+  have hlt : i < len s.tasks := by
+    unfold runnable at hi
+    simp only [Bool.and_eq_true] at hi
+    exact isReady_lt hi.1
   unfold schedule
   split
   · rename_i j hj
     exact findReady_ready hj
   · rename_i hnone
-    obtain ⟨k, hk, hkj⟩ := hits_every (s.cur + 1) i (len s.tasks) (isReady_lt hi)
+    obtain ⟨k, hk, hkj⟩ := hits_every (s.cur + 1) i (len s.tasks) hlt
     have := findReady_none hnone k hk
     rw [hkj, hi] at this
     exact absurd this (by simp)
@@ -2497,6 +2507,23 @@ programming (trusted, see TRUST.md). -/
 
 @[simp] theorem now_killCurrent (s : KState) : (killCurrent s).now = s.now := by
   unfold killCurrent; split <;> simp
+
+
+/-- With four cores: the task the scheduler picks for a core is never one another core is
+running (the machine layer tells the kernel which those are, `enter`), so no task ever runs
+on two cores at once. -/
+theorem schedule_not_on_other_core (s : KState) (h : ∃ i, runnable s.busy s.tasks i = true) :
+    memNat (schedule s).cur (schedule s).busy = false := by
+  have hr := schedule_picks_ready s h
+  unfold runnable at hr
+  simp only [Bool.and_eq_true, Bool.not_eq_true'] at hr
+  exact hr.2
+
+/-- `enter` changes only which task is current and which the other cores run. -/
+theorem enter_only_cores (s : KState) (c b0 b1 b2 : Nat) :
+    (enter s c b0 b1 b2).tasks = s.tasks ∧ (enter s c b0 b1 b2).now = s.now ∧
+    (enter s c b0 b1 b2).cur = c ∧ (enter s c b0 b1 b2).busy = b0 :: b1 :: b2 :: .nil := by
+  exact ⟨rfl, rfl, rfl, rfl⟩
 
 /-- **A timer tick moves the clock by exactly one.** -/
 theorem tick_now (s : KState) : (tick s).now = s.now + 1 := by
@@ -2580,9 +2607,11 @@ theorem clock_monotone (s : KState) :
     (tick s).now = s.now + 1 ∧ (killCurrent s).now = s.now ∧
     (∀ j, (clearResult s j).now = s.now) ∧ (∀ n, (irqFired s n).now = s.now) ∧
     (∀ i h, (verify s i h).now = s.now) ∧ (ioFailed s).now = s.now ∧
-    (∀ a b c d e, (boardDone s a b c d e).now = s.now) :=
+    (∀ a b c d e, (boardDone s a b c d e).now = s.now) ∧ (∀ v, (usbDone s v).now = s.now) ∧
+    (∀ c b0 b1 b2, (enter s c b0 b1 b2).now = s.now) ∧ (schedule s).now = s.now :=
   ⟨syscall_now s, tick_now s, now_killCurrent s, clearResult_now s, irqFired_now s, verify_now s,
-    ioFailed_now s, boardDone_now s⟩
+    ioFailed_now s, boardDone_now s, fun v => by unfold usbDone; split <;> simp,
+    fun _ _ _ _ => rfl, now_schedule s⟩
 
 /-- Hours, minutes and seconds add back up to the whole seconds, and read like a clock. -/
 theorem clockOf_spec (ms : Nat) :

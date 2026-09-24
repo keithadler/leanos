@@ -6,22 +6,12 @@
 .section .text.boot, "ax"
 .global _start
 _start:
-    // Only core 0 runs the kernel; any other core parks.
+    // Core 0 brings the kernel up. Cores 1-3 wait in the boot stub's spin table (the
+    // firmware's armstub on a Pi 4, QEMU's own in emulation) until core 0 hands them
+    // `secondary` (kmain.c: start_cores); a core that arrives here anyway parks.
     mrs     x0, mpidr_el1
     and     x0, x0, #0xff
     cbnz    x0, park
-
-    // Cores 1-3 wait in the boot stub's spin table (the firmware's armstub on a Pi 4,
-    // QEMU's own in emulation), each polling its slot at 0xe0, 0xe8, 0xf0 with wfe, which an
-    // emulator runs flat out: three host cores busy while leanos sits idle. Hand them
-    // `park`, where wfi sleeps for good (nothing routes an interrupt to them).
-    adr     x1, park
-    mov     x2, #0xe0
-    str     x1, [x2]
-    str     x1, [x2, #8]
-    str     x1, [x2, #16]
-    dsb     sy
-    sev
 
     // If started at EL2, drop to EL1.
     mrs     x0, CurrentEL
@@ -63,6 +53,42 @@ _start:
     bl      kmain
 park:
     wfi
+    b       park
+
+// Cores 1-3, once core 0 has the kernel up: the same drop to EL1, their own stack (from
+// core_stack_top), the vectors, then secondary_main(core).
+.global secondary
+secondary:
+    mrs     x0, CurrentEL
+    lsr     x0, x0, #2
+    cmp     x0, #2
+    b.ne    5f
+    mov     x0, #(1 << 31)
+    msr     hcr_el2, x0
+    mov     x0, #3
+    msr     cnthctl_el2, x0
+    msr     cntvoff_el2, xzr
+    ldr     x0, =0x30d00800
+    msr     sctlr_el1, x0
+    mov     x0, #0x3c5
+    msr     spsr_el2, x0
+    adr     x0, 5f
+    msr     elr_el2, x0
+    eret
+5:
+    mrs     x0, mpidr_el1
+    and     x0, x0, #0xff
+    ldr     x1, =core_stack_top
+    ldr     x2, [x1, x0, lsl #3]
+    cbz     x2, park
+    mov     sp, x2
+    mov     x1, #(1 << 20)
+    msr     cpacr_el1, x1
+    isb
+    ldr     x1, =vectors
+    msr     vbar_el1, x1
+    isb
+    bl      secondary_main
     b       park
 
 // ---- exception vectors ----
@@ -123,11 +149,10 @@ trap_common:
     bl      trap
     b       restore
 
-// enter_user(struct frame *f): start running a task for the first time. Copies the frame
-// onto the top of the kernel stack and returns through the same path as a trap.
+// enter_user(struct frame *f, stack_top): start running a task on this core. Copies the
+// frame onto the top of this core's kernel stack and returns through the same path as a trap.
 .global enter_user
 enter_user:
-    ldr     x1, =__stack_top
     sub     sp, x1, #FRAME_SIZE
     mov     x2, sp
     mov     x3, #(FRAME_SIZE / 8)

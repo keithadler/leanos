@@ -37,7 +37,8 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `maps_in_range` | Every mapping is inside the 8192-page user window and the frame pool. |
 | `derive_never_amplifies` | A derived capability covers only frames its parent covers (or names the same endpoint), keeps its badge, and allows nothing the parent does not. |
 | `write_reads_only_readable` | When `write` asks the machine layer to print user memory, every byte is in a page the calling task has mapped readable. |
-| `schedule_picks_ready` | If any task is ready, the scheduler picks a ready task. |
+| `schedule_picks_ready` | If any task is ready that no other core is running, the scheduler picks such a task. |
+| `schedule_not_on_other_core` | The scheduler never picks a task another core is running, so no task runs on two cores at once. |
 | `reply_grants_nothing` | A reply changes no task's capabilities or mappings. |
 | `reply_wakes_only_caller` | A reply wakes only a task waiting for this replier. |
 | `only_verified_runs` | Every task that can run in a manifest slot was loaded with exactly the code and assets the manifest names. The two open slots (10, 11) run whatever program Terminal starts them with; that program is measured and shown, and holds only what the manifest gives the slot. |
@@ -69,7 +70,7 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 80 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 91 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a `start` that forgets to take back
@@ -96,12 +97,14 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - Numbers must stay below 2^63. A larger one stops the machine and never gives a wrong
   answer. Two standard-library constants (`UInt64.size`, `USize.size`) are built at
   startup as opaque placeholders, and any arithmetic on one stops the machine.
-- Single core only.
+- One core at a time: the machine layer's kernel lock keeps every other core out while
+  one runs compiled Lean code or the runtime, which are not safe to run on two cores at
+  once (reference counts and the allocator are not atomic).
 - The heap has a fixed size. A task deriving capabilities up to the limit of 64 each can
   use kernel memory but cannot exhaust it. If the heap runs out, the kernel panics, which
   denies service but never breaks isolation.
 
-**`arch/boot.S` and `arch/kmain.c` (~800 lines)**
+**`arch/boot.S` and `arch/kmain.c` (~1,350 lines)**
 - Storing the tables: `mmu_init`, `tables_init` and `build_user_pages` must store each
   word Lean computes at its index, in the page-aligned arrays whose addresses they pass to
   Lean (a level-1 table, a level-2 table, and 16 level-3 tables in one array). This is exactly the `Installed` hypothesis. The kernel is identity-mapped,
@@ -149,10 +152,31 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
   then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.
+- Four cores (`arch/kmain.c`, "the cores"; `arch/boot.S`, `secondary`). Core 0 boots, then
+  hands cores 1-3 their entry through the boot stub's spin table; each turns on its own
+  MMU with the same kernel tables, its own timer and its own part of the interrupt
+  controller, and has its own 2 MiB kernel stack, painted and checked like core 0's. The
+  machine layer must:
+  - take the kernel lock (`lock`, an exclusive-access spin lock with acquire and release
+    semantics) before any Lean call or runtime use, and let go only just before returning
+    to user mode, so the Lean kernel's state is never touched by two cores at once;
+  - tell Lean, after taking the lock, which task this core runs and which each other core
+    runs (`enter_lean`). This is what makes `cur` in every proof the task that made the
+    call, and what `schedule_not_on_other_core` rests on;
+  - run only a task Lean calls `runnable` for this core (`pick`);
+  - before loading a slot, make every other core running that slot's task leave user mode
+    (`evict`: a wake-up interrupt, then wait until it is out), and drop what that core was
+    doing when it gets the lock. A core whose task was stopped from another core drops the
+    call it was making the same way;
+  - use TLB maintenance that reaches every core (`tlbi vmalle1is`), since a task may run
+    on any core and another core may change its tables.
+  Device interrupts go to core 0 only; timer ticks from cores 1-3 only reschedule, so
+  `now` counts core 0's ticks. Disk, USB and board requests run with the lock held, so
+  while one is in progress the other cores wait to enter the kernel.
 - Interrupt routing: `irq_init` enables exactly the lines Lean lists (`irqLines`); when one
   fires, `handle_irq` masks it before telling Lean, and unmasks it only when a Reply says
   so (an acknowledge from the capability's holder).
-- The idle loop waits for interrupts with WFI when no task is ready.
+- The idle loop waits for interrupts with WFI, without the lock, when no task is ready for its core.
 - Measurement: `measure_and_verify` hashes exactly the bytes each task will run from (its
   code, then its assets, where they sit in its own frames) with SHA-256 (`arch/sha256.c`,
   checked against the FIPS 180-4 test vector at every boot) and hands the digest to Lean.

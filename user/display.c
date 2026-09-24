@@ -134,6 +134,7 @@ struct state {
     int full_reported, click_reported;
     int menu;                   /* the leanos menu is open */
     u64 drag_frames, drag_us;
+    int drag_pending, pend_x, pend_y;   /* a drag move not drawn yet, and where the window was */
 };
 _Static_assert(sizeof(struct state) <= 8 * 4096, "the server's state must fit in its 8 data pages");
 
@@ -483,13 +484,32 @@ static int menu_at(int x, int y) {
     return (y - MENU_Y - 6) / MENU_ITEM;
 }
 
-/* Redraw one rectangle of the screen: background, bar, windows bottom to top, dock, pointer. */
-static void composite(struct state *st, int x, int y, int w, int h) {
+/* The part of a window nothing shows through: all of it but the rounded corners, as two
+   rectangles (a wide one without the corner rows, a tall one without the corner columns).
+   Which of them best overlaps (x0, y0)-(x1, y1) goes in *o, with how much it overlaps. */
+static long opaque_part(const struct win *w, int x0, int y0, int x1, int y1, int o[4]) {
+    int ow = outer_w(w), oh = outer_h(w);
+    int r[2][4] = {{w->x, w->y + RADIUS, w->x + ow, w->y + oh - RADIUS},
+                   {w->x + RADIUS, w->y, w->x + ow - RADIUS, w->y + oh}};
+    long best = 0;
+    for (int k = 0; k < 2; k++) {
+        int a0 = r[k][0] > x0 ? r[k][0] : x0, b0 = r[k][1] > y0 ? r[k][1] : y0;
+        int a1 = r[k][2] < x1 ? r[k][2] : x1, b1 = r[k][3] < y1 ? r[k][3] : y1;
+        long area = a1 > a0 && b1 > b0 ? (long)(a1 - a0) * (b1 - b0) : 0;
+        if (area > best) { best = area; o[0] = a0; o[1] = b0; o[2] = a1; o[3] = b1; }
+    }
+    return best;
+}
+
+/* Draw (x0, y0)-(x1, y1) from window z[from] up: background and bar only if from is 0. */
+static void composite_from(struct state *st, int x0, int y0, int x1, int y1, int from) {
     struct surface *s = &st->screen;
-    clip_to(s, x, y, w, h);
-    background(st);
-    if (s->cy0 < BAR_H + 1) top_bar(st);
-    for (int i = 0; i < st->nz; i++) {
+    clip_to(s, x0, y0, x1 - x0, y1 - y0);
+    if (from == 0) {
+        background(st);
+        if (s->cy0 < BAR_H + 1) top_bar(st);
+    }
+    for (int i = from; i < st->nz; i++) {
         struct win *wn = &st->win[st->z[i]];
         if (wn->x - 10 < s->cx1 && wn->x + outer_w(wn) + 10 > s->cx0 &&
             wn->y - 10 < s->cy1 && wn->y + outer_h(wn) + 14 > s->cy0)
@@ -499,6 +519,40 @@ static void composite(struct state *st, int x, int y, int w, int h) {
     if (st->menu && s->cx0 < MENU_X + MENU_W + 12 && s->cy0 < MENU_Y + MENU_H + 12) menu(st);
     pointer(s, st->px, st->py);
     clip_all(s);
+}
+
+/* Redraw one rectangle of the screen: background, bar, windows bottom to top, dock, pointer.
+   What an opaque window covers is drawn from that window up, skipping everything under it;
+   the rest of the rectangle (at most four pieces) is done the same way with the windows
+   below. */
+static void composite_depth(struct state *st, int x0, int y0, int x1, int y1, int depth) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > W) x1 = W;
+    if (y1 > H) y1 = H;
+    if (x0 >= x1 || y0 >= y1) return;
+    int o[4], top = -1;
+    long whole = (long)(x1 - x0) * (y1 - y0);
+    for (int i = st->nz - 1; i >= 0 && depth < 4; i--) {
+        long a = opaque_part(&st->win[st->z[i]], x0, y0, x1, y1, o);
+        if (a == whole || a >= 64 * 64) {   /* worth splitting for */
+            top = i;
+            break;
+        }
+    }
+    if (top < 0) {
+        composite_from(st, x0, y0, x1, y1, 0);
+        return;
+    }
+    composite_from(st, o[0], o[1], o[2], o[3], top);
+    composite_depth(st, x0, y0, x1, o[1], depth + 1);            /* above */
+    composite_depth(st, x0, o[3], x1, y1, depth + 1);            /* below */
+    composite_depth(st, x0, o[1], o[0], o[3], depth + 1);        /* left */
+    composite_depth(st, o[2], o[1], x1, o[3], depth + 1);        /* right */
+}
+
+static void composite(struct state *st, int x, int y, int w, int h) {
+    composite_depth(st, x, y, x + w, y + h, 0);
 }
 
 static void composite_window(struct state *st, int k) {
@@ -718,6 +772,35 @@ static void put_ms(struct line *l, u64 us) {
     put_s(l, " ms");
 }
 
+/* Draw the dragged window where it now is. */
+static void drag_frame(struct state *st) {
+    if (!st->drag_pending || !st->drag) {
+        st->drag_pending = 0;
+        return;
+    }
+    st->drag_pending = 0;
+    struct win *w = &st->win[st->drag - 1];
+    int oxw = st->pend_x, oyw = st->pend_y, nx = w->x, ny = w->y;
+    /* The window with its shadow, before and after: redraw what it uncovered (the old
+       box less the new, at most four pieces), then the new box. */
+    int ow = outer_w(w) + 20, oh = outer_h(w) + 24;
+    int ax0 = oxw - 10, ay0 = oyw - 10, ax1 = ax0 + ow, ay1 = ay0 + oh;
+    int bx0 = nx - 10, by0 = ny - 10, bx1 = bx0 + ow, by1 = by0 + oh;
+    u64 t0 = micros();
+    if (bx0 >= ax1 || bx1 <= ax0 || by0 >= ay1 || by1 <= ay0) {
+        composite_depth(st, ax0, ay0, ax1, ay1, 0);
+    } else {
+        int cy0 = ay0 > by0 ? ay0 : by0, cy1 = ay1 < by1 ? ay1 : by1;
+        composite_depth(st, ax0, ay0, ax1, cy0, 0);                    /* above the new box */
+        composite_depth(st, ax0, cy1, ax1, ay1, 0);                    /* below it */
+        composite_depth(st, ax0, cy0, bx0 > ax0 ? bx0 : ax0, cy1, 0);  /* left of it */
+        composite_depth(st, bx1 < ax1 ? bx1 : ax1, cy0, ax1, cy1, 0);  /* right of it */
+    }
+    composite_depth(st, bx0, by0, bx1, by1, 0);
+    st->drag_us += micros() - t0;
+    st->drag_frames++;
+}
+
 static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     if (kind == EV_KEY) {
         int k = focused(st);
@@ -791,18 +874,17 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
             }
         }
     } else if (kind == EV_MOVE && st->drag) {
+        /* Moves that arrive faster than frames are drawn: only the last is drawn (the main
+           loop calls drag_frame when no message is waiting). */
         struct win *w = &st->win[st->drag - 1];
-        int nx = st->px - st->grab_x, ny = st->py - st->grab_y;
-        if (ny < BAR_H + 2) ny = BAR_H + 2;
-        int oxw = w->x, oyw = w->y;
-        w->x = nx;
-        w->y = ny;
-        int x0 = (oxw < nx ? oxw : nx) - 10, y0 = (oyw < ny ? oyw : ny) - 10;
-        int x1 = (oxw > nx ? oxw : nx) + outer_w(w) + 10, y1 = (oyw > ny ? oyw : ny) + outer_h(w) + 14;
-        u64 t0 = micros();
-        composite(st, x0, y0, x1 - x0, y1 - y0);
-        st->drag_us += micros() - t0;
-        st->drag_frames++;
+        int ny = st->py - st->grab_y;
+        if (!st->drag_pending) {
+            st->drag_pending = 1;
+            st->pend_x = w->x;
+            st->pend_y = w->y;
+        }
+        w->x = st->px - st->grab_x;
+        w->y = ny < BAR_H + 2 ? BAR_H + 2 : ny;
     } else if (kind == EV_MOVE) {
         int hv = dock_at(st, st->px, st->py);
         if (hv != st->hover) {
@@ -1068,8 +1150,18 @@ __attribute__((section(".text.start"))) void _start(void) {
     say(&l);
 
     for (;;) {
-        struct res r = sys1(SYS_RECV, ENDPOINT);
+        struct res r;
+        if (st->drag_pending) {
+            r = sys(SYS_RECVT, ENDPOINT, 0, 0, 0, 0);   /* anything else waiting? */
+            if (r.status != OK) {
+                drag_frame(st);
+                continue;
+            }
+        } else r = sys1(SYS_RECV, ENDPOINT);
         u64 badge = r.x[1], op = r.x[2], slot = r.x[6], grant = r.x[5];
+        /* Anything but another drag move draws the one waiting first. */
+        if (st->drag_pending && !((badge == BADGE_INPUT || badge == BADGE_USB) && !slot && op == EV_MOVE))
+            drag_frame(st);
         if (grant) {
             /* a granted capability lands at the end of the list */
             st->ncaps = (int)grant;

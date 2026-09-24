@@ -175,6 +175,15 @@ capability, marks the slot's program stopped; `sysStop_only` and `only_launchers
 it reaches only the named program and only from the tasks that may start it. Terminal has
 `kill SLOT`; the display server takes the window back.
 
+Done too: all four cores. Every core runs tasks; one at a time is in the Lean kernel,
+under a lock the machine layer takes on the way in. On the way in it tells the kernel which
+task this core runs and which the others run (`enter`), and the scheduler never picks one
+another core is running (`schedule_not_on_other_core`). Core 0's timer advances the clock;
+the others' timers only move their core on to the next task. An idle core sleeps in WFI
+and is woken by an interrupt between cores when a task is ready that no core runs. Before
+a slot is loaded, a core still running what was there is made to leave it. `make test`
+checks that all four cores come up and run tasks.
+
 Done too: programs from the SD card. They are ELF files on the card (`tools/mksd.py`
 writes a card with them, the way programs are copied onto any computer's disk); Terminal's
 `run` reads one, checks and flattens it in user space, and starts it with `exec` in one of
@@ -204,6 +213,6 @@ each page and compares the kernel's answer with a typical Linux desktop; `calc`,
 `life` and `tiles` (2048); and a user guide. Six open slots now, and the arrow keys reach
 programs (the browser console sends them as a terminal would, ESC [ A to D).
 
-Next: a journal (so a power cut cannot lose a change halfway), more open slots and a way to give a program more authority on
-purpose (a file server endpoint, say) with the user's consent, the first boot on real Pi 4 hardware (EMMC2, colors,
-timings), the USB-A ports (xHCI on PCIe), multiple cores, and the Pi 5.
+Next: the first boot on real Pi 4 hardware (EMMC2, colors, timings), the USB-A ports
+(xHCI on PCIe), the Pi 4's own Ethernet (GENET), a kernel lock finer than the whole kernel
+(disk and USB transfers hold it today), and the Pi 5.

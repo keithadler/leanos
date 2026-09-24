@@ -80,11 +80,16 @@ static inline int font_text(struct surface *s, const struct font *f, int x, int 
         const struct glyph *g = glyph_of(f, utf8_next(&str));
         int gx = pen / 64 + g->left, gy = y - g->top;
         const unsigned char *cov = f->coverage + g->offset;
-        for (int j = 0; j < g->h; j++)
-            for (int i = 0; i < g->w; i++) {
+        /* only the part of the glyph inside the clip */
+        int j0 = s->cy0 - gy > 0 ? s->cy0 - gy : 0, j1 = s->cy1 - gy < g->h ? s->cy1 - gy : g->h;
+        int i0 = s->cx0 - gx > 0 ? s->cx0 - gx : 0, i1 = s->cx1 - gx < g->w ? s->cx1 - gx : g->w;
+        for (int j = j0; j < j1; j++) {
+            unsigned *row = s->px + (gy + j) * s->stride + gx;
+            for (int i = i0; i < i1; i++) {
                 unsigned a = cov[j * g->w + i];
-                if (a) blend(s, gx + i, gy + j, c, a);
+                if (a) row[i] = a >= 255 ? c : mix(row[i], c, a);
             }
+        }
         pen += g->advance;
     }
     return pen / 64;
@@ -99,12 +104,12 @@ static inline int font_width(const struct font *f, const char *str) {
 
 /* An icon with premultiplied alpha, top-left at (x, y). */
 static inline void icon(struct surface *s, int x, int y, const struct picture *p) {
-    for (int j = 0; j < p->h; j++) {
+    int j0 = s->cy0 - y > 0 ? s->cy0 - y : 0, j1 = s->cy1 - y < p->h ? s->cy1 - y : p->h;
+    int i0 = s->cx0 - x > 0 ? s->cx0 - x : 0, i1 = s->cx1 - x < p->w ? s->cx1 - x : p->w;
+    for (int j = j0; j < j1; j++) {
         int dy = y + j;
-        if (dy < s->cy0 || dy >= s->cy1) continue;
-        for (int i = 0; i < p->w; i++) {
+        for (int i = i0; i < i1; i++) {
             int dx = x + i;
-            if (dx < s->cx0 || dx >= s->cx1) continue;
             unsigned v = p->px[j * p->w + i], a = v >> 24;
             if (!a) continue;
             unsigned *d = s->px + dy * s->stride + dx;
@@ -121,14 +126,14 @@ static inline void icon(struct surface *s, int x, int y, const struct picture *p
    pixels it covers (premultiplied, so edges stay clean). */
 static inline void icon_scaled(struct surface *s, int x, int y, int size, const struct picture *p) {
     if (!p->px || size <= 0) return;
-    for (int j = 0; j < size; j++) {
+    int j0 = s->cy0 - y > 0 ? s->cy0 - y : 0, j1 = s->cy1 - y < size ? s->cy1 - y : size;
+    int i0 = s->cx0 - x > 0 ? s->cx0 - x : 0, i1 = s->cx1 - x < size ? s->cx1 - x : size;
+    for (int j = j0; j < j1; j++) {
         int dy = y + j;
-        if (dy < s->cy0 || dy >= s->cy1) continue;
         int sy0 = j * p->h / size, sy1 = (j + 1) * p->h / size;
         if (sy1 <= sy0) sy1 = sy0 + 1;
-        for (int i = 0; i < size; i++) {
+        for (int i = i0; i < i1; i++) {
             int dx = x + i;
-            if (dx < s->cx0 || dx >= s->cx1) continue;
             int sx0 = i * p->w / size, sx1 = (i + 1) * p->w / size;
             if (sx1 <= sx0) sx1 = sx0 + 1;
             unsigned a = 0, r = 0, g = 0, b = 0, n = 0;

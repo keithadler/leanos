@@ -85,7 +85,7 @@ mutant "kernel RAM executable from user mode" \
 mutant "kernel RAM readable from user mode" \
   "0 + dValid + attrNormal + shInner + accessFlag + userNoExec" "0 + dValid + attrNormal + apUserRO + shInner + accessFlag + userNoExec"
 mutant "scheduler may pick a waiting task" \
-  "if isReady ts j then some j else findReady ts (j + 1) fuel" "some j"
+  "if runnable busy ts j then some j else findReady busy ts (j + 1) fuel" "some j"
 mutant "start leaves other tasks' mappings of the slot" \
   "maps := dropMaps k t.maps" "maps := t.maps"
 mutant "start leaves other tasks' capabilities to the slot" \
@@ -205,6 +205,10 @@ mutant "grant the USB capability" \
 mutant "stop stops the slot after the one it names" \
   "          ret (setTask s k { u with status := .dead, result := .nil }) t (0 :: .nil)" "          ret (setTask s (k + 1) { u with status := .dead, result := .nil }) t (0 :: .nil)"
 
+mutant "the scheduler ignores what the other cores run" \
+  "def runnable (busy : List Nat) (ts : List Task) (j : Nat) : Bool := isReady ts j && !memNat j busy" "def runnable (busy : List Nat) (ts : List Task) (j : Nat) : Bool := isReady ts j"
+mutant "enter forgets one core" \
+  "def enter (s : KState) (c b0 b1 b2 : Nat) : KState := { s with cur := c, busy := b0 :: b1 :: b2 :: .nil }" "def enter (s : KState) (c b0 b1 b2 : Nat) : KState := { s with cur := c, busy := b0 :: b1 :: .nil }"
 mutant_journal "the journal writes home before the commit" \
   "  jw J 0 (t.map Prod.snd) ++
     (J, .header t.length (t.map Prod.fst) (csum (t.map Prod.snd))) :: (t ++ (J, clean) :: .nil)" "  jw J 0 (t.map Prod.snd) ++ t ++

@@ -10,7 +10,7 @@ fail() { echo "FAIL: $*"; exit 1; }
 axioms=$(lake env lean test/Axioms.lean 2>&1) || fail "axiom check did not run: $axioms"
 echo "$axioms" | grep -q sorryAx && fail "a theorem depends on sorry"
 echo "$axioms" | grep -v "depends on axioms: \[\(propext\|Classical.choice\|Quot.sound\)\(, \(propext\|Classical.choice\|Quot.sound\)\)*\]" \
-  | grep -q . && fail "unexpected axiom: $axioms"
+  | grep -v "does not depend on any axioms$" | grep -q . && fail "unexpected axiom: $axioms"
 echo "ok: $(echo "$axioms" | wc -l | tr -d ' ') theorems rest only on Lean's standard axioms"
 
 rm -f build/screen.ppm build/screen.png build/logo.ppm build/logo.png
@@ -20,6 +20,11 @@ out=$(python3 test/run.py 40 --demo)
 status=$?
 echo "$out" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish the interaction (status $status)"
+
+# All four cores come up and run tasks.
+for c in 1 2 3; do echo "$out" | grep -q "^leanos: core $c up$" || fail "core $c did not come up"; done
+echo "$out" | grep -q "^leanos: idle, .*tasks ran on 4 cores)$" || fail "tasks did not run on all four cores"
+echo "ok: all four cores are up and every one of them ran tasks"
 
 # Each task's lines must appear in this order; tasks may interleave with each other.
 check_order() {

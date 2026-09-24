@@ -129,6 +129,9 @@ structure KState where
   them against the driver's memory (`sysUsb`). -/
   usbDma : List Nat
   usbSize : List Nat
+  /-- Tasks the other processor cores are running right now (the machine layer says, at
+  every entry): the scheduler never picks one of them. -/
+  busy : List Nat
 
 /-! ## List helpers
 
@@ -336,7 +339,7 @@ def mkTasksFrom (i : Nat) : Nat → List Task
   | 0 => .nil
   | k + 1 => mkTask i :: mkTasksFrom (i + 1) k
 
-def init (fbBase : Nat) : KState := ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil, 0, usbZeros, usbZeros⟩
+def init (fbBase : Nat) : KState := ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil, 0, usbZeros, usbZeros, .nil⟩
 
 def setTask (s : KState) (j : Nat) (t : Task) : KState := { s with tasks := setNth s.tasks j t }
 
@@ -370,16 +373,23 @@ def isReady (ts : List Task) (i : Nat) : Bool :=
   | none => false
 
 /-- The first ready task at or after `i`, wrapping around, looking at most `fuel` tasks. -/
-def findReady (ts : List Task) (i : Nat) : Nat → Option Nat
+def memNat (x : Nat) : List Nat → Bool
+  | .nil => false
+  | y :: ys => x == y || memNat x ys
+
+/-- Task `j` may be run here: it is ready, and no other core is running it. -/
+def runnable (busy : List Nat) (ts : List Task) (j : Nat) : Bool := isReady ts j && !memNat j busy
+
+def findReady (busy : List Nat) (ts : List Task) (i : Nat) : Nat → Option Nat
   | 0 => none
   | fuel + 1 =>
     let j := i % len ts
-    if isReady ts j then some j else findReady ts (j + 1) fuel
+    if runnable busy ts j then some j else findReady busy ts (j + 1) fuel
 
 /-- Round robin: the next ready task after the current one, or the current one if it is the
 only one ready. If none is ready, the state is unchanged and the machine layer stops. -/
 def schedule (s : KState) : KState :=
-  match findReady s.tasks (s.cur + 1) (len s.tasks) with
+  match findReady s.busy s.tasks (s.cur + 1) (len s.tasks) with
   | some j => { s with cur := j }
   | none => s
 
@@ -1210,6 +1220,13 @@ before passing it in. -/
 @[export leanos_syscall] def exSyscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   syscall s num a0 a1 a2 a3 a4
 @[export leanos_tick] def exTick (s : KState) : KState := tick s
+/-- A core enters the kernel: the task it was running (`c`, or `numTasks` or more for none),
+and what the other three run. -/
+def enter (s : KState) (c b0 b1 b2 : Nat) : KState := { s with cur := c, busy := b0 :: b1 :: b2 :: .nil }
+@[export leanos_enter] def exEnter (s : KState) (c b0 b1 b2 : Nat) : KState := enter s c b0 b1 b2
+/-- Another core's timer: pick again, without a tick (time is core 0's to count). -/
+@[export leanos_schedule] def exSchedule (s : KState) : KState := schedule s
+@[export leanos_runnable] def exRunnable (s : KState) (j : Nat) : Bool := runnable s.busy s.tasks j
 @[export leanos_fault] def exFault (s : KState) : KState := killCurrent s
 @[export leanos_clear_result] def exClearResult (s : KState) (j : Nat) : KState := clearResult s j
 @[export leanos_verify] def exVerify (s : KState) (i w0 w1 w2 w3 w4 w5 w6 w7 : Nat) : KState :=

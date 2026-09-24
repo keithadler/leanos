@@ -48,6 +48,9 @@ lean_object *leanos_reply_usb_b(lean_object *r);
 lean_object *leanos_reply_usb_c(lean_object *r);
 lean_object *leanos_reply_usb_d(lean_object *r);
 lean_object *leanos_usb_done(lean_object *s, lean_object *v);
+lean_object *leanos_enter(lean_object *s, lean_object *c, lean_object *b0, lean_object *b1, lean_object *b2);
+lean_object *leanos_schedule(lean_object *s);
+uint8_t leanos_runnable(lean_object *s, lean_object *j);
 lean_object *leanos_board_done(lean_object *s, lean_object *a, lean_object *b, lean_object *c,
                                lean_object *d, lean_object *e);
 int sd_init(void);
@@ -422,9 +425,9 @@ static void tlb_flush_all(void) {
     ISB();
 }
 
-static void mmu_init(void) {
-    for (uint64_t k = 0; k < 512; k++) kl1[k] = word(leanos_kernel_l1(lean_box(k)));
-
+/* Every core turns its own MMU on, with the same kernel tables. A core that has just
+   started runs this with its caches off, so it reads no data core 0 wrote. */
+static void mmu_enable_this_core(void) {
     /* Memory attribute 0: device nGnRE. 1: normal, write-back. 2: normal, not cached. */
     SYSREG_WRITE(mair_el1, (0x04UL << 0) | (0xffUL << 8) | (0x44UL << 16));
     uint64_t tcr = 25                /* T0SZ: 39-bit addresses */
@@ -443,6 +446,11 @@ static void mmu_init(void) {
     sctlr |= (1 << 0) | (1 << 2) | (1 << 12); /* MMU, data cache, instruction cache */
     SYSREG_WRITE(sctlr_el1, sctlr);
     ISB();
+}
+
+static void mmu_init(void) {
+    for (uint64_t k = 0; k < 512; k++) kl1[k] = word(leanos_kernel_l1(lean_box(k)));
+    mmu_enable_this_core();
 }
 
 /* Task i's level-1 and level-2 tables never change. Set once at boot. */
@@ -478,10 +486,20 @@ static void timer_rearm(void) {
 static void gic_enable(uint32_t id) { mmio_w32(GICD + 0x100 + 4 * (id / 32), 1u << (id % 32)); }
 static void gic_disable(uint32_t id) { mmio_w32(GICD + 0x180 + 4 * (id / 32), 1u << (id % 32)); }
 
+/* This core's own part of the controller: its timer's line and the wake-up interrupt
+   (SGI 0) are banked per core, as is the CPU interface. */
+#define SGI_WAKE 0
+static void gic_this_core(void) {
+    mmio_w8(GICD + 0x400 + TIMER_IRQ, 0x80);            /* priority */
+    mmio_w8(GICD + 0x400 + SGI_WAKE, 0x80);
+    gic_enable(TIMER_IRQ);
+    gic_enable(SGI_WAKE);
+    mmio_w32(GICC + 0x004, 0xff);                       /* accept every priority */
+    mmio_w32(GICC + 0x000, 1);                          /* CPU interface on */
+}
+
 static void irq_init(void) {
     mmio_w32(GICD + 0x000, 1);                          /* distributor on */
-    mmio_w8(GICD + 0x400 + TIMER_IRQ, 0x80);            /* priority */
-    gic_enable(TIMER_IRQ);
     /* The lines the manifest hands to tasks as interrupt capabilities. */
     uint64_t lines = nat(leanos_irq_line_count(lean_box(0)));
     for (uint64_t k = 0; k < lines; k++) {
@@ -491,8 +509,7 @@ static void irq_init(void) {
         mmio_w8(GICD + 0x800 + id, 1);                  /* deliver to core 0 */
         gic_enable(id);
     }
-    mmio_w32(GICC + 0x004, 0xff);                       /* accept every priority */
-    mmio_w32(GICC + 0x000, 1);                          /* CPU interface on */
+    gic_this_core();
     uint64_t freq = SYSREG_READ(cntfrq_el0);
     if (freq == 0) freq = 54000000;                     /* the Pi 4's crystal, if firmware left it unset */
     timer_interval = freq / 100;                        /* 10 ms time slice */
@@ -507,15 +524,61 @@ static int started[MAX_TASKS];      /* loaded at least once */
 static uint64_t ntasks;
 static uint64_t syscalls, ticks, device_irqs;
 
-/* Take one interrupt from the controller. The timer ends a time slice; any other line is
-   masked until its holder acknowledges it, and the Lean kernel decides who to wake. */
-static void handle_irq(void) {
+/* ---- the cores ----
+ * All four cores run tasks. The Lean kernel is one state, so one core at a time is in it:
+ * a core takes the kernel lock as it enters from user mode and lets go just before it
+ * returns. On the way in it tells the kernel which task it runs and which tasks the other
+ * cores run (`enter`), so the kernel's decisions are about the right task, and it never
+ * picks a task another core is running (`runnable`). */
+#define NCORES 4
+#define NONE MAX_TASKS                         /* a core running no task */
+static volatile uint64_t core_task[NCORES];   /* what each core runs */
+static volatile int core_in_user[NCORES];     /* the core is in user mode, running it */
+static uint64_t cores_up = 1;
+uint64_t core_stack_top[NCORES];               /* boot.S: each core's kernel stack */
+static volatile uint32_t klock;
+static uint64_t core_runs[NCORES];             /* times each core has left for a task */
+
+static uint64_t this_core(void) { return SYSREG_READ(mpidr_el1) & 0xff; }
+
+static void lock(void) {
+    uint32_t t;
+    __asm__ volatile("   sevl\n"
+                     "1: wfe\n"
+                     "2: ldaxr %w0, [%1]\n"
+                     "   cbnz  %w0, 1b\n"
+                     "   stxr  %w0, %w2, [%1]\n"
+                     "   cbnz  %w0, 2b\n"
+                     : "=&r"(t) : "r"(&klock), "r"(1) : "memory");
+}
+
+static void unlock(void) {
+    __asm__ volatile("stlr wzr, [%0]\n sev" :: "r"(&klock) : "memory");
+}
+
+static void send_wake(uint64_t core) { mmio_w32(GICD + 0xf00, (1u << (16 + core)) | SGI_WAKE); }
+
+/* Tell the Lean kernel what core `c` runs and what the others run. */
+static void enter_lean(uint64_t c) {
+    uint64_t b[NCORES - 1], n = 0;
+    for (uint64_t o = 0; o < NCORES; o++)
+        if (o != c) b[n++] = core_task[o];
+    K = leanos_enter(K, lean_box(core_task[c]), lean_box(b[0]), lean_box(b[1]), lean_box(b[2]));
+}
+
+/* Take one interrupt from the controller. The timer ends a time slice (core 0's also
+   advances the clock); the wake-up interrupt only brings a core into the kernel; any other
+   line is masked until its holder acknowledges it, and the Lean kernel decides who to wake. */
+static void handle_irq(uint64_t c) {
     uint32_t iar = mmio_r32(GICC + 0x00c);
     uint32_t id = iar & 0x3ff;
     if (id == TIMER_IRQ) {
-        ticks++;
         timer_rearm();
-        K = leanos_tick(K);
+        if (c == 0) {
+            ticks++;
+            K = leanos_tick(K);
+        } else K = leanos_schedule(K);
+    } else if (id < 16) {
     } else if (id < 1020) {
         device_irqs++;
         gic_disable(id);
@@ -627,6 +690,21 @@ static void measure_and_verify(uint64_t i) {
     }
 }
 
+/* Slot k is about to be loaded: no other core may still be running what was there. Each
+   one that is gets the wake-up interrupt and leaves user mode (it waits for the lock, and
+   drops what it was doing, since it runs nothing now). */
+static void evict(uint64_t k) {
+    uint64_t c = this_core();
+    for (uint64_t o = 0; o < NCORES; o++)
+        if (o != c && core_task[o] == k) {
+            core_task[o] = NONE;
+            DSB(ish);
+            send_wake(o);
+            while (core_in_user[o]) {}
+            DSB(ish);
+        }
+}
+
 static void do_syscall(uint64_t cur) {
     struct frame *f = &saved[cur];
     syscalls++;
@@ -688,6 +766,7 @@ static void do_syscall(uint64_t cur) {
            frames are cleared and loaded, then measure what was loaded. */
         uint64_t k = load - 1;
         if (k >= ntasks || k == cur) kpanic("start of a slot the kernel should have refused");
+        evict(k);
         for (uint64_t i = 0; i < ntasks; i++) build_user_pages(i);
         if (load_len) load_image(k, out_va, load_len);
         else if (k < NPROGS && !leanos_open_slot(lean_box(k))) load_program(k);
@@ -716,7 +795,9 @@ static void load_result(uint64_t j) {
  * checked instead: the stack is painted at boot, and every return to user mode checks that
  * the bottom of the paint is intact. Running past it stops the machine rather than letting
  * the stack grow into the kernel's other data. */
-extern char __stack_bottom[], __stack_top[];
+extern char __stack_bottom[], __stack_top[], __core_stacks[];
+#define STACK_SIZE 0x200000UL
+static char *stack_bottom(uint64_t c) { return c == 0 ? __stack_bottom : __core_stacks + (c - 1) * STACK_SIZE; }
 #define STACK_PAINT 0x5a5a5a5a5a5a5a5aUL
 #define STACK_GUARD 512   /* bytes at the bottom that must stay painted */
 
@@ -726,15 +807,21 @@ static void stack_paint(void) {
     for (uint64_t *p = (uint64_t *)__stack_bottom; (uint64_t)p < sp - 256; p++) *p = STACK_PAINT;
 }
 
-static void stack_check(void) {
-    for (uint64_t *p = (uint64_t *)__stack_bottom; (char *)p < __stack_bottom + STACK_GUARD; p++)
+static void stack_check(uint64_t c) {
+    char *b = stack_bottom(c);
+    for (uint64_t *p = (uint64_t *)b; (char *)p < b + STACK_GUARD; p++)
         if (*p != STACK_PAINT) kpanic("kernel stack overflow");
 }
 
 static uint64_t stack_peak(void) {
-    uint64_t *p = (uint64_t *)__stack_bottom;
-    while ((char *)p < __stack_top && *p == STACK_PAINT) p++;
-    return (uint64_t)(__stack_top - (char *)p);
+    uint64_t peak = 0;
+    for (uint64_t c = 0; c < cores_up; c++) {
+        char *b = stack_bottom(c);
+        uint64_t *p = (uint64_t *)b;
+        while ((char *)p < b + STACK_SIZE && *p == STACK_PAINT) p++;
+        if ((uint64_t)(b + STACK_SIZE - (char *)p) > peak) peak = (uint64_t)(b + STACK_SIZE - (char *)p);
+    }
+    return peak;
 }
 
 static void report(const char *what) {
@@ -751,34 +838,79 @@ static void report(const char *what) {
     kputdec(rt_heap_peak());
     kputs(" peak, stack ");
     kputdec(stack_peak());
-    kputs(" bytes peak)\n");
+    kputs(" bytes peak; tasks ran on ");
+    uint64_t used = 0;
+    for (uint64_t c = 0; c < NCORES; c++) used += core_runs[c] != 0;
+    kputdec(used);
+    kputs(used == 1 ? " core)\n" : " cores)\n");
 }
 
-/* No task is ready. If every task has stopped, power off. Otherwise wait for an interrupt:
-   the timer, or a device whose holder is waiting for it. WFI wakes on a pending interrupt
-   even though the kernel runs with interrupts masked. */
-static uint64_t idle_until_ready(void) {
+/* The task core `c` runs next: the one the kernel chose, if this core may run it, or the
+   next one it may. If there is none, the core waits for an interrupt (its timer, the wake-up
+   interrupt, or, on core 0, a device), without the lock. If every task has stopped, power
+   off. WFI wakes on a pending interrupt even though the kernel runs with them masked. */
+static uint64_t pick(uint64_t c) {
     static int reported;
-    uint64_t next = cur_task();
-    while (!ready(next)) {
-        uint64_t waiting = 0;
+    for (;;) {
+        uint64_t next = cur_task();
+        if (!leanos_runnable(K1, lean_box(next))) {
+            K = leanos_schedule(K);
+            next = cur_task();
+        }
+        if (leanos_runnable(K1, lean_box(next))) return next;
+        core_task[c] = NONE;
+        uint64_t waiting = 0, idle = 0;
         for (uint64_t i = 0; i < ntasks; i++)
             if (started[i] && !leanos_dead(K1, lean_box(i))) waiting++;
         if (waiting == 0) {
             report("leanos: every task has finished");
             poweroff();
         }
-        if (!reported) {
+        for (uint64_t o = 0; o < cores_up; o++) idle += core_task[o] == NONE;
+        if (!reported && idle == cores_up) {
             reported = 1;
             kputs("leanos: idle, ");
             kputdec(waiting);
             report(waiting == 1 ? " task waiting" : " tasks waiting");
         }
+        unlock();
         __asm__ volatile("wfi");
-        handle_irq();
-        next = cur_task();
+        lock();
+        enter_lean(c);
+        handle_irq(c);
     }
-    return next;
+}
+
+/* On the way out: an idle core gets the wake-up interrupt if a task is ready that no core
+   runs, and a core whose task was stopped from here gets it so that it stops now. */
+static void wake_others(uint64_t c) {
+    int spare = 0;
+    for (uint64_t j = 0; j < ntasks && !spare; j++) {
+        if (!ready(j)) continue;
+        spare = 1;
+        for (uint64_t o = 0; o < cores_up; o++) spare &= core_task[o] != j;
+    }
+    for (uint64_t o = 0; o < cores_up; o++) {
+        if (o == c) continue;
+        uint64_t t = core_task[o];
+        if (t == NONE ? spare : core_in_user[o] && !ready(t)) {
+            send_wake(o);
+            if (t == NONE) spare = 0;
+        }
+    }
+}
+
+/* Leave the kernel on core `c`, running task `next` (its registers go into `f`). */
+static void leave(uint64_t c, uint64_t next, struct frame *f) {
+    core_task[c] = next;
+    core_runs[c]++;
+    load_result(next);
+    switch_to(next);
+    *f = saved[next];
+    stack_check(c);
+    wake_others(c);
+    core_in_user[c] = 1;
+    unlock();
 }
 
 static const char *fault_name(uint64_t ec) {
@@ -795,7 +927,10 @@ static const char *fault_name(uint64_t ec) {
 }
 
 void trap(struct frame *f, uint64_t kind) {
-    uint64_t cur = cur_task();
+    uint64_t c = this_core();
+    DSB(ish);                   /* what the task wrote is visible before it counts as out */
+    core_in_user[c] = 0;
+    DSB(ish);
     if (kind >= 2) {
         kputs("\nleanos: exception in the kernel, kind ");
         kputdec(kind);
@@ -807,9 +942,15 @@ void trap(struct frame *f, uint64_t kind) {
         kputhex(SYSREG_READ(far_el1));
         kpanic("stopping");
     }
-    saved[cur] = *f;
+    lock();
+    uint64_t cur = core_task[c];
+    enter_lean(c);
+    /* A task stopped (or its slot restarted) from another core while this one ran it: what
+       it was doing is dropped. */
+    int running = cur < ntasks && ready(cur);
+    if (running) saved[cur] = *f;
 
-    if (kind == 0) {
+    if (kind == 0 && running) {
         uint64_t esr = SYSREG_READ(esr_el1), ec = esr >> 26;
         if (ec == 0x15) {
             do_syscall(cur);
@@ -823,15 +964,56 @@ void trap(struct frame *f, uint64_t kind) {
             kputs("\n");
             K = leanos_fault(K);
         }
-    } else {
-        handle_irq();
+    } else if (kind == 1) {
+        handle_irq(c);
     }
+    leave(c, pick(c), f);
+}
 
-    uint64_t next = idle_until_ready();
-    load_result(next);
-    switch_to(next);
-    *f = saved[next];
-    stack_check();
+/* The first task each core runs; enter_user copies it onto the core's stack. */
+static struct frame first_frame[NCORES];
+
+/* Cores 1-3 start here (boot.S: secondary), once core 0 has the kernel up. */
+void secondary_main(uint64_t c) {
+    mmu_enable_this_core();
+    SYSREG_WRITE(cntkctl_el1, 1UL << 1);
+    lock();
+    gic_this_core();
+    timer_rearm();
+    cores_up++;
+    kputs("leanos: core ");
+    kputdec(c);
+    kputs(" up\n");
+    core_task[c] = NONE;
+    enter_lean(c);
+    leave(c, pick(c), &first_frame[c]);
+    enter_user(&first_frame[c], core_stack_top[c]);
+}
+
+/* Hand cores 1-3 `secondary` through the boot stub's spin table. Until their MMUs are on
+   they read memory past the caches, so what they read first (their stack addresses, their
+   stacks) is cleaned out to memory. */
+static void clean_range(const void *p, uint64_t len) {
+    for (uint64_t a = (uint64_t)p & ~63UL; a < (uint64_t)p + len; a += 64)
+        __asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
+    DSB(sy);
+}
+
+static void start_cores(void) {
+    extern char secondary[];
+    for (uint64_t c = 1; c < NCORES; c++) {
+        core_task[c] = NONE;
+        core_stack_top[c] = (uint64_t)stack_bottom(c) + STACK_SIZE;
+        for (uint64_t *p = (uint64_t *)stack_bottom(c); (uint64_t)p < core_stack_top[c]; p++) *p = STACK_PAINT;
+    }
+    clean_range(core_stack_top, sizeof core_stack_top);
+    clean_range(__core_stacks, (NCORES - 1) * STACK_SIZE);
+    for (uint64_t c = 1; c < NCORES; c++) {
+        volatile uint64_t *slot = (volatile uint64_t *)(0xd8 + 8 * c);
+        *slot = (uint64_t)secondary;
+        clean_range((const void *)slot, 8);
+    }
+    __asm__ volatile("sev");
 }
 
 void kmain(void) {
@@ -897,8 +1079,11 @@ void kmain(void) {
     }
     irq_init();
 
-    if (!ready(cur_task())) K = leanos_tick(K);
-    uint64_t first = idle_until_ready();
-    switch_to(first);
-    enter_user(&saved[first]);
+    lock();
+    core_task[0] = NONE;
+    core_stack_top[0] = (uint64_t)__stack_top;
+    start_cores();
+    enter_lean(0);
+    leave(0, pick(0), &first_frame[0]);
+    enter_user(&first_frame[0], (uint64_t)__stack_top);
 }

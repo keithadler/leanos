@@ -7,7 +7,7 @@ graphical interface; [ROADMAP.md](ROADMAP.md) has the plan.
 The part that decides who may touch what is Lean code: capabilities, address spaces,
 system calls and the scheduler. It is compiled to C and linked into the kernel image. The
 theorems in `LeanOS/Proofs.lean` are about that same code, so there is no separate
-specification that could drift from what runs. Underneath, about 1,250 lines of C and
+specification that could drift from what runs. Underneath, about 1,600 lines of C and
 assembly boot the board, write page tables and switch tasks, but make no access decisions.
 
 Today it boots the Pi 4 (tested on QEMU's `raspi4b` machine) to a graphical desktop at
@@ -28,6 +28,10 @@ system calls with made-up arguments, every answer checked against the proofs), a
 an icon, in the Apps window, its title bar and the dock. Up to six programs from the card
 run at once, each confined to its own memory and a window; starting one that is already
 open brings its window to the front.
+
+**All four cores** run tasks. One core at a time is in the Lean kernel, which is told
+which task each core runs, so every proof's "the calling task" is the right one on every
+core.
 
 **The network**: plug in a USB network adapter and the USB driver gets an address by DHCP;
 Terminal's `ip`, `ping HOST` and `get http://URL [FILE]` use it (ARP, IPv4, ICMP, UDP, DHCP,
@@ -194,7 +198,8 @@ can reach, under any sequence of system calls with any arguments:
   frames (`confined`), and none of the three can pass what it was lent on.
 - **Every mapping is backed** by a capability the task holds, with the same rights.
 - **`write` reads only memory the task may read.**
-- **The scheduler never runs a waiting or stopped task** while a ready one exists.
+- **The scheduler never runs a waiting or stopped task** while a ready one exists, and
+  **never gives a core a task another core is running** (all four cores run tasks).
 - **Replies grant nothing** and wake only the task waiting for them; **a timer tick wakes
   only tasks whose sleep is over**.
 - **Only verified code runs**: every task starts unverified; the kernel lets it run only if
@@ -255,7 +260,7 @@ can reach, under any sequence of system calls with any arguments:
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
 MMU proves that user mode reaches exactly its own mappings, only the frame pool and the
 framebuffer (never the kernel or the peripherals), and shares a physical page with another
-task only along a grant path. `make mutants` breaks the kernel in 80 ways and checks the
+task only along a grant path. `make mutants` breaks the kernel in 91 ways and checks the
 proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
