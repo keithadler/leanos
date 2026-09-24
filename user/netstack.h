@@ -27,6 +27,9 @@ struct net {
     unsigned short dns_id;
     unsigned dns_answer;
     int dns_done;
+    /* NTP */
+    unsigned short ntp_port;
+    unsigned ntp_secs;                           /* Unix seconds from the last answer (0: none) */
     /* TCP */
     int tcp_state;                               /* 0 closed, 1 syn sent, 2 open, 3 closed by peer, 4 reset */
     unsigned tcp_ip;
@@ -417,7 +420,31 @@ static void net_input(struct net *n, const unsigned char *f, unsigned len) {
         if (ulen < 8 || ulen > plen) return;
         if (dport == 68) dhcp_input(n, p + 8, ulen - 8);
         else if (be16(p) == 53) dns_input(n, p + 8, ulen - 8);
+        else if (dport == n->ntp_port && ulen - 8 >= 48) {
+            const unsigned char *m = p + 8;
+            unsigned secs = be32(m + 40);                   /* the server's transmit time */
+            if ((m[0] & 7) == 4 && secs > 2208988800u) n->ntp_secs = secs - 2208988800u;   /* since 1900 */
+        }
     }
+}
+
+/* ---- NTP ---- */
+
+/* Ask the time server at `ip` (UDP `port`, 123 normally) what time it is: Unix seconds, or 0
+   if it did not answer. SNTP, one question: accurate to about the round trip. */
+static unsigned ntp_time(struct net *n, unsigned ip, unsigned port) {
+    for (int tries = 0; tries < 3; tries++) {
+        unsigned char *q = ip_payload(n) + 8;
+        mzero(q, 48);
+        q[0] = 0x23;                                        /* version 4, client */
+        n->ntp_port = (unsigned short)(40000 + next_rand(n) % 20000);
+        n->ntp_secs = 0;
+        udp_send(n, ip, n->ntp_port, port, 48);
+        u64 until = net_now() + 1500;
+        while (!n->ntp_secs && net_now() < until) net_poll();
+        if (n->ntp_secs) return n->ntp_secs;
+    }
+    return 0;
 }
 
 /* ---- HTTP ---- */

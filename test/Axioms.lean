@@ -18,6 +18,8 @@ open LeanOS
 #print axioms schedule_picks_ready
 #print axioms schedule_not_on_other_core
 #print axioms enter_only_cores
+#print axioms syscall_wall
+#print axioms only_usb_driver_sets_time
 #print axioms walk_eq_view
 #print axioms el0_only_pool_fb_uart
 #print axioms physOf_inj

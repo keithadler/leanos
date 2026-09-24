@@ -6,6 +6,7 @@
    waits in never ends early (`sleep_on_time`). It asks the display server for events
    without blocking, so the close button still works. */
 #include "../ui.h"
+#include "../date.h"
 
 #define CW 300
 #define CH 150
@@ -18,10 +19,10 @@ struct clock {
 };
 
 /* The kernel's clock: ticks since boot, milliseconds, and hours, minutes, seconds. */
-struct time { u64 ticks, ms, h, m, s; };
+struct time { u64 ticks, ms, h, m, s, wall; };
 static struct time kernel_time(void) {
     struct res r = sys0(SYS_TIME);
-    return (struct time){r.x[1], r.x[2], r.x[3], r.x[4], r.x[5]};
+    return (struct time){r.x[1], r.x[2], r.x[3], r.x[4], r.x[5], r.x[6]};
 }
 
 static void two(struct line *l, u64 v) {
@@ -32,20 +33,43 @@ static void two(struct line *l, u64 v) {
 static void draw(struct clock *c, struct time t) {
     struct surface *s = &c->win;
     fill(s, 0, 0, CW, CH, rgb(20, 22, 32));
+    /* The time of day, if the network has said what it is; else the time since boot. */
+    struct date d = date_of(t.wall);
     struct line l = {.n = 0};
-    two(&l, t.h);
+    two(&l, t.wall ? (u64)d.h : t.h);
     put_s(&l, ":");
-    two(&l, t.m);
+    two(&l, t.wall ? (u64)d.m : t.m);
     put_s(&l, ":");
-    two(&l, t.s);
+    two(&l, t.wall ? (u64)d.s : t.s);
     l.b[l.n] = 0;
     int w = font_width(&c->ui.huge, l.b);
     font_text(s, &c->ui.huge, CW / 2 - w / 2, 70, l.b, rgb(126, 214, 255));
-    const char *up = "up since the Pi started";
-    font_text(s, &c->ui.small, CW / 2 - font_width(&c->ui.small, up) / 2, 96, up, rgb(130, 136, 160));
+    struct line u = {.n = 0};
+    if (t.wall) {
+        put_s(&u, day_names[d.weekday]);
+        put_s(&u, ", ");
+        put_s(&u, month_names[d.month - 1]);
+        put_s(&u, " ");
+        put_dec(&u, (u64)d.day);
+        put_s(&u, ", ");
+        put_dec(&u, (u64)d.year);
+        put_s(&u, " (UTC)");
+    } else put_s(&u, "up since the Pi started");
+    u.b[u.n] = 0;
+    font_text(s, &c->ui.small, CW / 2 - font_width(&c->ui.small, u.b) / 2, 96, u.b, rgb(130, 136, 160));
     struct line k = {.n = 0};
-    put_s(&k, "kept by the Lean kernel: tick ");
-    put_dec(&k, t.ticks);
+    if (t.wall) {
+        put_s(&k, "up ");
+        two(&k, t.h);
+        put_s(&k, ":");
+        two(&k, t.m);
+        put_s(&k, ":");
+        two(&k, t.s);
+        put_s(&k, ", kept by the Lean kernel");
+    } else {
+        put_s(&k, "kept by the Lean kernel: tick ");
+        put_dec(&k, t.ticks);
+    }
     k.b[k.n] = 0;
     font_text(s, &c->ui.small, CW / 2 - font_width(&c->ui.small, k.b) / 2, 120, k.b, rgb(96, 104, 130));
     const char *proved = "proved never to go back";

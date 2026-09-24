@@ -205,6 +205,10 @@ mutant "grant the USB capability" \
 mutant "stop stops the slot after the one it names" \
   "          ret (setTask s k { u with status := .dead, result := .nil }) t (0 :: .nil)" "          ret (setTask s (k + 1) { u with status := .dead, result := .nil }) t (0 :: .nil)"
 
+mutant "Security is given the time of day" \
+  "  | 7 => snoc (frameCaps 7) (epCap 0 false true true 7)" "  | 7 => snoc (snoc (frameCaps 7) (epCap 0 false true true 7)) wallCap"
+mutant "time sets the time of day" \
+  "  ret s t (0 :: s.now :: ms ::" "  ret { s with wall := s.now } t (0 :: s.now :: ms ::"
 mutant "the scheduler ignores what the other cores run" \
   "def runnable (busy : List Nat) (ts : List Task) (j : Nat) : Bool := isReady ts j && !memNat j busy" "def runnable (busy : List Nat) (ts : List Task) (j : Nat) : Bool := isReady ts j"
 mutant "enter forgets one core" \

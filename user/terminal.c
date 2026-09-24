@@ -6,6 +6,7 @@
 #include "fs.h"
 #include "elfload.h"
 #include "net.h"
+#include "date.h"
 
 /* Terminal's launch capabilities for the open slots, which run programs from the SD card. */
 #define LAUNCH_OPEN 6
@@ -440,6 +441,45 @@ static void cmd_ping(struct term *t, struct line *l, const char *args) {
     flush(l);
 }
 
+/* date: the time of day the kernel keeps (set from the network; UTC). */
+static void cmd_date(struct term *t, struct line *l) {
+    u64 secs = sys0(SYS_TIME).x[6];
+    if (!secs) {
+        say(t, "the time is not known: no time server has answered (try ntp)");
+        put_s(l, "terminal: date -> not known\n");
+        flush(l);
+        return;
+    }
+    put_date(l, secs);
+    out(t, l);
+    put_s(l, "terminal: date -> ");
+    put_date(l, secs);
+    put_s(l, "\n");
+    flush(l);
+}
+
+/* ntp [HOST[:PORT]]: set the time of day from a time server (pool.ntp.org by default). */
+static void cmd_ntp(struct term *t, struct line *l, const char *args) {
+    char host[128];
+    word_of(args, host, 127);
+    struct res r = net_call(&t->net, NET_TIME, 0, host);
+    put_s(l, "terminal: ntp ");
+    put_s(l, host[0] ? host : "pool.ntp.org");
+    put_s(l, " -> ");
+    if (r.x[1] != NET_OK) {
+        say(t, net_error(r.x[1]));
+        put_s(l, net_error(r.x[1]));
+    } else {
+        struct line m = {.n = 0};
+        put_s(&m, "the time is ");
+        put_date(&m, r.x[2]);
+        out(t, &m);
+        put_date(l, r.x[2]);
+    }
+    put_s(l, "\n");
+    flush(l);
+}
+
 /* get URL [FILE]: fetch an http:// page and keep it as a file (by default, the URL's last
    name, or index.html). */
 static void cmd_get(struct term *t, struct line *l, const char *args) {
@@ -624,6 +664,7 @@ static void run(struct term *t, struct line *l) {
         say(t, "mkdir FOLDER, cd FOLDER, pwd, mv FROM TO, run PROGRAM");
         say(t, "fill FILE KB CHAR, verify FILE");
         say(t, "ip, ping HOST, get http://URL [FILE], kill SLOT");
+        say(t, "date, ntp [HOST[:PORT]]");
         say(t, "tour: why leanos is harder to attack than Linux");
     } else if (starts(c, "whoami")) {
         u64 me = sys0(SYS_WHOAMI).x[1];
@@ -659,6 +700,10 @@ static void run(struct term *t, struct line *l) {
         cmd_kill(t, l, c + 4);
     } else if (starts(c, "ip")) {
         cmd_ip(t, l);
+    } else if (starts(c, "date")) {
+        cmd_date(t, l);
+    } else if (starts(c, "ntp")) {
+        cmd_ntp(t, l, c + 3);
     } else if (starts(c, "ping")) {
         cmd_ping(t, l, c + 4);
     } else if (starts(c, "get")) {

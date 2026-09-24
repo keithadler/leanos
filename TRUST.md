@@ -38,6 +38,7 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `derive_never_amplifies` | A derived capability covers only frames its parent covers (or names the same endpoint), keeps its badge, and allows nothing the parent does not. |
 | `write_reads_only_readable` | When `write` asks the machine layer to print user memory, every byte is in a page the calling task has mapped readable. |
 | `schedule_picks_ready` | If any task is ready that no other core is running, the scheduler picks such a task. |
+| `syscall_wall`, `only_usb_driver_sets_time` | Only `setwall` changes the time of day, and only the USB driver, through the time capability it alone was given, ever sets it. |
 | `schedule_not_on_other_core` | The scheduler never picks a task another core is running, so no task runs on two cores at once. |
 | `reply_grants_nothing` | A reply changes no task's capabilities or mappings. |
 | `reply_wakes_only_caller` | A reply wakes only a task waiting for this replier. |
@@ -70,7 +71,7 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 91 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 93 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a `start` that forgets to take back
@@ -149,6 +150,9 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   can make it DMA once device mode, descriptor DMA and the descriptor-list registers are
   refused. On a Pi 4 the DWC2 is the USB-C port; the USB-A ports need a separate xHCI
   driver, whose DMA (rings of descriptors in memory) this scheme does not cover yet.
+- The time of day: that the time server's answer is right is trusted, not proved (SNTP, one
+  question, no authentication: anyone on the network path could send a wrong time). The
+  proofs say only who can set it and that it then moves with the kernel's own clock.
 - The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
   then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.

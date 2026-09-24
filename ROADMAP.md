@@ -175,6 +175,12 @@ capability, marks the slot's program stopped; `sysStop_only` and `only_launchers
 it reaches only the named program and only from the tasks that may start it. Terminal has
 `kill SLOT`; the display server takes the window back.
 
+Done too: the time of day. The kernel keeps when tick 0 was in Unix seconds (`wall`), set
+only through a time capability the USB driver alone holds (`only_usb_driver_sets_time`); the
+driver asks a time server over NTP after DHCP. The menu bar and Clock show the date and time
+in UTC. Next here: a time zone in Settings, and NTP answers checked against more than one
+server.
+
 Done too: touchscreens and tablets. The USB driver reads a HID device's report
 descriptor when it does not speak the boot protocol, finds the absolute X and Y and the
 button or tip switch, and scales them to the screen; a 7-inch 1024x600 HDMI touchscreen

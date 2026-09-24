@@ -29,6 +29,7 @@
 #include "lib.h"
 #include "gfx.h"
 #include "assets.h"
+#include "date.h"
 
 #define FRAMEBUFFER 5
 #define FB_PAGE 1024
@@ -108,6 +109,8 @@ struct state {
     struct font ui, ui_bold, small, huge, medium;
     struct picture icons[DOCK_ALL];
     char pending[16];           /* a pinned program to start when Apps next asks */
+    char bar_time[24];          /* the menu bar's clock ("Wed Sep 23  14:05"), empty until known */
+    u64 bar_minute;             /* the minute it shows */
     /* the background pattern: a color per row, a glow per column, and a 32 x 32 tile */
     unsigned bg_row[H];
     /* the glow, per column, ready to blend: the weight left for the row's color, and the
@@ -327,7 +330,46 @@ static void top_bar(struct state *st) {
     int k = focused(st);
     if (k >= 0) font_text(s, &st->ui, 104, 20, st->win[k].title, rgb(200, 204, 214));
     const char *right = "access control proved in Lean";
-    font_text(s, &st->small, W - 12 - font_width(&st->small, right), 19, right, rgb(190, 196, 210));
+    int rx = W - 12;
+    if (st->bar_time[0]) {
+        rx -= font_width(&st->ui_bold, st->bar_time);
+        font_text(s, &st->ui_bold, rx, 20, st->bar_time, rgb(245, 246, 250));
+        rx -= 18;
+    }
+    font_text(s, &st->small, rx - font_width(&st->small, right), 19, right, rgb(190, 196, 210));
+}
+
+static void composite(struct state *st, int x, int y, int w, int h);
+
+/* The menu bar's clock: the kernel's time of day, to the minute. Returns the milliseconds
+   until the next minute (or a few seconds, while the time is not known). */
+static u64 bar_clock(struct state *st) {
+    struct res r = sys0(SYS_TIME);
+    u64 wall = r.x[6];
+    if (!wall) return 5000;
+    u64 minute = wall / 60;
+    if (minute != st->bar_minute) {
+        st->bar_minute = minute;
+        struct date d = date_of(wall);
+        struct line l = {.n = 0};
+        const char *m = month_names[d.month - 1];
+        const char *wd = day_names[d.weekday];
+        char a[4] = {wd[0], wd[1], wd[2], 0}, b[4] = {m[0], m[1], m[2], 0};
+        put_s(&l, a);
+        put_s(&l, " ");
+        put_s(&l, b);
+        put_s(&l, " ");
+        put_dec(&l, (u64)d.day);
+        put_s(&l, "  ");
+        put_two(&l, (u64)d.h);
+        put_s(&l, ":");
+        put_two(&l, (u64)d.m);
+        int n = (int)(l.n < sizeof st->bar_time - 1 ? l.n : sizeof st->bar_time - 1);
+        for (int i = 0; i < n; i++) st->bar_time[i] = l.b[i];
+        st->bar_time[n] = 0;
+        composite(st, 0, 0, W, BAR_H + 1);
+    }
+    return (60 - wall % 60) * 1000 + 50;
 }
 
 static int dock_icon_x(int i) { return DOCK_X + DOCK_PAD + i * (ICON + ICON_GAP); }
@@ -1131,6 +1173,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->full_reported = st->click_reported = 0;
     st->menu = 0;
     st->drag_frames = st->drag_us = 0;
+    st->bar_time[0] = 0;
+    st->bar_minute = 0;
     make_background(st);
     st->px = W / 2;
     st->py = H / 2;
@@ -1149,15 +1193,25 @@ __attribute__((section(".text.start"))) void _start(void) {
     put_s(&l, "display: desktop drawn on the 1024x600 framebuffer");
     say(&l);
 
+    u64 bar_wait = bar_clock(st), bar_at = millis();
     for (;;) {
         struct res r;
+        if (millis() - bar_at >= bar_wait) {
+            bar_wait = bar_clock(st);
+            bar_at = millis();
+        }
         if (st->drag_pending) {
             r = sys(SYS_RECVT, ENDPOINT, 0, 0, 0, 0);   /* anything else waiting? */
             if (r.status != OK) {
                 drag_frame(st);
                 continue;
             }
-        } else r = sys1(SYS_RECV, ENDPOINT);
+        } else {
+            /* wait for a message, or until the menu bar's clock turns over */
+            u64 left = bar_wait - (millis() - bar_at);
+            r = sys(SYS_RECVT, ENDPOINT, left ? left : 1, 0, 0, 0);
+            if (r.status != OK) continue;
+        }
         u64 badge = r.x[1], op = r.x[2], slot = r.x[6], grant = r.x[5];
         /* Anything but another drag move draws the one waiting first. */
         if (st->drag_pending && !((badge == BADGE_INPUT || badge == BADGE_USB) && !slot && op == EV_MOVE))

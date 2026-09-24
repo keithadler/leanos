@@ -29,6 +29,11 @@ an icon, in the Apps window, its title bar and the dock. Up to six programs from
 run at once, each confined to its own memory and a window; starting one that is already
 open brings its window to the front.
 
+**The time of day**: a Pi 4 has no clock that runs while it is off, so the USB driver asks a
+time server (NTP, pool.ntp.org) once it has an address, and tells the kernel through a time
+capability only it holds (`only_usb_driver_sets_time`). The menu bar and Clock show the date
+and time (UTC); Terminal has `date` and `ntp [HOST[:PORT]]`.
+
 **Touchscreens**: a USB touchscreen or tablet (an absolute pointer) works as a mouse
 whose position is where you touch: the USB driver reads the device's report descriptor to
 find X, Y and the touch in its reports (`test/touch.sh`, with QEMU's tablet). On a Pi 4
@@ -265,7 +270,7 @@ can reach, under any sequence of system calls with any arguments:
 And down to the hardware: Lean computes every page-table word, and a model of the Armv8-A
 MMU proves that user mode reaches exactly its own mappings, only the frame pool and the
 framebuffer (never the kernel or the peripherals), and shares a physical page with another
-task only along a grant path. `make mutants` breaks the kernel in 91 ways and checks the
+task only along a grant path. `make mutants` breaks the kernel in 93 ways and checks the
 proofs catch each one.
 
 [TRUST.md](TRUST.md) lists exactly what the proofs cover and what is taken on trust (the
@@ -375,6 +380,7 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 | 24 | `usb(cap, op, reg, value)` | reads (0) or writes (1) a register of the USB host controller, through the USB capability; a channel starts only with a DMA range in the caller's own frames |
 | 26 | `stop(cap)` | stops the program in the slot a launch capability names, answering or not (never the caller) |
 | 25 | `recvt(cap, ms)` | like `recv`, but gives up after that many milliseconds (0: do not wait at all) |
+| 27 | `setwall(cap, secs)` | through the time capability (only the USB driver's): says it is now `secs` Unix seconds; `time` then also returns the time of day |
 | 23 | `board(cap, what, value)` | through the board capability: the board (model, serial, memory, firmware), its sensors (temperature, CPU clock, throttling), the CPU clock (600, 1000 or 1500 MHz), or the activity light |
 
 Capabilities come in four kinds. Frame capabilities name a run of physical frames and carry read, write and execute rights.

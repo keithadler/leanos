@@ -58,6 +58,7 @@ inductive Obj where
   | power
   | board
   | usbHost
+  | wallClock
 
 /-- A capability: an object, what its holder may do with it, and a badge. The badge of an
 endpoint capability is delivered with every message sent through it, so a receiver knows
@@ -132,6 +133,8 @@ structure KState where
   /-- Tasks the other processor cores are running right now (the machine layer says, at
   every entry): the scheduler never picks one of them. -/
   busy : List Nat
+  /-- The time of day: Unix seconds at tick 0, as the time's holder last said (0: not known). -/
+  wall : Nat
 
 /-! ## List helpers
 
@@ -256,6 +259,9 @@ def boardCap : Cap := ⟨.board, ⟨true, true, false⟩, 0⟩
 /-- The USB host controller (the Pi 4's DWC2): its registers, read and written only through
 the kernel, which starts a DMA transfer only into memory the holder owns (`sysUsb`). -/
 def usbCap : Cap := ⟨.usbHost, ⟨true, true, false⟩, 0⟩
+/-- The time of day: its holder may say what it is (`setwall`). The USB driver's
+capability 8: it asks the network (NTP), as a Pi 4 has no clock that runs while it is off. -/
+def wallCap : Cap := ⟨.wallClock, ⟨false, true, false⟩, 0⟩
 
 /-- Task `i`'s frames, as four runs: 16 pages of code (read/execute), 8 of data, 4 of
 stack, and 228 spare pages it holds a capability to but has not mapped. The machine layer
@@ -307,8 +313,8 @@ def initCaps : Nat → List Cap
   | 13 => snoc (snoc (frameCaps 13) (epCap 0 false true true 13)) (epCap 1 false true true 13)
   | 14 => snoc (snoc (frameCaps 14) (epCap 0 false true true 14)) (epCap 1 false true true 14)
   | 15 => snoc (snoc (frameCaps 15) (epCap 0 false true true 15)) (epCap 1 false true true 15)
-  | 17 => snoc (snoc (snoc (snoc (frameCaps 17) (epCap 0 false true false 17)) (irqCap usbIrq)) usbCap)
-           (epCap 2 true false false 0)
+  | 17 => snoc (snoc (snoc (snoc (snoc (frameCaps 17) (epCap 0 false true false 17)) (irqCap usbIrq)) usbCap)
+           (epCap 2 true false false 0)) wallCap
   | 16 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 16) (epCap 0 false true true 16))
            (epCap 1 false true true 16)) (launchCap 10)) (launchCap 11)) (launchCap 12)) (launchCap 13))
            (launchCap 14)) (launchCap 15)
@@ -339,7 +345,7 @@ def mkTasksFrom (i : Nat) : Nat → List Task
   | 0 => .nil
   | k + 1 => mkTask i :: mkTasksFrom (i + 1) k
 
-def init (fbBase : Nat) : KState := ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil, 0, usbZeros, usbZeros, .nil⟩
+def init (fbBase : Nat) : KState := ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil, 0, usbZeros, usbZeros, .nil, 0⟩
 
 def setTask (s : KState) (j : Nat) (t : Task) : KState := { s with tasks := setNth s.tasks j t }
 
@@ -617,6 +623,7 @@ def sysCapInfo (s : KState) (t : Task) (ci : Nat) : Reply :=
     | .power => ret s t (0 :: c.rights.toBits :: 5 :: 0 :: .nil)
     | .board => ret s t (0 :: c.rights.toBits :: 6 :: 0 :: .nil)
     | .usbHost => ret s t (0 :: c.rights.toBits :: 7 :: 0 :: .nil)
+    | .wallClock => ret s t (0 :: c.rights.toBits :: 8 :: 0 :: .nil)
 
 /-- Virtual page `v` is mapped with read rights. -/
 def readableAt : List Mapping → Nat → Bool
@@ -956,11 +963,29 @@ def clockOf (ms : Nat) : Nat × Nat × Nat :=
   let secs := ms / 1000
   (secs / 3600, secs / 60 % 60, secs % 60)
 
+/-- The time of day now, in Unix seconds, or 0 if nobody has said what it is. -/
+def wallNow (s : KState) : Nat := if s.wall == 0 then 0 else s.wall + s.now * tickMs / 1000
+
 /-- `time`: the kernel's own count of timer ticks since boot, the milliseconds that makes,
-and the hours, minutes and seconds of that. Changes nothing but the caller's results. -/
+the hours, minutes and seconds of that, and the time of day (`wallNow`). Changes nothing but
+the caller's results. -/
 def sysTime (s : KState) (t : Task) : Reply :=
   let ms := s.now * tickMs
-  ret s t (0 :: s.now :: ms :: (clockOf ms).1 :: (clockOf ms).2.1 :: (clockOf ms).2.2 :: .nil)
+  ret s t (0 :: s.now :: ms :: (clockOf ms).1 :: (clockOf ms).2.1 :: (clockOf ms).2.2 :: wallNow s :: .nil)
+
+/-- `setwall(cap, secs)`: through a time capability with the write right, say that it is
+now `secs` Unix seconds. The kernel keeps when tick 0 was, so the time of day moves with its
+own clock from here. -/
+def sysSetWall (s : KState) (t : Task) (ci secs : Nat) : Reply :=
+  match nth? t.caps ci with
+  | none => ret s t (eNoCap :: .nil)
+  | some c =>
+    match c.obj with
+    | .wallClock =>
+      if c.rights.w && Nat.ble (s.now * tickMs / 1000 + 1) secs then
+        ret { s with wall := secs - s.now * tickMs / 1000 } t (0 :: .nil)
+      else ret s t (eBadArg :: .nil)
+    | _ => ret s t (eBadArg :: .nil)
 
 /-! ## Sleeping -/
 
@@ -1181,6 +1206,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 24 => sysUsb s t a0 a1 a2 a3
   | 25 => sysRecv s t a0 (!(a1 == 0)) (s.now + (a1 + tickMs - 1) / tickMs)
   | 26 => sysStop s t a0
+  | 27 => sysSetWall s t a0 a1
   | _ => ret s t (eNoCall :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
@@ -1195,6 +1221,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   24 usb(cap, op, reg, value): read (op 0) or write (op 1) a USB host controller register
   25 recvt(cap, ms): like recv, but gives up after `ms` milliseconds (0: do not wait)
   26 stop(cap): stop the program in the slot a launch capability names
+  27 setwall(cap, secs): say what time of day it is (the time capability's holder)
 Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with

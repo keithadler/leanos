@@ -10,6 +10,8 @@ enum {
     NET_PING = 2,     /* ping the host at byte 0 once: x2 = milliseconds */
     NET_GET = 3,      /* fetch the http:// URL at byte 0: x2 = the body's size, x3 = the HTTP status */
     NET_READ = 4,     /* the body of the last GET, from offset `arg`, into the data area: x2 = bytes */
+    NET_TIME = 5,     /* ask the time server at byte 0 (host[:port]) and set the kernel's time of
+                         day from it: x2 = Unix seconds */
 };
 enum { NET_OK = 0, NET_NO_DEVICE = 1, NET_NO_ADDRESS = 2, NET_NO_HOST = 3, NET_NO_ANSWER = 4,
        NET_UNSUPPORTED = 5, NET_BAD = 6, NET_NO_SERVICE = 7 };

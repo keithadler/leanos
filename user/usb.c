@@ -17,11 +17,13 @@
 #define NET_SERVER
 #include "net.h"
 #include "netstack.h"
+#include "date.h"
 
 #define EP 4
 #define IRQ 5
 #define USB 6
 #define NETEP 7              /* endpoint 2: the network service, which Terminal calls */
+#define WALL 8               /* the time of day: this driver says what it is (setwall) */
 #define SPARE 3
 #define REQ_PAGE 3000        /* where a request's buffer is mapped */
 /* In the spare run: control transfers (0-1023), keyboard and mouse reports (2048-3071),
@@ -534,6 +536,30 @@ static void put_ip(struct line *l, unsigned ip) {
     for (int k = 3; k >= 0; k--) { put_dec(l, (ip >> (8 * k)) & 255); if (k) put_s(l, "."); }
 }
 
+/* Ask the time server `host` (host[:port]) and tell the kernel: Unix seconds, or 0. */
+static unsigned set_time(struct usb *u, const char *host, int tries) {
+    char name[64];
+    unsigned port = 123;
+    int i = 0;
+    for (; host[i] && host[i] != ':' && i < 63; i++) name[i] = host[i];
+    name[i] = 0;
+    if (host[i] == ':') {
+        port = 0;
+        for (i++; host[i] >= '0' && host[i] <= '9'; i++) port = port * 10 + (unsigned)(host[i] - '0');
+    }
+    unsigned ip = resolve(&u->net, name);
+    if (!ip) return 0;
+    unsigned secs = 0;
+    for (int k = 0; k < tries && !secs; k++) secs = ntp_time(&u->net, ip, port);
+    if (!secs || sys(SYS_SETWALL, WALL, secs, 0, 0, 0).status != OK) return 0;
+    put_s(&u->l, "usb: network: the time is ");
+    put_date(&u->l, secs);
+    put_s(&u->l, ", from ");
+    put_s(&u->l, host);
+    say(u);
+    return secs;
+}
+
 static u64 request(struct usb *u, u64 op, u64 arg, char *buf, u64 *v2, u64 *v3) {
     buf[239] = 0;
     if (op == NET_INFO) {
@@ -561,6 +587,12 @@ static u64 request(struct usb *u, u64 op, u64 arg, char *buf, u64 *v2, u64 *v3) 
         if (ms < 0) return NET_NO_ANSWER;
         *v2 = (u64)ms;
         *v3 = ip;
+        return NET_OK;
+    }
+    if (op == NET_TIME) {
+        unsigned secs = set_time(u, buf[0] ? buf : "pool.ntp.org", 1);
+        if (!secs) return NET_NO_ANSWER;
+        *v2 = secs;
         return NET_OK;
     }
     if (op == NET_GET) {
@@ -592,8 +624,15 @@ static void serve(struct usb *u) {
             put_ip(&u->l, u->net.gw);
             put_s(&u->l, ", DNS ");
             put_ip(&u->l, u->net.dns);
-        } else put_s(&u->l, "usb: network: no address from DHCP");
-        say(u);
+            say(u);
+            if (!set_time(u, "pool.ntp.org", 1)) {
+                put_s(&u->l, "usb: network: no answer from a time server");
+                say(u);
+            }
+        } else {
+            put_s(&u->l, "usb: network: no address from DHCP");
+            say(u);
+        }
     }
     for (int i = 0; i < u->nhid; i++) arm(&u->hid[i]);
     for (;;) {
