@@ -5,6 +5,7 @@
 #include "app.h"
 #include "fs.h"
 #include "elfload.h"
+#include "net.h"
 
 /* Terminal's launch capabilities for the open slots, which run programs from the SD card. */
 #define LAUNCH_OPEN 6
@@ -31,6 +32,7 @@ struct term {
     struct font mono;
     struct surface win;
     struct fs_client fs;
+    struct net_client net;
     char cwd[FS_PATH_MAX + 1];  /* the folder commands are in: "" is the top */
 };
 
@@ -373,6 +375,118 @@ static void cmd_verify(struct term *t, struct line *l, const char *args) {
     flush(l);
 }
 
+/* ---- the network (the USB driver serves it) ---- */
+
+static const char *net_error(u64 code) {
+    return code == NET_NO_DEVICE ? "no network adapter" : code == NET_NO_ADDRESS ? "no address from the network"
+         : code == NET_NO_HOST ? "no such host" : code == NET_NO_ANSWER ? "no answer"
+         : code == NET_UNSUPPORTED ? "only http:// (no https yet)" : code == NET_NO_SERVICE ? "the network service did not answer"
+         : "not understood";
+}
+
+static void put_ip(struct line *l, unsigned ip) {
+    for (int k = 3; k >= 0; k--) { put_dec(l, (ip >> (8 * k)) & 255); if (k) put_s(l, "."); }
+}
+
+static void cmd_ip(struct term *t, struct line *l) {
+    struct res r = net_call(&t->net, NET_INFO, 0, 0);
+    const struct net_info *i = (const struct net_info *)net_data(&t->net);
+    if (r.x[1] != NET_OK || !i->device) {
+        say(t, r.x[1] != NET_OK ? net_error(r.x[1]) : "no network adapter");
+        fs_log(l, "ip", 0, "no network");
+        return;
+    }
+    if (!i->up) { say(t, "no address yet"); fs_log(l, "ip", 0, "no address"); return; }
+    put_s(l, "address ");
+    put_ip(l, i->ip);
+    put_s(l, ", gateway ");
+    put_ip(l, i->gateway);
+    out(t, l);
+    put_s(l, "DNS ");
+    put_ip(l, i->dns);
+    put_s(l, ", MAC ");
+    for (int k = 0; k < 6; k++) {
+        char c[3] = {"0123456789abcdef"[i->mac[k] >> 4], "0123456789abcdef"[i->mac[k] & 15], 0};
+        if (k) put_s(l, ":");
+        put_s(l, c);
+    }
+    out(t, l);
+    put_s(l, "terminal: ip -> ");
+    put_ip(l, i->ip);
+    put_s(l, "\n");
+    flush(l);
+}
+
+static void cmd_ping(struct term *t, struct line *l, const char *args) {
+    char host[128];
+    word_of(args, host, 127);
+    int answered = 0;
+    for (int k = 0; k < 4; k++) {
+        struct res r = net_call(&t->net, NET_PING, 0, host);
+        if (r.x[1] != NET_OK) { say(t, net_error(r.x[1])); if (r.x[1] != NET_NO_ANSWER) break; continue; }
+        answered++;
+        put_s(l, "answer from ");
+        put_ip(l, (unsigned)r.x[3]);
+        put_s(l, " in ");
+        put_dec(l, r.x[2]);
+        put_s(l, " ms");
+        out(t, l);
+    }
+    put_s(l, "terminal: ping ");
+    put_s(l, host);
+    put_s(l, " -> ");
+    put_dec(l, (u64)answered);
+    put_s(l, " of 4 answered\n");
+    flush(l);
+}
+
+/* get URL [FILE]: fetch an http:// page and keep it as a file (by default, the URL's last
+   name, or index.html). */
+static void cmd_get(struct term *t, struct line *l, const char *args) {
+    char url[240], name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    const char *rest = word_of(args, url, 239);
+    word_of(rest, name, FS_PATH_MAX);
+    if (!name[0]) {
+        const char *last = url;
+        for (const char *p = url; *p; p++) if (*p == '/') last = p + 1;
+        int n = 0;
+        for (; last[n] && last[n] != '?' && n < FS_NAME_MAX; n++) name[n] = last[n];
+        name[n] = 0;
+        if (!n) { const char *d = "index.html"; for (n = 0; d[n]; n++) name[n] = d[n]; name[n] = 0; }
+    }
+    struct res r = net_call(&t->net, NET_GET, 0, url);
+    if (r.x[1] != NET_OK) { say(t, net_error(r.x[1])); fs_log(l, "get", url, net_error(r.x[1])); return; }
+    u64 size = r.x[2], http = r.x[3];
+    resolve(t, name, path);
+    u64 st = fs_write(&t->fs, path, "", 0);
+    char *piece = (char *)PAGE(SPARE_PAGE + FILE_OFFSET);
+    for (u64 off = 0; st == FS_OK && off < size;) {
+        struct res c = net_call(&t->net, NET_READ, off, 0);
+        u64 n = c.x[1] == NET_OK ? c.x[2] : 0;
+        if (!n) { st = FS_IO; break; }
+        const char *d = net_data(&t->net);
+        for (u64 k = 0; k < n; k++) piece[k] = d[k];
+        st = fs_write_at(&t->fs, path, off, piece, n);
+        off += n;
+    }
+    put_s(l, st == FS_OK ? "saved " : "could not save ");
+    put_dec(l, size);
+    put_s(l, " bytes as ");
+    put_s(l, name);
+    put_s(l, " (HTTP ");
+    put_dec(l, http);
+    put_s(l, ")");
+    out(t, l);
+    put_s(l, "terminal: get ");
+    put_s(l, url);
+    put_s(l, " -> ");
+    put_dec(l, size);
+    put_s(l, " bytes, HTTP ");
+    put_dec(l, http);
+    put_s(l, st == FS_OK ? "\n" : ", not saved\n");
+    flush(l);
+}
+
 /* Every program slot and what the kernel says about it. */
 static void cmd_ps(struct term *t, struct line *l) {
     int running = 0;
@@ -490,6 +604,7 @@ static void run(struct term *t, struct line *l) {
         say(t, "ls [FOLDER], cat FILE, write FILE TEXT, rm FILE");
         say(t, "mkdir FOLDER, cd FOLDER, pwd, mv FROM TO, run PROGRAM");
         say(t, "fill FILE KB CHAR, verify FILE");
+        say(t, "ip, ping HOST, get http://URL [FILE]");
         say(t, "tour: why leanos is harder to attack than Linux");
     } else if (starts(c, "whoami")) {
         u64 me = sys0(SYS_WHOAMI).x[1];
@@ -521,6 +636,12 @@ static void run(struct term *t, struct line *l) {
         put_s(l, "/");
         put_s(l, t->cwd);
         out(t, l);
+    } else if (starts(c, "ip")) {
+        cmd_ip(t, l);
+    } else if (starts(c, "ping")) {
+        cmd_ping(t, l, c + 4);
+    } else if (starts(c, "get")) {
+        cmd_get(t, l, c + 3);
     } else if (starts(c, "fill")) {
         cmd_fill(t, l, c + 4);
     } else if (starts(c, "verify")) {
@@ -563,6 +684,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     t->mono = font_of(assets, F_MONO);
     t->win = app_surface(TW, TH);
     fs_init(&t->fs, SPARE_PAGE);
+    net_init(&t->net, SPARE_PAGE);
     t->cwd[0] = 0;
     t->n = t->len = 0;
     say(t, "leanos terminal. Type help, or tour.");

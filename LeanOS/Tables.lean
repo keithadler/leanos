@@ -368,11 +368,13 @@ theorem el0_mallory_isolated {s : KState} (h : Reachable s) {j : Nat} (hj2 : j �
     pa / pageSize ≠ pa' / pageSize := by
   intro hsame
   obtain ⟨A, ha, hb⟩ := el0_shared h hi hj hw hw' hsame
-  rcases reach_iff ha with rfl | ⟨_, h2⟩ | ⟨_, h2⟩
-  · rcases reach_iff hb with h3 | ⟨h0, _⟩ | ⟨h0, _⟩
+  rcases reach_iff ha with rfl | ⟨_, h2⟩ | ⟨_, h2⟩ | ⟨_, h2⟩
+  · rcases reach_iff hb with h3 | ⟨h0, _⟩ | ⟨h0, _⟩ | ⟨h0, _⟩
     · exact hj2 h3.symm
     · simp [App] at h0
     · simp [FsClient] at h0
+    · simp [NetClient] at h0
+  · cases h2
   · cases h2
   · cases h2
 
@@ -388,9 +390,10 @@ theorem el0_uart_only_input {s : KState} (h : Reachable s) {i : Nat} {mem : Arm.
   subst this
   have : owner devBase = inputTask := by decide
   rw [this] at hr
-  rcases reach_iff hr with h1 | ⟨h0, _⟩ | ⟨h0, _⟩
+  rcases reach_iff hr with h1 | ⟨h0, _⟩ | ⟨h0, _⟩ | ⟨h0, _⟩
   · exact h1.symm
   · simp [App, inputTask] at h0
   · simp [FsClient, inputTask] at h0
+  · simp [NetClient, inputTask] at h0
 
 end LeanOS

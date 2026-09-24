@@ -27,7 +27,16 @@ Also on the card: `calc` (a calculator), `snake`, `life` (Conway's Game of Life)
 system calls with made-up arguments, every answer checked against the proofs), and `guide.txt`, a short user guide. Every program has
 an icon, in the Apps window, its title bar and the dock. Up to six programs from the card
 run at once, each confined to its own memory and a window; starting one that is already
-open brings its window to the front. A program from the card reaches only its own folder
+open brings its window to the front.
+
+**The network**: plug in a USB network adapter and the USB driver gets an address by DHCP;
+Terminal's `ip`, `ping HOST` and `get http://URL [FILE]` use it (ARP, IPv4, ICMP, UDP, DHCP,
+DNS, a TCP client and HTTP/1.0, in `user/netstack.h`). Under QEMU, `test/net.sh` fetches
+300 KiB from a web server on the host. The adapter's DMA stays in the USB driver's own
+frames even though Terminal lends it a buffer for each request: the kernel's check takes
+only the driver's own memory.
+
+A program from the card reaches only its own folder
 on the card (`apps/NAME`) and the files you hand it: `run edit notes.txt` gives the editor
 that one file. The file server refuses the rest, and knows who is asking because the
 kernel's badges cannot be faked (`file_server_knows_the_sender`). Clock, Calculator and the Tour are pinned in the dock.
@@ -179,6 +188,10 @@ can reach, under any sequence of system calls with any arguments:
   nobody else; only the display server can ever reach the framebuffer.
 - **No forged identity**: endpoint rights never grow and badges never change.
 - **W^X**: no page is ever both writable and executable.
+- **Only three servers ever hold another task's memory**: the display server (the apps'
+  windows), the file server (a client's buffer, for one request) and the USB driver
+  (Terminal's buffer, for one network request); every other task only ever holds its own
+  frames (`confined`), and none of the three can pass what it was lent on.
 - **Every mapping is backed** by a capability the task holds, with the same rights.
 - **`write` reads only memory the task may read.**
 - **The scheduler never runs a waiting or stopped task** while a ready one exists.
@@ -346,6 +359,7 @@ only `Init.Core`, so only six small standard-library modules are compiled in.
 | 21 | `power(cap, action)` | switches the machine off (0) or restarts it (1), through the power capability |
 | 22 | `time()` | the kernel's clock: timer ticks since boot, milliseconds, and hours, minutes and seconds |
 | 24 | `usb(cap, op, reg, value)` | reads (0) or writes (1) a register of the USB host controller, through the USB capability; a channel starts only with a DMA range in the caller's own frames |
+| 25 | `recvt(cap, ms)` | like `recv`, but gives up after that many milliseconds (0: do not wait at all) |
 | 23 | `board(cap, what, value)` | through the board capability: the board (model, serial, memory, firmware), its sensors (temperature, CPU clock, throttling), the CPU clock (600, 1000 or 1500 MHz), or the activity light |
 
 Capabilities come in four kinds. Frame capabilities name a run of physical frames and carry read, write and execute rights.

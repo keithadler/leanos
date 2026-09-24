@@ -16,6 +16,7 @@ Terminal
   mkdir FOLDER, cd FOLDER, cd .., pwd       folders
   mv FROM TO                                move or rename, in one step
   fill FILE KB CHAR, verify FILE            a big test file, and checking one
+  ip, ping HOST, get http://URL [FILE]      the network (a USB network adapter)
   run PROGRAM [FILE...]                     start a program from the card, giving it
                                             those files (and its own folder, apps/NAME)
   ps                                        every program slot, and what runs in it

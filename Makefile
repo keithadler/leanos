@@ -240,6 +240,7 @@ test: all
 	./test/crash.sh
 	./test/bigprog.sh
 	./test/edit.sh
+	./test/net.sh
 
 # Break the kernel in known ways and check the proofs catch every one (slow).
 mutants:

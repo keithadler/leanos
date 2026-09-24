@@ -89,8 +89,9 @@ inductive Status where
   | ready
   /-- blocked until a task receives this message from endpoint `e` -/
   | sending (e : Nat) (m : Msg)
-  /-- blocked until a task sends to endpoint `e` -/
-  | receiving (e : Nat)
+  /-- blocked until a task sends to endpoint `e`, or (`deadline` ≠ 0) until the timer has
+  ticked `deadline` times since boot, whichever comes first -/
+  | receiving (e : Nat) (deadline : Nat)
   /-- blocked after a call, until task `server` replies -/
   | awaiting (server : Nat)
   /-- asleep until the timer has ticked `wake` times since boot -/
@@ -290,9 +291,9 @@ def initCaps : Nat → List Cap
   | 2 => snoc (frameCaps 2) (epCap 0 false true false 2)
   | 4 => snoc (snoc (snoc (frameCaps 4) (epCap 0 false true false 3)) (runCap devBase devPages Rights.rw))
            (irqCap uartIrq)
-  | 5 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5))
+  | 5 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 5) (epCap 0 false true true 5))
            (epCap 1 false true true 5)) (launchCap 10)) (launchCap 11)) (launchCap 12)) (launchCap 13))
-           (launchCap 14)) (launchCap 15)
+           (launchCap 14)) (launchCap 15)) (epCap 2 false true true 5)
   | 6 => snoc (snoc (frameCaps 6) (epCap 0 false true true 6)) boardCap
   | 7 => snoc (frameCaps 7) (epCap 0 false true true 7)
   | 8 => snoc (snoc (frameCaps 8) (epCap 1 true false false 0)) (blocksCap 0 diskBlocks)
@@ -303,7 +304,8 @@ def initCaps : Nat → List Cap
   | 13 => snoc (snoc (frameCaps 13) (epCap 0 false true true 13)) (epCap 1 false true true 13)
   | 14 => snoc (snoc (frameCaps 14) (epCap 0 false true true 14)) (epCap 1 false true true 14)
   | 15 => snoc (snoc (frameCaps 15) (epCap 0 false true true 15)) (epCap 1 false true true 15)
-  | 17 => snoc (snoc (snoc (frameCaps 17) (epCap 0 false true false 17)) (irqCap usbIrq)) usbCap
+  | 17 => snoc (snoc (snoc (snoc (frameCaps 17) (epCap 0 false true false 17)) (irqCap usbIrq)) usbCap)
+           (epCap 2 true false false 0)
   | 16 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 16) (epCap 0 false true true 16))
            (epCap 1 false true true 16)) (launchCap 10)) (launchCap 11)) (launchCap 12)) (launchCap 13))
            (launchCap 14)) (launchCap 15)
@@ -387,10 +389,16 @@ def schedule (s : KState) : KState :=
 /-- The timer ticks every 10 ms (the machine layer programs it so). -/
 def tickMs : Nat := 10
 
-/-- Wake every task whose sleep ends at or before tick `now`. -/
+/-- Status code: nothing came before the time ran out (`recvt`). -/
+def eTimeout : Nat := 6
+
+/-- Wake every task whose sleep ends at or before tick `now`, and every receiver whose
+deadline has come (with `eTimeout`). -/
 def wakeTask (now : Nat) (t : Task) : Task :=
   match t.status with
   | .sleeping u => if Nat.ble u now then { t with status := .ready, result := 0 :: .nil } else t
+  | .receiving _ u =>
+    if !(u == 0) && Nat.ble u now then { t with status := .ready, result := eTimeout :: .nil } else t
   | _ => t
 
 def wakeSleepers (now : Nat) : List Task → List Task
@@ -411,7 +419,7 @@ def killCurrent (s : KState) : KState :=
 /-! ## Messages -/
 
 def isReceiving (e : Nat) : Status → Bool
-  | .receiving e' => e' == e
+  | .receiving e' _ => e' == e
   | _ => false
 
 def sendingMsg (e : Nat) : Status → Option Msg
@@ -667,7 +675,7 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply
 
 /-- Receive through endpoint capability `ci`: take a waiting sender's message, or wait for
 one. A waiting plain sender carries on with x0 = 0; a caller goes on waiting, for the reply. -/
-def sysRecv (s : KState) (t : Task) (ci : Nat) : Reply :=
+def sysRecv (s : KState) (t : Task) (ci : Nat) (block : Bool) (deadline : Nat) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
   | some c =>
@@ -686,7 +694,9 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) : Reply :=
             | none => ret s t (eFull :: .nil)
           | none => ret s t (eBadArg :: .nil)
         | none =>
-          ⟨schedule (setTask s s.cur { t with status := .receiving e, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+          if block then
+            ⟨schedule (setTask s s.cur { t with status := .receiving e deadline, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+          else ret s t (eTimeout :: .nil)
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -879,15 +889,17 @@ def usbForbidden (reg value : Nat) : Bool :=
 /-- The most a channel can write past its transfer size: one full-speed packet. -/
 def usbSlack : Nat := 1024
 
-/-- Some frame capability in `cs` covers bytes `a` to `a + n - 1` of the frame pool, with
-the write right (`w`) or the read right. -/
-def dmaOk : List Cap → Nat → Nat → Bool → Bool
+/-- Some frame capability in `cs` covers bytes `a` to `a + n - 1` of task `j`'s own frames
+in the pool (never memory another task lent it), with the write right (`w`) or the read
+right. -/
+def dmaOk (j : Nat) : List Cap → Nat → Nat → Bool → Bool
   | .nil, _, _, _ => false
   | c :: cs, a, n, w =>
     (match c.obj with
-     | .frames b k => Nat.ble (b + k) poolFrames && Nat.ble (frameBase + b * pageSize) a &&
+     | .frames b k => Nat.ble (framesPerTask * j) b && Nat.ble (b + k) (framesPerTask * (j + 1)) &&
+         Nat.ble (b + k) poolFrames && Nat.ble (frameBase + b * pageSize) a &&
          Nat.ble (a + n) (frameBase + (b + k) * pageSize) && (if w then c.rights.w else c.rights.r)
-     | _ => false) || dmaOk cs a n w
+     | _ => false) || dmaOk j cs a n w
 
 def nthD (l : List Nat) (i : Nat) : Nat := match nth? l i with | some v => v | none => 0
 
@@ -914,7 +926,7 @@ def sysUsb (s : KState) (t : Task) (ci op reg value : Nat) : Reply :=
           let n := chanOf reg
           let dma := nthD s.usbDma n
           let size := nthD s.usbSize n
-          if dmaOk t.caps dma (size % 2 ^ 19 + usbSlack) (bit value 15) then
+          if dmaOk s.cur t.caps dma (size % 2 ^ 19 + usbSlack) (bit value 15) then
             usbReply s t 2 n dma size value
           else ret s t (eBadArg :: .nil)
         else usbReply s t 1 reg value 0 0
@@ -1122,7 +1134,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 6 => sysCapInfo s t a0
   | 7 => ret s t (0 :: s.cur :: .nil)
   | 8 => sysSend s t a0 a1 a2 a3 a4 false
-  | 9 => sysRecv s t a0
+  | 9 => sysRecv s t a0 true 0
   | 10 => sysSend s t a0 a1 a2 a3 a4 true
   | 11 => sysReply s t a0 a1 a2 a3
   | 12 => sysIrqWait s t a0
@@ -1138,6 +1150,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 22 => sysTime s t
   | 23 => sysBoard s t a0 a1 a2
   | 24 => sysUsb s t a0 a1 a2 a3
+  | 25 => sysRecv s t a0 (!(a1 == 0)) (s.now + (a1 + tickMs - 1) / tickMs)
   | _ => ret s t (eNoCall :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
@@ -1150,6 +1163,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   21 power(cap, action): 0 switch off, 1 restart · 22 time
   23 board(cap, what, value): read the board or its sensors, set the CPU clock or the light
   24 usb(cap, op, reg, value): read (op 0) or write (op 1) a USB host controller register
+  25 recvt(cap, ms): like recv, but gives up after `ms` milliseconds (0: do not wait)
 Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with

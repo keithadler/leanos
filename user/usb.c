@@ -13,11 +13,25 @@
    (their ports powered, reset and enumerated, no hot-plug after that); HID keyboards and
    mice in the boot protocol, read by interrupt transfers. */
 #include "lib.h"
+#define NET_SERVER
+#include "net.h"
+#include "netstack.h"
 
 #define EP 4
 #define IRQ 5
 #define USB 6
+#define NETEP 7              /* endpoint 2: the network service, which Terminal calls */
 #define SPARE 3
+#define REQ_PAGE 3000        /* where a request's buffer is mapped */
+/* In the spare run: control transfers (0-1023), keyboard and mouse reports (2048-3071),
+   a received frame (page 1), a frame to send (page 2), the body of the last GET (pages 16
+   on, 512 KiB). */
+#define RX_OFF 4096
+#define TX_OFF 8192
+#define BODY_OFF (16 * 4096)
+#define NET_IN_CH 5
+#define NET_OUT_CH 6
+#define BULK 2
 #define DMA_PAGE 64
 /* The spare run's first frame, physically: the frame pool starts at 0x04000000 and slot 17's
    frames at 256 x 17; its spare run is frames 28 on. The kernel checks every transfer
@@ -64,7 +78,20 @@ struct usb {
     struct hid hid[MAX_HID];
     unsigned char prev[8];       /* the keyboard's last report */
     int mx, my, buttons;
+    /* the network adapter (CDC Ethernet), if one is plugged in */
+    int has_net, net_in, net_out, net_mps, net_in_pid, net_out_pid, net_armed;
+    struct dev netdev;
+    u64 body_len;
+    int body_status;
+    struct net net;
 };
+
+#define U ((struct usb *)DATA)
+
+static void put_hex2(struct line *l, unsigned v) {
+    char c[3] = {"0123456789abcdef"[(v >> 4) & 15], "0123456789abcdef"[v & 15], 0};
+    put_s(l, c);
+}
 
 static u64 rd(u64 reg) { return sys(SYS_USB, USB, 0, reg, 0, 0).x[1]; }
 static u64 wr(u64 reg, u64 v) { return sys(SYS_USB, USB, 1, reg, v, 0).status; }
@@ -193,27 +220,72 @@ static void enumerate(struct usb *u, int ls, int depth) {
     sleep_ms(10);
     d.addr = addr;
     if (get_descriptor(u, &d, 1, 18) < 18) return;
-    int cls = b[4];
-    if (get_descriptor(u, &d, 2, 9) < 9) return;
-    int total = b[2] | b[3] << 8;
-    if (total > 400) total = 400;
-    if (get_descriptor(u, &d, 2, total) < total) return;
+    int cls = b[4], nconf = b[17] ? b[17] : 1;
+    /* its configurations: a network adapter may offer several (QEMU's: RNDIS, then CDC
+       Ethernet); take the one with CDC Ethernet in it, else the first */
     unsigned char cfg[400];
-    for (int i = 0; i < total; i++) cfg[i] = b[i];
+    int total = 0;
+    for (int c = 0; c < nconf && c < 4; c++) {
+        if (control(u, &d, 0x80, 6, 2 << 8 | c, 0, 9) < 9) break;
+        int len = b[2] | b[3] << 8;
+        if (len > 400) len = 400;
+        if (control(u, &d, 0x80, 6, 2 << 8 | c, 0, len) < len) break;
+        int ecm = 0;
+        for (int i = 0; i + 8 < len && b[i] >= 2; i += b[i])
+            if (b[i + 1] == 4 && b[i + 5] == 2 && b[i + 6] == 6) ecm = 1;
+        if (c == 0 || ecm) { for (int i = 0; i < len; i++) cfg[i] = b[i]; total = len; }
+        if (ecm) break;
+    }
+    if (total < 9) return;
     if (control(u, &d, 0x00, 9, cfg[5], 0, 0) < 0) return;                      /* SET_CONFIGURATION */
     if (cls == 9) { hub(u, &d, depth); return; }
     /* interfaces and their endpoints */
-    int iface = -1, kind = 0;
+    int iface = -1, kind = 0, data_iface = -1, in_data = 0, mac_string = 0, bin = 0, bout = 0, bmps = 64;
     for (int i = 0; i + 2 <= total && cfg[i] >= 2; i += cfg[i]) {
         if (cfg[i + 1] == 4 && i + 9 <= total) {
             iface = cfg[i + 2];
             kind = 0;
+            in_data = cfg[i + 5] == 0x0A && cfg[i + 3] == 1;     /* CDC data, the alternate with endpoints */
+            if (in_data) data_iface = iface;
             if (cfg[i + 5] == 9) { hub(u, &d, depth); return; }
             if (cfg[i + 5] == 3 && cfg[i + 6] == 1 && (cfg[i + 7] == 1 || cfg[i + 7] == 2)) kind = cfg[i + 7];
+        } else if (cfg[i + 1] == 0x24 && i + 4 <= total && cfg[i + 2] == 0x0F) {
+            mac_string = cfg[i + 3];                             /* CDC Ethernet: its MAC, as a string */
+        } else if (cfg[i + 1] == 5 && i + 7 <= total && in_data && (cfg[i + 3] & 3) == BULK) {
+            if (cfg[i + 2] & 0x80) bin = cfg[i + 2] & 15;
+            else bout = cfg[i + 2] & 15;
+            bmps = cfg[i + 4] | cfg[i + 5] << 8;
         } else if (cfg[i + 1] == 5 && i + 7 <= total && kind && (cfg[i + 2] & 0x80) && (cfg[i + 3] & 3) == 3) {
             add_hid(u, &d, kind, iface, cfg[i + 2] & 15, cfg[i + 4] | cfg[i + 5] << 8);
             kind = 0;
         }
+    }
+    if (data_iface >= 0 && bin && bout && !u->has_net) {
+        control(u, &d, 0x01, 11, 1, data_iface, 0);                          /* SET_INTERFACE: alt 1 */
+        control(u, &d, 0x21, 0x43, 0x000F, data_iface - 1 < 0 ? 0 : data_iface - 1, 0);   /* the packet filter */
+        unsigned char *mac = u->net.mac;
+        for (int k = 0; k < 6; k++) mac[k] = (unsigned char)(0x02 + k);
+        if (mac_string && control(u, &d, 0x80, 6, 3 << 8 | mac_string, 0x0409, 64) >= 26) {
+            for (int k = 0; k < 6; k++) {
+                int hv = 0;
+                for (int j = 0; j < 2; j++) {
+                    char c = (char)b[2 + 2 * (2 * k + j)];
+                    hv = hv * 16 + (c >= 'a' ? c - 'a' + 10 : c >= 'A' ? c - 'A' + 10 : c - '0');
+                }
+                mac[k] = (unsigned char)hv;
+            }
+        }
+        u->has_net = 1;
+        u->netdev = d;
+        u->net_in = bin;
+        u->net_out = bout;
+        u->net_mps = bmps > 512 ? 512 : bmps;
+        u->net_in_pid = u->net_out_pid = PID_DATA0;
+        put_s(&u->l, "usb: device ");
+        put_dec(&u->l, (u64)d.addr);
+        put_s(&u->l, ": network adapter, ");
+        for (int k = 0; k < 6; k++) { if (k) put_s(&u->l, ":"); put_hex2(&u->l, mac[k]); }
+        say(u);
     }
 }
 
@@ -267,6 +339,176 @@ static void arm(struct hid *h) {
     start(h->ch, &h->d, h->ep, 1, INTERRUPT, h->mps, h->pid, h->buf, h->mps);
 }
 
+/* The keyboard and mouse: a finished report is handled and asked for again; a channel that
+   halted with nothing (NAK) is asked again on the next poll, a few milliseconds later. */
+static void poll_hid(struct usb *u) {
+    for (int i = 0; i < u->nhid; i++) {
+        struct hid *h = &u->hid[i];
+        u64 st = rd(HCINT(h->ch));
+        if (!st) continue;
+        wr(HCINT(h->ch), st);
+        if (st & XFERCOMPL) {
+            u64 t = rd(HCTSIZ(h->ch));
+            int n = h->mps - (int)(t & 0x7ffff);
+            h->pid = (int)(t >> 29) & 3;
+            if (h->kind == 1) keyboard(u, h->buf, n);
+            else mouse(u, h->buf, n);
+        }
+        if (st & (XFERCOMPL | CHHLTD)) arm(h);
+    }
+}
+
+/* ---- the network adapter ---- */
+
+static void arm_net(struct usb *u) {
+    if (!u->has_net) return;
+    start(NET_IN_CH, &u->netdev, u->net_in, 1, BULK, u->net_mps, u->net_in_pid, u->dma + RX_OFF, 1536);
+    u->net_armed = 1;
+}
+
+/* A frame that arrived, handled; 1 if there was one. */
+static int poll_net(struct usb *u) {
+    if (!u->has_net || !u->net_armed) return 0;
+    u64 st = rd(HCINT(NET_IN_CH));
+    if (!st) return 0;
+    wr(HCINT(NET_IN_CH), st);
+    int got = 0;
+    if (st & XFERCOMPL) {
+        u64 t = rd(HCTSIZ(NET_IN_CH));
+        u->net_in_pid = (int)(t >> 29) & 3;
+        unsigned n = 1536 - (unsigned)(t & 0x7ffff);
+        if (n) { net_input(&u->net, u->dma + RX_OFF, n); got = 1; }
+    }
+    if (st & (XFERCOMPL | CHHLTD)) arm_net(u);
+    return got;
+}
+
+static int bulk_out(struct usb *u, unsigned len) {
+    if (start(NET_OUT_CH, &u->netdev, u->net_out, 0, BULK, u->net_mps, u->net_out_pid, u->dma + TX_OFF, (int)len) != OK)
+        return 0;
+    for (int i = 0; i < 2000; i++) {
+        u64 st = rd(HCINT(NET_OUT_CH));
+        if (st & XFERCOMPL) {
+            wr(HCINT(NET_OUT_CH), st);
+            u->net_out_pid = (int)(rd(HCTSIZ(NET_OUT_CH)) >> 29) & 3;
+            return 1;
+        }
+        if (st & (STALL | XACTERR | BBLERR | DATATGLERR | CHHLTD)) { wr(HCINT(NET_OUT_CH), st); return 0; }
+        sys0(SYS_YIELD);
+    }
+    return 0;
+}
+
+static int net_send(const unsigned char *frame, unsigned len) {
+    struct usb *u = U;
+    if (!u->has_net || len > 1514) return 0;
+    for (unsigned i = 0; i < len; i++) u->dma[TX_OFF + i] = frame[i];
+    int ok = bulk_out(u, len);
+    if (ok && len % (unsigned)u->net_mps == 0) ok = bulk_out(u, 0);   /* the zero-length end */
+    return ok;
+}
+
+static u64 net_now(void) { return millis(); }
+
+/* While an operation waits: frames, keys and the mouse keep moving. */
+static void net_poll(void) {
+    struct usb *u = U;
+    int got = poll_net(u);
+    poll_hid(u);
+    if (!got) sleep_ms(1);
+}
+
+/* ---- the service: requests from Terminal, and polling in between ---- */
+
+static void put_ip(struct line *l, unsigned ip) {
+    for (int k = 3; k >= 0; k--) { put_dec(l, (ip >> (8 * k)) & 255); if (k) put_s(l, "."); }
+}
+
+static u64 request(struct usb *u, u64 op, u64 arg, char *buf, u64 *v2, u64 *v3) {
+    buf[239] = 0;
+    if (op == NET_INFO) {
+        struct net_info *i = (struct net_info *)(buf + NET_DATA_OFF);
+        i->ip = u->net.ip; i->mask = u->net.mask; i->gateway = u->net.gw; i->dns = u->net.dns;
+        for (int k = 0; k < 6; k++) i->mac[k] = u->net.mac[k];
+        i->device = (unsigned char)u->has_net;
+        i->up = (unsigned char)u->net.up;
+        return NET_OK;
+    }
+    if (op == NET_READ) {
+        if (arg > u->body_len) return NET_BAD;
+        u64 n = u->body_len - arg < NET_CHUNK ? u->body_len - arg : NET_CHUNK;
+        const unsigned char *from = u->dma + BODY_OFF + arg;
+        for (u64 k = 0; k < n; k++) buf[NET_DATA_OFF + k] = (char)from[k];
+        *v2 = n;
+        return NET_OK;
+    }
+    if (!u->has_net) return NET_NO_DEVICE;
+    if (!u->net.up && !dhcp(&u->net)) return NET_NO_ADDRESS;
+    if (op == NET_PING) {
+        unsigned ip = resolve(&u->net, buf);
+        if (!ip) return NET_NO_HOST;
+        long ms = ping(&u->net, ip);
+        if (ms < 0) return NET_NO_ANSWER;
+        *v2 = (u64)ms;
+        *v3 = ip;
+        return NET_OK;
+    }
+    if (op == NET_GET) {
+        int http_status = 0;
+        u64 body = 0;
+        u->body_len = 0;
+        long n = http_get(&u->net, buf, u->dma + BODY_OFF, NET_BODY_MAX, &http_status, &body);
+        if (n == -2) return NET_UNSUPPORTED;
+        if (n == -3) return NET_NO_HOST;
+        if (n < 0) return NET_NO_ANSWER;
+        /* the body to the start of the area */
+        for (long k = 0; k < n; k++) u->dma[BODY_OFF + k] = u->dma[BODY_OFF + body + (u64)k];
+        u->body_len = (u64)n;
+        u->body_status = http_status;
+        *v2 = (u64)n;
+        *v3 = (u64)http_status;
+        return NET_OK;
+    }
+    return NET_BAD;
+}
+
+static void serve(struct usb *u) {
+    if (u->has_net) {
+        arm_net(u);
+        if (dhcp(&u->net)) {
+            put_s(&u->l, "usb: network: address ");
+            put_ip(&u->l, u->net.ip);
+            put_s(&u->l, ", gateway ");
+            put_ip(&u->l, u->net.gw);
+            put_s(&u->l, ", DNS ");
+            put_ip(&u->l, u->net.dns);
+        } else put_s(&u->l, "usb: network: no address from DHCP");
+        say(u);
+    }
+    for (int i = 0; i < u->nhid; i++) arm(&u->hid[i]);
+    for (;;) {
+        /* a request, or a few milliseconds (a second, with nothing plugged in) */
+        u64 wait = u->nhid || u->has_net ? 8 : 1000;
+        struct res r = sys(SYS_RECVT, NETEP, wait, 0, 0, 0);
+        if (r.status == OK) {
+            u64 op = r.x[2], arg = r.x[3], grant = r.x[5], slot = r.x[6];
+            u64 code = NET_BAD, v2 = 0, v3 = 0;
+            if (grant) {
+                struct res info = sys1(SYS_CAPINFO, grant - 1);
+                if (info.x[2] == 0 && info.x[3] == NET_BUF_PAGES && (info.x[1] & (R | W)) == (R | W) &&
+                    sys2(SYS_MAP, grant - 1, REQ_PAGE).status == OK) {
+                    code = request(u, op, arg, (char *)PAGE(REQ_PAGE), &v2, &v3);
+                    sys2(SYS_UNMAP, REQ_PAGE, NET_BUF_PAGES);
+                }
+                sys1(SYS_DROP, grant - 1);
+            }
+            if (slot) sys(SYS_REPLY, slot - 1, code, v2, v3, 0);
+        }
+        while (poll_net(u)) {}
+        poll_hid(u);
+    }
+}
+
 __attribute__((section(".text.start"))) void _start(void) {
     struct usb *u = (struct usb *)DATA;
     u->l.n = 0;
@@ -274,6 +516,15 @@ __attribute__((section(".text.start"))) void _start(void) {
     u->nhid = u->keyboards = u->mice = u->buttons = 0;
     u->mx = 512;
     u->my = 300;
+    u->has_net = u->net_armed = 0;
+    u->body_len = 0;
+    u->net.up = 0;
+    u->net.ip = u->net.mask = u->net.gw = u->net.dns = 0;
+    u->net.arp_next = 0;
+    for (int i = 0; i < 8; i++) u->net.arp[i].ip = 0;
+    u->net.tcp_state = 0;
+    u->net.ping_seq = 0;
+    u->net.rand = (unsigned)millis() * 2654435761u;
     for (int i = 0; i < 8; i++) u->prev[i] = 0;
     if (sys2(SYS_MAP, SPARE, DMA_PAGE).status != OK) { put_s(&u->l, "usb: cannot map its memory"); say(u); exit_task(); }
     u->dma = (unsigned char *)PAGE(DMA_PAGE);
@@ -295,9 +546,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     wr(GRXFSIZ, 1024);
     wr(GNPTXFSIZ, 1024UL << 16 | 1024);
     wr(HPTXFSIZ, 1024UL << 16 | 2048);
-    wr(GAHBCFG, 1 << 5 | 1);                          /* DMA on, interrupts on */
-    wr(GINTMSK, 1UL << 25);                           /* host channels */
-    wr(HAINTMSK, 0xff);
+    wr(GAHBCFG, 1 << 5);                              /* DMA on; polled, no interrupts */
+    wr(GINTMSK, 0);
     wr(HPRT0, (rd(HPRT0) & ~(u64)HPRT0_W1C) | 1 << 12);   /* port power */
     put_s(&u->l, "usb: DWC2 ");
     put_hex(&u->l, id & 0xffff);
@@ -316,10 +566,13 @@ __attribute__((section(".text.start"))) void _start(void) {
                      : "usb: the kernel let a dangerous request through");
     say(u);
 
-    int told = 0;
-    while (!(rd(HPRT0) & 1)) {
-        if (!told) { put_s(&u->l, "usb: nothing plugged in yet"); say(u); told = 1; }
+    if (!(rd(HPRT0) & 1)) {
         sleep_ms(250);
+        if (!(rd(HPRT0) & 1)) {
+            put_s(&u->l, "usb: nothing plugged in");
+            say(u);
+            serve(u);                     /* no devices: the network service still answers */
+        }
     }
     sleep_ms(100);
     wr(HPRT0, (rd(HPRT0) & ~(u64)HPRT0_W1C) | 1 << 8);    /* reset */
@@ -340,42 +593,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     put_s(&u->l, u->keyboards == 1 ? " keyboard, " : " keyboards, ");
     put_dec(&u->l, (u64)u->mice);
     put_s(&u->l, u->mice == 1 ? " mouse" : " mice");
+    put_s(&u->l, u->has_net ? ", a network adapter" : "");
     say(u);
-    if (!u->nhid) exit_task();
-
-    /* Each device is asked for a report; one with nothing to say answers NAK and its channel
-       halts, and is asked again a polling interval later (8 ms, what keyboards and mice ask
-       for), not at once: a channel re-armed on every NAK would keep the machine busy. */
-    for (int i = 0; i < u->nhid; i++) arm(&u->hid[i]);
-    for (;;) {
-        sys1(SYS_IRQWAIT, IRQ);
-        int later = 0;
-        u64 g = rd(GINTSTS);
-        if (g & (1UL << 25)) {
-            u64 chans = rd(HAINT);
-            for (int i = 0; i < u->nhid; i++) {
-                struct hid *h = &u->hid[i];
-                if (!(chans & (1UL << h->ch))) continue;
-                u64 st = rd(HCINT(h->ch));
-                wr(HCINT(h->ch), st);
-                if (st & XFERCOMPL) {
-                    u64 t = rd(HCTSIZ(h->ch));
-                    int n = h->mps - (int)(t & 0x7ffff);
-                    h->pid = (int)(t >> 29) & 3;
-                    if (h->kind == 1) keyboard(u, h->buf, n);
-                    else mouse(u, h->buf, n);
-                    arm(h);
-                } else {
-                    h->idle = 1;
-                    later = 1;
-                }
-            }
-        }
-        sys1(SYS_IRQACK, IRQ);
-        if (later) {
-            sleep_ms(8);
-            for (int i = 0; i < u->nhid; i++)
-                if (u->hid[i].idle) { u->hid[i].idle = 0; arm(&u->hid[i]); }
-        }
-    }
+    serve(u);
 }

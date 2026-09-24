@@ -209,7 +209,7 @@ def StatusOK (j : Nat) : Status → Prop
     (∃ c0 ∈ initCaps j, c0.obj = .endpoint e ∧ c0.rights.w = true ∧ c0.badge = m.badge) ∧
     ∀ g, m.grant = some g → CapOK j g ∧ (∃ b n, g.obj = .frames b n) ∧
       ∃ c0 ∈ initCaps j, c0.obj = .endpoint e ∧ c0.rights.w = true ∧ c0.rights.x = true
-  | .receiving e => ∃ c0 ∈ initCaps j, c0.obj = .endpoint e ∧ c0.rights.r = true
+  | .receiving e _ => ∃ c0 ∈ initCaps j, c0.obj = .endpoint e ∧ c0.rights.r = true
   | .waitingIrq n => ∃ c0 ∈ initCaps j, c0.obj = .irq n
   | _ => True
 
@@ -407,20 +407,19 @@ theorem grantOf_none {t : Task} {ep : Cap} {gi : Nat} (g : Option Cap)
 /-! ## Finding the other side of a message -/
 
 theorem findReceiver_spec {e : Nat} : ∀ {ts : List Task} {k j : Nat},
-    findReceiver e ts k = some j → k ≤ j ∧ ∃ u, nth? ts (j - k) = some u ∧ u.status = .receiving e
+    findReceiver e ts k = some j → k ≤ j ∧ ∃ u d, nth? ts (j - k) = some u ∧ u.status = .receiving e d
   | [], _, _, h => by simp [findReceiver] at h
   | t :: ts, k, j, h => by
     simp only [findReceiver] at h
     split at h
     · rename_i hr
       simp at h; subst h
-      refine ⟨Nat.le_refl _, t, by simp [nth?], ?_⟩
       unfold isReceiving at hr
       split at hr
-      · rename_i e' hst; simp at hr; subst hr; exact hst
+      · rename_i e' d hst; simp at hr; subst hr; exact ⟨Nat.le_refl _, t, d, by simp [nth?], hst⟩
       · simp at hr
-    · obtain ⟨hk, u, hu, hst⟩ := findReceiver_spec h
-      refine ⟨by omega, u, ?_, hst⟩
+    · obtain ⟨hk, u, d, hu, hst⟩ := findReceiver_spec h
+      refine ⟨by omega, u, d, ?_, hst⟩
       have : j - k = (j - (k + 1)) + 1 := by omega
       rw [this]; simpa [nth?] using hu
 
@@ -604,8 +603,8 @@ theorem inv_sysSend {s : KState} {t : Task} {ci w0 w1 w2 gi : Nat} {call : Bool}
           dsimp only
           split
           · rename_i j hj
-            obtain ⟨-, u0, hu0, hst⟩ := findReceiver_spec hj
-            simp only [Nat.sub_zero] at hu0
+            obtain ⟨-, u0, d0, hu0, hst⟩ := findReceiver_spec hj
+            rw [Nat.sub_zero] at hu0
             split
             · rename_i u hu
               rw [hu] at hu0; simp at hu0; subst hu0
@@ -631,9 +630,9 @@ theorem inv_sysSend {s : KState} {t : Task} {ci w0 w1 w2 gi : Nat} {call : Bool}
               ⟨⟨c0, hc0, ho0, hle0.2.1 hw, hb0⟩, fun g' hg' => hgr g' hg'⟩ (fun _ => hmt) _)
       · exact inv_ret hs ht _
 
-theorem inv_sysRecv {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
+theorem inv_sysRecv {s : KState} {t : Task} {ci : Nat} {block : Bool} {deadline : Nat} (hs : Inv s)
     (hcur : nth? s.tasks s.cur = some t) (hmt : openSlot s.cur = false → t.hash = expectedHash s.cur) :
-    Inv (sysRecv s t ci).state := by
+    Inv (sysRecv s t ci block deadline).state := by
   have ht := hs.tasks _ _ hcur
   have hB := hs.lt hcur
   unfold sysRecv
@@ -678,8 +677,10 @@ theorem inv_sysRecv {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
                 ⟨c0, hc0, ho0, hle0.1 hr⟩⟩
             · exact inv_ret hs ht _
           · exact inv_ret hs ht _
-        · apply inv_schedule
-          exact inv_setTask hs (ht.setStatus (.receiving e) ⟨c0, hc0, ho0, hle0.1 hr⟩ (fun _ => hmt) _)
+        · split
+          · apply inv_schedule
+            exact inv_setTask hs (ht.setStatus (.receiving e _) ⟨c0, hc0, ho0, hle0.1 hr⟩ (fun _ => hmt) _)
+          · exact inv_ret hs ht _
       · exact inv_ret hs ht _
 
 theorem TaskOK.setCallers {fb : Bool} {j : Nat} {t : Task} (h : TaskOK fb j t) (cs : List Nat) :
@@ -1137,6 +1138,10 @@ theorem TaskOK.wake {fb : Bool} {j : Nat} {t : Task} (h : TaskOK fb j t) (now : 
     split
     · exact h.setStatus .ready trivial (fun _ => h.measured (by rw [hst]; trivial)) _
     · exact h
+  · rename_i e u hst
+    split
+    · exact h.setStatus .ready trivial (fun _ => h.measured (by rw [hst]; trivial)) _
+    · exact h
   · exact h
 
 theorem nth?_wakeSleepers (now : Nat) : ∀ (ts : List Task) (j : Nat),
@@ -1207,6 +1212,7 @@ theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
       · exact inv_ret hs hto _
       · exact inv_sysBoard hs hto
       · exact inv_sysUsb hs hto
+      · exact inv_sysRecv hs ht hmt
       · exact inv_ret hs hto _
     · exact hs
 
@@ -1423,6 +1429,10 @@ Security (7), Files (9), the programs in the open slots (10 to 15), and Apps (16
 def App (A : Nat) : Prop :=
   A = 0 ∨ A = 5 ∨ A = 6 ∨ A = 7 ∨ A = 9 ∨ A = 10 ∨ A = 11 ∨ A = 12 ∨ A = 13 ∨ A = 14 ∨ A = 15 ∨ A = 16
 
+/-- The tasks that may use the network service (endpoint 2, received by the USB driver):
+Terminal. -/
+def NetClient (A : Nat) : Prop := A = 5
+
 /-- The tasks that may use the file server: Notes (0), Terminal (5), Files (9), Apps (16), and
 the open slots (10 to 15), which the file server lets reach only what they were given. -/
 def FsClient (A : Nat) : Prop := A = 0 ∨ A = 5 ∨ A = 9 ∨ A = 16 ∨ A = 10 ∨ A = 11 ∨ A = 12 ∨ A = 13 ∨ A = 14 ∨ A = 15
@@ -1430,7 +1440,8 @@ def FsClient (A : Nat) : Prop := A = 0 ∨ A = 5 ∨ A = 9 ∨ A = 16 ∨ A = 10
 /-- Who may receive on an endpoint at boot: the display server on endpoint 0, the file
 server on endpoint 1, nobody else. (One pass over the manifest, not one per sender.) -/
 theorem recv_owner {B e : Nat} {d : Cap} (hB : B < numTasks) (hd : d ∈ initCaps B)
-    (hdo : d.obj = .endpoint e) (hr : d.rights.r = true) : (e = 0 ∧ B = 1) ∨ (e = 1 ∧ B = 8) := by
+    (hdo : d.obj = .endpoint e) (hr : d.rights.r = true) :
+    (e = 0 ∧ B = 1) ∨ (e = 1 ∧ B = 8) ∨ (e = 2 ∧ B = 17) := by
   rcases cases17 hB with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hd <;>
     rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
@@ -1440,24 +1451,27 @@ theorem recv_owner {B e : Nat} {d : Cap} (hB : B < numTasks) (hd : d ∈ initCap
 file server's clients through endpoint 1. -/
 theorem grant_sender {A e : Nat} {c : Cap} (hA : A < numTasks) (hc : c ∈ initCaps A)
     (hco : c.obj = .endpoint e) (hw : c.rights.w = true) (hx : c.rights.x = true) :
-    (e = 0 ∧ App A) ∨ (e = 1 ∧ FsClient A) := by
+    (e = 0 ∧ App A) ∨ (e = 1 ∧ FsClient A) ∨ (e = 2 ∧ NetClient A) := by
   rcases cases17 hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap] at hc <;>
     rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp at hco hw hx <;> subst hco <;> simp [App, FsClient]
+    simp at hco hw hx <;> subst hco <;> simp [App, FsClient, NetClient]
 
 /-- The only grant edges in the manifest: from each app to the display server (1), and
 from the file server's clients to the file server (8). -/
-theorem edge_iff {A B : Nat} : Edge A B ↔ (App A ∧ B = 1) ∨ (FsClient A ∧ B = 8) := by
+theorem edge_iff {A B : Nat} :
+    Edge A B ↔ (App A ∧ B = 1) ∨ (FsClient A ∧ B = 8) ∨ (NetClient A ∧ B = 17) := by
   constructor
   · rintro ⟨hA, hB, e, ⟨c, hc, hco, hw, hx⟩, ⟨d, hd, hdo, hr⟩⟩
-    rcases recv_owner hB hd hdo hr with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;>
-      rcases grant_sender hA hc hco hw hx with ⟨he, h⟩ | ⟨he, h⟩ <;> simp_all
+    rcases recv_owner hB hd hdo hr with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;>
+      rcases grant_sender hA hc hco hw hx with ⟨he, h⟩ | ⟨he, h⟩ | ⟨he, h⟩ <;> simp_all
   · have hd0 : epCap 0 true false false 0 ∈ initCaps 1 := by
       simp [initCaps, frameCaps, snoc, runCap, launchCap]
     have hd1 : epCap 1 true false false 0 ∈ initCaps 8 := by
       simp [initCaps, frameCaps, snoc, runCap]
-    rintro (⟨hA, rfl⟩ | ⟨hA, rfl⟩)
+    have hd2 : epCap 2 true false false 0 ∈ initCaps 17 := by
+      simp [initCaps, frameCaps, snoc, runCap]
+    rintro (⟨hA, rfl⟩ | ⟨hA, rfl⟩ | ⟨hA, rfl⟩)
     · rcases hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 1,
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
@@ -1504,68 +1518,87 @@ theorem edge_iff {A B : Nat} : Edge A B ↔ (App A ∧ B = 1) ∨ (FsClient A �
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 15,
           by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+    · subst hA
+      exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 5,
+        by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
 
 /-- Memory moves at most one step: from an app to the display server, or from a client to
 the file server. Neither server can pass anything on. -/
 theorem reach_iff {A B : Nat} (h : Reach A B) :
-    A = B ∨ (App A ∧ B = 1) ∨ (FsClient A ∧ B = 8) := by
+    A = B ∨ (App A ∧ B = 1) ∨ (FsClient A ∧ B = 8) ∨ (NetClient A ∧ B = 17) := by
   induction h with
   | refl => exact Or.inl rfl
   | step _ he ih =>
-    rcases edge_iff.1 he with ⟨hB, rfl⟩ | ⟨hB, rfl⟩
-    · rcases ih with rfl | ⟨_, rfl⟩ | ⟨_, rfl⟩
+    rcases edge_iff.1 he with ⟨hB, rfl⟩ | ⟨hB, rfl⟩ | ⟨hB, rfl⟩
+    · rcases ih with rfl | ⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩
       · exact Or.inr (Or.inl ⟨hB, rfl⟩)
-      · simp [App] at hB
-      · simp [App] at hB
-    · rcases ih with rfl | ⟨_, rfl⟩ | ⟨_, rfl⟩
-      · exact Or.inr (Or.inr ⟨hB, rfl⟩)
-      · simp [FsClient] at hB
-      · simp [FsClient] at hB
+      all_goals simp [App] at hB
+    · rcases ih with rfl | ⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩
+      · exact Or.inr (Or.inr (Or.inl ⟨hB, rfl⟩))
+      all_goals simp [FsClient] at hB
+    · rcases ih with rfl | ⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩
+      · exact Or.inr (Or.inr (Or.inr ⟨hB, rfl⟩))
+      all_goals simp [NetClient] at hB
 
-/-- **Every task but the two servers is confined.** Whatever happens, a task other than the
-display server and the file server holds capabilities only to its own frames, so it can
-never map, read or write anyone else's memory. -/
+/-- **Every task but the three servers is confined.** Whatever happens, a task other than
+the display server, the file server and the USB driver (which serves the network) holds
+capabilities only to its own frames, so it can never map, read or write anyone else's
+memory. -/
 theorem confined {s : KState} (h : Reachable s) {j : Nat} (hj : j ≠ displayTask)
-    (hj8 : j ≠ fileServer) {t : Task}
+    (hj8 : j ≠ fileServer) (hj17 : j ≠ usbTask) {t : Task}
     (ht : nth? s.tasks j = some t) {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) :
     owner f = j := by
-  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩ | ⟨_, h⟩
+  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩ | ⟨_, h⟩ | ⟨_, h⟩
   · exact h
   · exact absurd h hj
   · exact absurd h hj8
+  · exact absurd h hj17
 
 /-- The file server holds only its own frames and frames its clients granted it. -/
 theorem file_server_frames {s : KState} (h : Reachable s) {t : Task}
     (ht : nth? s.tasks fileServer = some t) {c : Cap} (hc : c ∈ t.caps) {f : Nat}
     (hf : Covers c f) : owner f = fileServer ∨ FsClient (owner f) := by
-  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩ | ⟨h, _⟩
+  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩ | ⟨h, _⟩ | ⟨_, h⟩
   · exact Or.inl h
   · simp [fileServer] at h
+  · exact Or.inr h
+  · simp [fileServer] at h
+
+/-- The USB driver, which serves the network, holds only its own frames and frames Terminal
+lent it for a request. -/
+theorem net_server_frames {s : KState} (h : Reachable s) {t : Task}
+    (ht : nth? s.tasks usbTask = some t) {c : Cap} (hc : c ∈ t.caps) {f : Nat}
+    (hf : Covers c f) : owner f = usbTask ∨ NetClient (owner f) := by
+  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨_, h⟩ | ⟨_, h⟩ | ⟨h, _⟩
+  · exact Or.inl h
+  · simp [usbTask] at h
+  · simp [usbTask] at h
   · exact Or.inr h
 
 /-- **mallory is confined.** Whatever happens, task 2 holds capabilities only to its own
 frames (512 to 767), so it can never map, read or write anyone else's memory. -/
 theorem mallory_confined {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 2 = some t)
     {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : owner f = 2 := by
-  exact confined h (by decide) (by decide) ht hc hf
+  exact confined h (by decide) (by decide) (by decide) ht hc hf
 
 /-- carol (task 3) holds capabilities only to her own frames (768 to 1023). -/
 theorem carol_confined {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 3 = some t)
     {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : owner f = 3 := by
-  exact confined h (by decide) (by decide) ht hc hf
+  exact confined h (by decide) (by decide) (by decide) ht hc hf
 
 /-- alice (task 0) is never given anyone's memory: she only ever holds her own frames. -/
 theorem alice_confined {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 0 = some t)
     {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : owner f = 0 := by
-  exact confined h (by decide) (by decide) ht hc hf
+  exact confined h (by decide) (by decide) (by decide) ht hc hf
 
 /-- The display server (task 1) holds only its own frames, the framebuffer, and frames the
 apps granted it. -/
 theorem server_frames {s : KState} (h : Reachable s) {t : Task} (ht : nth? s.tasks 1 = some t)
     {c : Cap} (hc : c ∈ t.caps) {f : Nat} (hf : Covers c f) : owner f = 1 ∨ App (owner f) := by
-  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨h, _⟩ | ⟨_, h⟩
+  rcases reach_iff (frame_flow h ht hc hf).1 with h | ⟨h, _⟩ | ⟨_, h⟩ | ⟨_, h⟩
   · exact Or.inl h
   · exact Or.inr h
+  · simp at h
   · simp at h
 
 /-! ## Only verified code runs -/
@@ -1796,10 +1829,11 @@ theorem uart_confined {s : KState} (h : Reachable s) {j : Nat} {t : Task}
   have hr := (frame_flow h ht hc hf).1
   have : owner devBase = inputTask := by decide
   rw [this] at hr
-  rcases reach_iff hr with h1 | ⟨h0, _⟩ | ⟨h0, _⟩
+  rcases reach_iff hr with h1 | ⟨h0, _⟩ | ⟨h0, _⟩ | ⟨h0, _⟩
   · exact h1.symm
   · simp [App, inputTask] at h0
   · simp [FsClient, inputTask] at h0
+  · simp [NetClient, inputTask] at h0
 
 /-! ## `write` reads only what the task may read -/
 
@@ -2085,11 +2119,16 @@ theorem block_io_confined (s : KState) (num a0 a1 a2 a3 a4 : Nat)
 theorem schedule_tasks (s : KState) : (schedule s).tasks = s.tasks := by
   unfold schedule; split <;> rfl
 
-/-- **A tick wakes only sleepers whose time has come.** If a timer tick changes a task's
-status, the task was asleep until at most the new tick, and it is now ready. -/
+/-- **A tick wakes only tasks whose time has come.** If a timer tick changes a task's
+status, the task was asleep until at most the new tick, or waiting for a message with a
+deadline of at most the new tick (then it wakes with `eTimeout`, having received nothing);
+either way it is now ready. -/
 theorem tick_wakes_only_sleepers (s : KState) (j : Nat) {u u' : Task}
     (hu : nth? s.tasks j = some u) (hu' : nth? (tick s).tasks j = some u')
-    (hch : u'.status ≠ u.status) : ∃ w, u.status = .sleeping w ∧ w ≤ s.now + 1 ∧ u'.status = .ready := by
+    (hch : u'.status ≠ u.status) :
+    (∃ w, u.status = .sleeping w ∧ w ≤ s.now + 1 ∧ u'.status = .ready) ∨
+    (∃ e w, u.status = .receiving e w ∧ w ≠ 0 ∧ w ≤ s.now + 1 ∧ u'.status = .ready ∧
+      u'.result = eTimeout :: .nil) := by
   unfold tick at hu'
   rw [schedule_tasks] at hu'
   dsimp only at hu'
@@ -2101,7 +2140,15 @@ theorem tick_wakes_only_sleepers (s : KState) (j : Nat) {u u' : Task}
   · rename_i w hst
     split at hch
     · rename_i hle
+      left
       exact ⟨w, hst, by simpa using hle, by simp [hst, hle]⟩
+    · exact absurd rfl hch
+  · rename_i e w hst
+    split at hch
+    · rename_i hle
+      right
+      simp only [Bool.and_eq_true, Bool.not_eq_true', beq_eq_false_iff_ne, ne_eq, Nat.ble_eq] at hle
+      refine ⟨e, w, hst, hle.1, hle.2, ?_, ?_⟩ <;> simp [hst, hle.1, hle.2]
     · exact absurd rfl hch
   · exact absurd rfl hch
 
@@ -2808,7 +2855,7 @@ theorem sysUsb_spec {s : KState} {t : Task} {ci op reg v : Nat} (h : (sysUsb s t
         ¬(inChan r.usbA = true ∧ chanReg r.usbA = 0 ∧ bit r.usbB 31 = true ∧ bit r.usbB 30 = false)) ∨
      (r.usbOp = 2 ∧ c.rights.w = true ∧ r.usbA < 8 ∧
         r.usbB = nthD s.usbDma r.usbA ∧ r.usbC = nthD s.usbSize r.usbA ∧
-        dmaOk t.caps r.usbB (r.usbC % 2 ^ 19 + usbSlack) (bit r.usbD 15) = true)) := by
+        dmaOk s.cur t.caps r.usbB (r.usbC % 2 ^ 19 + usbSlack) (bit r.usbD 15) = true)) := by
   unfold sysUsb usbReply at *
   cases hc : nth? t.caps ci with
   | none => simp [hc] at h
@@ -2883,8 +2930,9 @@ theorem only_usb_driver_drives_usb {s : KState} (hr : Reachable s) {num a0 a1 a2
     rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp at ho <;> rfl
 
-theorem dmaOk_spec : ∀ {cs : List Cap} {a n : Nat} {w : Bool}, dmaOk cs a n w = true →
-    ∃ c ∈ cs, ∃ b k, c.obj = .frames b k ∧ b + k ≤ poolFrames ∧ frameBase + b * pageSize ≤ a ∧
+theorem dmaOk_spec {j : Nat} : ∀ {cs : List Cap} {a n : Nat} {w : Bool}, dmaOk j cs a n w = true →
+    ∃ c ∈ cs, ∃ b k, c.obj = .frames b k ∧ framesPerTask * j ≤ b ∧ b + k ≤ framesPerTask * (j + 1) ∧
+      b + k ≤ poolFrames ∧ frameBase + b * pageSize ≤ a ∧
       a + n ≤ frameBase + (b + k) * pageSize ∧ (if w then c.rights.w else c.rights.r) = true
   | [], _, _, _, h => by simp [dmaOk] at h
   | c :: cs, a, n, w, h => by
@@ -2893,18 +2941,20 @@ theorem dmaOk_spec : ∀ {cs : List Cap} {a n : Nat} {w : Bool}, dmaOk cs a n w 
     · split at h1
       · rename_i b k hbk
         simp only [Bool.and_eq_true, Nat.ble_eq] at h1
-        exact ⟨c, List.mem_cons_self .., b, k, hbk, h1.1.1.1, h1.1.1.2, h1.1.2, h1.2⟩
+        exact ⟨c, List.mem_cons_self, b, k, hbk, h1.1.1.1.1.1, h1.1.1.1.1.2, h1.1.1.1.2, h1.1.1.2, h1.1.2, h1.2⟩
       · simp at h1
     · obtain ⟨c', hc', rest⟩ := dmaOk_spec h1
       exact ⟨c', List.mem_cons_of_mem _ hc', rest⟩
 
 /-- **A USB transfer starts only inside the driver's memory.** When a system call asks the
 machine layer to start a USB channel, the whole transfer (its size, plus one packet of
-slack) lies in one run of frame-pool frames the caller holds, with the write right if data
-comes in and the read right if it goes out. -/
+slack) lies in one run of the caller's own frames in the pool, which it holds, with the
+write right if data comes in and the read right if it goes out: never in memory another
+task lent it. -/
 theorem usb_dma_confined {s : KState} {num a0 a1 a2 a3 a4 : Nat}
     (h : (syscall s num a0 a1 a2 a3 a4).usbOp = 2) :
     ∃ t, nth? s.tasks s.cur = some t ∧ ∃ c ∈ t.caps, ∃ b k, c.obj = .frames b k ∧
+      framesPerTask * s.cur ≤ b ∧ b + k ≤ framesPerTask * (s.cur + 1) ∧
       b + k ≤ poolFrames ∧
       frameBase + b * pageSize ≤ (syscall s num a0 a1 a2 a3 a4).usbB ∧
       (syscall s num a0 a1 a2 a3 a4).usbB + ((syscall s num a0 a1 a2 a3 a4).usbC % 2 ^ 19 + usbSlack) ≤
@@ -2929,16 +2979,20 @@ theorem usb_dma_own_memory {s : KState} (hr : Reachable s) {num a0 a1 a2 a3 a4 :
     (hx2 : x < (syscall s num a0 a1 a2 a3 a4).usbB + ((syscall s num a0 a1 a2 a3 a4).usbC % 2 ^ 19 + usbSlack)) :
     frameBase ≤ x ∧ owner ((x - frameBase) / pageSize) = usbTask := by
   have hcur := only_usb_driver_drives_usb hr (by omega : (syscall s num a0 a1 a2 a3 a4).usbOp ≠ 0)
-  obtain ⟨t, ht, c, hc, b, k, ho, hpool, hlo, hhi, -⟩ := usb_dma_confined h
-  have hf : Covers c ((x - frameBase) / pageSize) := by
-    refine ⟨b, k, ho, ?_, ?_⟩ <;> simp only [pageSize, frameBase] at * <;> omega
+  obtain ⟨t, ht, c, hc, b, k, ho, hown1, hown2, hpool, hlo, hhi, -⟩ := usb_dma_confined h
+  rw [hcur] at hown1 hown2
   refine ⟨by simp only [pageSize, frameBase] at *; omega, ?_⟩
-  rw [hcur] at ht
-  have hreach := (frame_flow hr ht hc hf).1
-  rcases reach_iff hreach with h1 | ⟨-, h2⟩ | ⟨-, h2⟩
-  · exact h1
-  · simp [usbTask] at h2
-  · simp [usbTask] at h2
+  -- the frame is one of the driver's own, whatever else it was lent
+  have hf1 : framesPerTask * usbTask ≤ (x - frameBase) / pageSize := by
+    simp only [pageSize, frameBase, framesPerTask, usbTask] at *; omega
+  have hf2 : (x - frameBase) / pageSize < framesPerTask * (usbTask + 1) := by
+    simp only [pageSize, frameBase, framesPerTask, usbTask] at *; omega
+  unfold owner
+  have hp : (x - frameBase) / pageSize < poolFrames := by
+    simp only [pageSize, frameBase, framesPerTask, usbTask, poolFrames, maxTasks] at *; omega
+  rw [if_pos hp]
+  simp only [framesPerTask, usbTask] at hf1 hf2 ⊢
+  omega
 
 /-- **The dangerous USB writes never happen.** A plain register write the kernel passes on
 is an aligned register in the first page (never the data FIFOs); never one of device mode's

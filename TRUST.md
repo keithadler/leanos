@@ -239,6 +239,13 @@ QEMU's model of them, because leanos has only run under QEMU.
   owner's slot is started again; a running app cannot take back one grant on its own yet.
 - Which task *runs* is proved only up to the scheduler: nothing proves that a started app
   eventually gets to run, or that the display server starts what the user clicked.
+- The network stack (`user/netstack.h`, in the USB driver) is trusted C, not proved: it
+  sees each network request and Terminal's buffer while it answers it, as the file server
+  does. What is proved is where its memory can go: the adapter's DMA only into the driver's
+  own frames (`usb_dma_own_memory`, now over `dmaOk`'s own-frames check), and what
+  Terminal lends it never further (`net_server_frames`). The USB driver polls its devices
+  every 8 ms instead of taking the controller's interrupt, so it can wait for requests
+  with `recvt` at the same time.
 - The file server decides what each program from the card may reach: its own folder
   (`apps/NAME`) and the paths Terminal, Files or Apps shared with its slot, read and/or
   write. The kernel proves who is asking (`file_server_knows_the_sender`); the rule itself

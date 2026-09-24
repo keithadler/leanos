@@ -171,13 +171,19 @@ mutant "sleep rounds down" \
   "let ticks := (ms + tickMs - 1) / tickMs" "let ticks := ms / tickMs"
 
 mutant "USB start skips the DMA check" \
-  "if dmaOk t.caps dma (size % 2 ^ 19 + usbSlack) (bit value 15) then" "if true then"
+  "if dmaOk s.cur t.caps dma (size % 2 ^ 19 + usbSlack) (bit value 15) then" "if true then"
 mutant "USB DMA check ignores the transfer's direction" \
   "Nat.ble (a + n) (frameBase + (b + k) * pageSize) && (if w then c.rights.w else c.rights.r)" "Nat.ble (a + n) (frameBase + (b + k) * pageSize) && true"
 mutant "USB DMA check ignores the end of the run" \
   "Nat.ble (a + n) (frameBase + (b + k) * pageSize) && (if w" "true && (if w"
-mutant "USB DMA may target frames outside the pool" \
-  "     | .frames b k => Nat.ble (b + k) poolFrames && Nat.ble" "     | .frames b k => Nat.ble"
+mutant "USB DMA into memory the driver was lent" \
+  "     | .frames b k => Nat.ble (framesPerTask * j) b && Nat.ble (b + k) (framesPerTask * (j + 1)) &&" "     | .frames b k =>"
+mutant "a receiver gives up before its deadline" \
+  "    if !(u == 0) && Nat.ble u now then { t with status := .ready, result := eTimeout :: .nil } else t" "    if !(u == 0) then { t with status := .ready, result := eTimeout :: .nil } else t"
+mutant "a receiver told to wait forever gives up" \
+  "    if !(u == 0) && Nat.ble u now then { t with status := .ready, result := eTimeout :: .nil } else t" "    if Nat.ble u now then { t with status := .ready, result := eTimeout :: .nil } else t"
+mutant "the network service may pass Terminal's memory on" \
+  "(frameCaps 17) (epCap 0 false true false 17)" "(frameCaps 17) (epCap 0 false true true 17)"
 mutant "USB DMA check forgets the packet of slack" \
   "(size % 2 ^ 19 + usbSlack)" "(size % 2 ^ 19)"
 mutant "a channel's DMA address goes straight to the controller" \

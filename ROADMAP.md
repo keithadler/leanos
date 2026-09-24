@@ -162,6 +162,14 @@ reach only its own folder, `apps/NAME`, and what Terminal, Files or Apps gave it
 (`run edit notes.txt`). The tour's first page asks for your note and is refused. `edit`, a
 text editor on the card, edits what it was given and saves by itself.
 
+Done too: the network, over a USB network adapter (CDC Ethernet; QEMU's `usb-net`, or a
+real adapter on the Pi 4's USB-C port). The USB driver serves it on endpoint 2 with a
+small stack (ARP, IPv4, ICMP, UDP, DHCP, DNS, a TCP client, HTTP/1.0 GET); Terminal has
+`ip`, `ping` and `get`. For it the kernel gained `recvt` (receive with a deadline; the tick
+theorem now covers receivers that time out), the DMA check takes only the driver's own
+frames, and the grant-edge proofs carry a third server. Next here: TCP that takes data out
+of order, a listening socket, and the Pi 4's own Ethernet (GENET).
+
 Done too: programs from the SD card. They are ELF files on the card (`tools/mksd.py`
 writes a card with them, the way programs are copied onto any computer's disk); Terminal's
 `run` reads one, checks and flattens it in user space, and starts it with `exec` in one of

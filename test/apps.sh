@@ -33,13 +33,13 @@ check_order alice \
 
 check_order terminal \
   "terminal: opened a window -> ok" \
-  "terminal: caps -> 13 capabilities" \
+  "terminal: caps -> 14 capabilities" \
   "terminal: boot -> 7 verified" \
   "terminal: write hello.txt -> ok" \
   "terminal: ls -> 22 files" \
   "terminal: window closed, exiting" \
   "terminal: opened a window -> ok" \
-  "terminal: caps -> 13 capabilities" \
+  "terminal: caps -> 14 capabilities" \
   "terminal: write fast.txt -> ok" \
   "terminal: cat fast.txt -> 36 bytes" \
   "terminal: run welcome.txt -> not an ELF file" \
