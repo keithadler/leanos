@@ -7,6 +7,16 @@
    for the client (w0 = kind, w1, w2). The server never blocks on a client: it holds each
    caller's reply slot until it has something to say.
 
+   The kernel gives it 8 reply slots (maxCallers) and it may show 12 windows, so it holds at
+   most HOLD_MAX (7) waiting windows' calls, and one slot is always free for the next call.
+   When a WAIT would take an 8th, the window that has waited longest hears no event
+   (EV_NONE) and is parked: it asks again a moment later (app_wait), and while the slots are
+   still taken it is answered at once, with its events if it has any, else with none again.
+   A parked window that gets an event is held again when it next waits, in place of the one
+   that has waited longest. If a receive ever finds the slots full all the same, the one
+   that has waited longest is let go the same way: before, the display retried that receive
+   for ever, and no key or click reached anyone again.
+
    The input driver sends it keys and mouse reports (badge 3). Keys go to the focused window;
    a click focuses and raises a window, and dragging its title bar moves it. The sender's
    badge, which the kernel sets, names every window, so no client can pass for another.
@@ -56,6 +66,7 @@
 #define MINI_GAP 8
 #define DOCK_AREA_X 0         /* the part of the screen the dock and its labels can cover */
 #define QUEUE 128        /* a pasted line, or fast typing into a busy app, must not be lost */
+#define HOLD_MAX 7       /* waiting windows' calls held at once: one fewer than the kernel's 8 reply slots */
 #define TITLE_H 30
 #define BAR_H 30
 #define W 1024
@@ -114,6 +125,8 @@ struct win {
     struct picture icon;        /* the icon a program from the card lent (OP_ICON), or none */
     char prog[16];              /* and the card file it came from, or "" */
     u64 slot;                   /* reply slot + 1 while the client waits, else 0 */
+    u64 held_at;                /* when its wait was held (a count), to find the one held longest */
+    int parked;                 /* let go with no event while HOLD_MAX were held: asks again soon */
     unsigned queue[QUEUE][3];    /* events waiting for the client (kind, a, b), oldest at qhead */
     int qhead, qlen;
     /* a paste on its way: what was copied when the user pasted here, handed out 16 bytes to
@@ -170,6 +183,8 @@ struct state {
     char clip[CLIP_MAX], copy_buf[CLIP_MAX];
     u64 drag_frames, drag_us;
     int drag_pending, pend_x, pend_y;   /* a drag move not drawn yet, and where the window was */
+    u64 waits;                  /* waits held so far: each window's held_at */
+    int parked_said;            /* the log has said once that windows are parked */
 };
 _Static_assert(sizeof(struct state) <= 8 * 4096, "the server's state must fit in its 8 data pages");
 
@@ -1227,6 +1242,7 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     if (wn->x + (int)w > W - 8) wn->x = W - 8 - (int)w;
     if (wn->y + (int)h + TITLE_H > DOCK_Y - 8) wn->y = DOCK_Y - 8 - (int)h - TITLE_H;
     wn->slot = 0;
+    wn->parked = 0;
     wn->closing = 0;
     wn->icon.px = 0;
     wn->prog[0] = 0;
@@ -1256,9 +1272,35 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
 }
 
+/* How many waiting windows' calls it holds: each takes one of its 8 reply slots. */
+static int held(struct state *st) {
+    int n = 0;
+    for (int k = 0; k < MAX_WIN; k++) n += st->win[k].slot != 0;
+    return n;
+}
+
+/* Answer the window that has waited longest with no event, which frees its reply slot. Its
+   client asks again a moment later (app_wait); until then its events wait in its queue. */
+static void park_oldest(struct state *st, struct line *l) {
+    int o = -1;
+    for (int k = 0; k < MAX_WIN; k++)
+        if (st->win[k].slot && (o < 0 || st->win[k].held_at < st->win[o].held_at)) o = k;
+    if (o < 0) return;
+    if (!st->parked_said) {
+        st->parked_said = 1;
+        say3(l, "more windows wait than the 7 calls it holds: ", name_of(st->win[o].badge),
+             ", waiting longest, hears no event and asks again");
+    }
+    sys(SYS_REPLY, st->win[o].slot - 1, 0, 0, 0, 0);
+    st->win[o].slot = 0;
+    st->win[o].parked = 1;
+}
+
 /* WAIT (and POLL, which answers at once, with no event if there is none, for a client
-   that keeps time itself and must not block). */
-static void on_wait(struct state *st, struct res *r, int poll) {
+   that keeps time itself and must not block). A parked window, asking again while HOLD_MAX
+   waits are held, is answered at once too; any other wait is held, in place of the one held
+   longest if HOLD_MAX already are. */
+static void on_wait(struct state *st, struct line *l, struct res *r, int poll) {
     u64 badge = r->x[1], dirty = r->x[3], slot = r->x[6];
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
@@ -1274,11 +1316,15 @@ static void on_wait(struct state *st, struct res *r, int poll) {
         if (dirty && !w->closing) composite_window(st, k);
         u64 e[3];
         if (next_event(w, e)) {
+            w->parked = 0;
             sys(SYS_REPLY, slot - 1, e[0], e[1], e[2], 0);
-        } else if (poll) {
+        } else if (poll || (w->parked && held(st) >= HOLD_MAX)) {
             sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
         } else {
+            if (held(st) >= HOLD_MAX) park_oldest(st, l);
             w->slot = slot;
+            w->parked = 0;
+            w->held_at = ++st->waits;
         }
         return;
     }
@@ -1454,6 +1500,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->bar_minute = 0;
     st->zone = 0;
     st->zone_unsaved = st->zone_restore = 0;
+    st->waits = 0;
+    st->parked_said = 0;
     make_background(st);
     st->px = W / 2;
     st->py = H / 2;
@@ -1497,6 +1545,7 @@ __attribute__((section(".text.start"))) void _start(void) {
             u64 left = bar_wait - (millis() - bar_at);
             if (st->zone_unsaved && left > 100) left = 100;
             r = sys(SYS_RECVT, ENDPOINT, left ? left : 1, 0, 0, 0);
+            if (r.status == FULL) park_oldest(st, &l);    /* a caller waits for a reply slot */
             if (r.status != OK) continue;
         }
         u64 badge = r.x[1], op = r.x[2], slot = r.x[6], grant = r.x[5];
@@ -1514,7 +1563,7 @@ __attribute__((section(".text.start"))) void _start(void) {
         } else if (slot && op == OP_OPEN && r.x[5]) {
             on_open(st, &l, &r);
         } else if (slot && (op == OP_WAIT || op == OP_POLL)) {
-            on_wait(st, &r, op == OP_POLL);
+            on_wait(st, &l, &r, op == OP_POLL);
         } else if (slot && op == OP_SET) {
             on_set(st, &l, &r);
         } else if (slot && op == OP_ICON && grant) {

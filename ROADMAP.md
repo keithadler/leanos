@@ -115,6 +115,16 @@ Next for speed: a real Pi 4 maps the framebuffer uncached, where reading it back
 is slow; drawing into a cached back buffer and copying out changed rectangles would fix
 that, and needs more memory for the display server than its 1 MiB slot.
 
+Fixed: the desktop froze with 8 windows waiting. The display holds each waiting window's
+call until it has an event, and the kernel gives a task 8 reply slots for its 12 windows.
+With 8 held, the next call (Notes asking for a window, from the dock) made every receive
+fail as full; the display retried for ever and no key or click reached anyone. It now holds
+at most 7, so a call always finds a slot free: past that, the window that has waited
+longest is answered with no event and its program asks again a moment later (`app_wait`,
+every 100 ms), answered at once while the slots stay taken. `test/freeze.sh` opens Notes
+with 8 windows waiting and then shows all 12 (11 waiting), checks keys and clicks still
+reach the apps, and that nothing spins; with the old display it freezes.
+
 ## 8. A bounded kernel
 
 Prove how much kernel memory each operation can use, and preallocate per task, so no
@@ -203,8 +213,8 @@ lost a mapping: the kernel does not say which did, and it now takes a few millis
 
 Done too: the trusted base at its limits. `test/chaos.sh` runs one program from the card
 (`user/progs/chaos.c`) under seven names into all six open slots, again and again: every
-per-task limit at once (64 capabilities and 8192 mappings each, the display's 8 reply slots
-all held), every way a program ends (it exits, it faults, `kill` while it waits on the
+per-task limit at once (64 capabilities and 8192 mappings each, more windows waiting on
+the display than it has reply slots), every way a program ends (it exits, it faults, `kill` while it waits on the
 display, in the middle of a round, asleep), thirty restarts of one slot beside five stopped
 programs that still hold 8192 mappings each, windows until the display refuses one, four
 busy programs on the four cores, and grants nobody asked for. The machine layer reports the

@@ -9,8 +9,9 @@
 #   2. Every limit at once: hog in all six slots. Each derives capabilities until the kernel
 #      says full (64), maps all 8192 pages of its window, writes and reads back a 16 KiB file,
 #      grants the display its spare run 100 times, and waits on its window: with Notes and
-#      Terminal the display holds all 8 of its reply slots. The system must still work
-#      (Terminal writes and reads a file); then each is killed with its call outstanding.
+#      Terminal 8 windows wait, one more than the display holds (test/freeze.sh). The
+#      system must still work (Terminal writes and reads a file); then each is killed with
+#      its call outstanding.
 #   3. Thirty restarts of slot 10, while slots 11 to 15 keep five stopped hogs' 8192
 #      mappings (every start rebuilds all 18 tasks' tables and walks those lists): hog killed
 #      waiting on the display, busy killed mid-round, hogf stopped by its own fault, nap

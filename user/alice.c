@@ -99,6 +99,10 @@ __attribute__((section(".text.start"))) void _start(void) {
             put_s(&l, "alice: SECRET CHANGED\n");
             flush(&l);
         }
+        if (e.status != OK || e.x[1] == EV_NONE) {   /* no event: ask again in a moment (app_wait) */
+            sleep_ms(WAIT_AGAIN_MS);
+            continue;
+        }
         if (e.status == OK && e.x[1] == EV_CLOSE) {
             put_s(&l, "alice: window closed, exiting\n");
             flush(&l);

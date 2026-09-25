@@ -65,11 +65,25 @@ static inline int app_raise(const char *name) {
     return r.status == OK && r.x[1] == 0;
 }
 
-/* Wait for the next event. `dirty`: the app redrew its pixels since it last asked. */
+/* The display holds at most 7 waiting windows' calls (the kernel gives it 8 reply slots, and
+   it keeps one free). With more windows waiting, it answers the one that has waited longest
+   with no event (EV_NONE), and answers again at once, with no event, while that window has
+   none and the slots are still taken: a program that waits must then ask again only after
+   a moment, as app_wait does, or it and the display spin. */
+#define WAIT_AGAIN_MS 100
+
+/* Wait for the next event (never EV_NONE). `dirty`: the app redrew its pixels since it last
+   asked. */
 static inline struct event app_wait(int dirty) {
-    struct res e = sys(SYS_CALL, ENDPOINT, OP_WAIT, (u64)dirty, 0, 0);
-    struct event ev = {e.status == OK ? e.x[1] : EV_NONE, e.x[2], e.x[3]};
-    return ev;
+    for (;;) {
+        struct res e = sys(SYS_CALL, ENDPOINT, OP_WAIT, (u64)dirty, 0, 0);
+        if (e.status == OK && e.x[1] != EV_NONE) {
+            struct event ev = {e.x[1], e.x[2], e.x[3]};
+            return ev;
+        }
+        dirty = 0;               /* the display drew it when it took the call */
+        sleep_ms(WAIT_AGAIN_MS);
+    }
 }
 
 /* The next event if there is one, EV_NONE if not: never blocks. For a program that keeps

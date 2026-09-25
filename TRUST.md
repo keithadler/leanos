@@ -231,6 +231,17 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   QEMU the host's serial bridge is too). The display sees every copy and paste, as it
   already sees every key and every window's pixels. The clipboard lives only in its memory
   and is gone when leanos restarts.
+- The display server's reply slots. It holds a waiting window's call (OP_WAIT) until it has
+  an event for it, and the kernel gives it 8 reply slots (`task_bounded`) for up to 12
+  windows. It holds at most 7, so a new call always finds one free; past that, the window
+  that has waited longest is answered with no event and its program asks again a moment
+  later (`app_wait` in `user/app.h`, every 100 ms), and is answered at once, with its
+  events or none, while the slots stay taken. That rule is the display server's C
+  (`on_wait` and `park_oldest` in `user/display.c`), trusted, not proved. Before it, with 8
+  windows waiting, the next call made every receive the display tried fail as full, and no
+  key or click reached anyone again until a restart (`test/freeze.sh`). A program that asks
+  again at once, not after a moment, spins with the display while it is parked: that costs
+  time, not authority.
 - The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
   then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.
