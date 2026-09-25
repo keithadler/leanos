@@ -16,7 +16,7 @@ leanos splits the kernel in two:
 These hold for every state the kernel can reach: `init`, then any sequence of system calls
 (including starting and restarting programs) with any arguments, timer ticks, faults,
 interrupts, result loads, and boot checks with any measurement. They are in
-`LeanOS/Proofs.lean`.
+`LeanOS/Proofs.lean`, and the bounds on the state in `LeanOS/Bounds.lean`.
 
 Tasks can hand each other memory, so the central guarantee is about where memory can go.
 The boot manifest (`initCaps` in `Kernel.lean`) fixes which task can send with the grant
@@ -51,6 +51,8 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `irq_wakes_holder` | An interrupt wakes only a task given that interrupt's capability at boot. |
 | `uart_confined`, `uart_irq_only_input` | Only the input driver can ever hold the UART's registers or its interrupt. |
 | `start_revokes` | When `start` has the machine layer load slot `k`, the slot holds the manifest's fresh, unverified task, and no other task holds a capability to or a mapping of any of the slot's frames, is waiting to send a message granting one, or holds a reply slot for the old run. |
+| `task_bounded` | Every task holds at most 64 capabilities, at most 8192 mappings (no two for the same virtual page), at most 8 reply slots and at most 7 result registers. |
+| `state_bounded`, `stateSize_le` | When the machine layer calls the kernel as it does (`Driven`: a boot check hands over the eight words of a SHA-256, as `exVerify` does, and only the lines in `irqLines` fire), the state also has exactly 18 tasks, each measured with at most eight words, at most one pending entry per interrupt line, eight DMA addresses and eight transfer sizes for the USB channels, and three other cores: in all, at most 447,556 heap objects. What that means in bytes is below, under `rt/runtime.c`. |
 | `launch_fixed`, `only_display_launches` | Launch capabilities never move: only the display server starts the manifest's apps, and only Terminal starts the open slots. Nothing can restart the display server, the input driver, the file server or the tests. |
 
 Revocation rests on one more invariant: every run of frames a task holds stays inside one
@@ -73,12 +75,13 @@ MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 97 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 102 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a level-3 table that keeps the
 wrong mapping of a page or maps page 0 where nothing is mapped, a `start` that forgets to take back
-mappings, capabilities, waiting grants or reply slots, and so on) and checks that the proofs reject every one.
+mappings, capabilities, waiting grants or reply slots, a `map` that keeps the old mappings of the pages
+it maps, a `derive`, a grant or a call past its limit, and so on) and checks that the proofs reject every one.
 
 `make test` checks that each theorem rests only on Lean's standard axioms (`propext`,
 `Classical.choice`, `Quot.sound`) and never on `sorry`.
@@ -108,9 +111,42 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - One core at a time: the machine layer's kernel lock keeps every other core out while
   one runs compiled Lean code or the runtime, which are not safe to run on two cores at
   once (reference counts and the allocator are not atomic).
-- The heap has a fixed size. A task deriving capabilities up to the limit of 64 each can
-  use kernel memory but cannot exhaust it. If the heap runs out, the kernel panics, which
-  denies service but never breaks isolation.
+- The kernel heap has a fixed size: from the end of the kernel image and its stacks
+  (`__heap_start`, `arch/kernel.ld`; 0x331000 in this build) to the frame pool at 64 MiB
+  (`FRAME_BASE`, `arch/arch.h`), 63,762,432 bytes (60.8 MiB). `stateSize_le` proves that
+  the kernel's state, between two kernel entries, is at most 447,556 heap objects, whatever
+  the tasks do. What that is in bytes rests on the runtime's object layout, which is
+  trusted, not proved:
+  - A number below 2^63 is stored in the pointer itself (`lean_box`), not on the heap, and
+    so are a `Bool` and a constructor without fields. Every number in the state stays below
+    2^63 (above; a larger one stops the machine), so the state's numbers take no heap. The
+    count relies on this: a larger number would be an object of its own.
+  - An object with n pointer fields and b bytes of scalars asks for 8 + 8n + b bytes, which
+    `lean.h` passes to `malloc` with 8 bytes more; `malloc` rounds that up to a multiple of
+    16 and adds a 16-byte header. So a list cell, an `Obj`, a `Rights`, an `Option`'s `some`
+    and a `Status` with fields take 48 bytes each, a `Cap` or a `Mapping` 64, a `Task` or a
+    `Msg` 80, and the one `KState` 112 (as the generated C allocates them:
+    `lean_alloc_ctor(0, 6, 0)` for a task, and so on).
+
+  So the state takes at most 447,555 × 80 + 112 = 35,804,512 bytes (34.1 MiB). Counting
+  each kind at its own size, the bounds of `state_bounded` give less: a task at most
+  1,325,600 bytes with its list cell (1,310,720 of them for 8192 mappings of 160 bytes
+  each: the cell, the `Mapping` and its `Rights`), 18 tasks 23,860,800, and the whole state
+  23,861,920 bytes (22.8 MiB), 37% of the heap. For scale: in `test/stack.sh`, with one
+  task holding all 8192 mappings, the heap's peak is 1,276,960 bytes.
+
+  Not proved: the memory a step uses while it computes the next state. A step builds the
+  new state from the old; compiled Lean updates an object in place when nothing else holds
+  it, and copies it otherwise, so until the step ends it may hold an old and a new copy of
+  what it changes (for `start`, every task's lists). Two whole states (45.5 MiB) would still
+  fit, but that is an argument, not a proof. Garbage is freed as soon as its reference
+  count reaches zero (`lean_dec_ref_cold`; Lean's data has no cycles), so it does not pile
+  up from one step to the next; that is the runtime's code, trusted. The allocator never
+  gives memory back to its bump pointer: a freed block waits on its size's free list, so
+  the heap must hold each size's peak, and the state uses four sizes (48, 64, 80 and 112
+  bytes). The machine layer's own objects (each call's `Reply`, 160 bytes, and the
+  constants built once at boot) come on top. If the heap runs out anyway, the kernel
+  panics, which denies service but never breaks isolation.
 
 **`arch/boot.S` and `arch/kmain.c` (~1,350 lines)**
 - Storing the tables: `mmu_init`, `tables_init` and `build_user_pages` must store each
@@ -237,7 +273,8 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   capabilities (`dropRange`, `runMaps`, `app`, `snoc`, `len`, `removeNth`, `keepBacked`,
   `dropCaps`, `dropMaps`) run as loops, each proved equal to its definition, so how deep
   the stack goes does not depend on how many a task holds. What recursion is left walks
-  short lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines.
+  short lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines
+  (at most two; `task_bounded`, `state_bounded`).
   The deepest use measured is about 2 KiB, with a task holding all 8192 mappings
   (`test/stack.sh`; it was about 900 KiB before the loops). Nothing proves a bound, so the
   stack is painted at boot and its bottom is checked on every return to user mode: an

@@ -221,6 +221,19 @@ mutant "the scheduler ignores what the other cores run" \
   "def runnable (busy : List Nat) (ts : List Task) (j : Nat) : Bool := isReady ts j && !memNat j busy" "def runnable (busy : List Nat) (ts : List Task) (j : Nat) : Bool := isReady ts j"
 mutant "enter forgets one core" \
   "def enter (s : KState) (c b0 b1 b2 : Nat) : KState := { s with cur := c, busy := b0 :: b1 :: b2 :: .nil }" "def enter (s : KState) (c b0 b1 b2 : Nat) : KState := { s with cur := c, busy := b0 :: b1 :: .nil }"
+# the state's bounds (LeanOS/Bounds.lean): none of these may let a list in the state grow
+mutant "map keeps the old mappings of the pages it maps" \
+  "                                               (dropRange vpn count t.maps)," "                                               t.maps,"
+mutant "derive ignores the limit of 64 capabilities" \
+  "      if len t.caps < maxCaps then
+        ret s { t with caps := snoc t.caps" "      if true then
+        ret s { t with caps := snoc t.caps"
+mutant "a grant ignores the limit of 64 capabilities" \
+  "      if len u.caps < maxCaps then" "      if true then"
+mutant "a call ignores the limit of 8 reply slots" \
+  "  if len callers ≤ maxCallers then" "  if true then"
+mutant "an interrupt that is already pending is queued again" \
+  "  | none => if hasLine n s.pending then s else { s with pending := snoc s.pending n }" "  | none => { s with pending := snoc s.pending n }"
 mutant_journal "the journal writes home before the commit" \
   "  jw J 0 (t.map Prod.snd) ++
     (J, .header t.length (t.map Prod.fst) (csum (t.map Prod.snd))) :: (t ++ (J, clean) :: .nil)" "  jw J 0 (t.map Prod.snd) ++ t ++

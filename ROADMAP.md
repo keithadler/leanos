@@ -133,7 +133,32 @@ tasks, a task's reply slots, the pending interrupt lines. `test/stack.sh` has a 
 all 8192 pages of its window and makes the kernel walk them end to end: the stack's peak
 went from 918,384 bytes to 2,128. Each core's stack is 64 KiB again, still painted and
 checked on every return to user mode, and the 7.75 MiB this frees went to the kernel heap.
-Next here: prove the bound, now that it no longer depends on what tasks hold.
+The stack's bound no longer depends on what tasks hold, but it is measured, not proved.
+
+Done: the kernel's state is bounded (`LeanOS/Bounds.lean`). No sequence of system calls,
+with any arguments, makes a list in the state grow past a fixed length. In every reachable
+state every task holds at most 64 capabilities, 8192 mappings, 8 reply slots and 7 result
+registers (`task_bounded`). The mappings needed a new invariant: no two of a task's
+mappings are for the same virtual page. `map` keeps it by dropping the old mappings of the
+range before it adds the new run, `start` resets a slot to its manifest's pages, and
+everything else only removes mappings; with every mapping in the 8192-page window
+(`maps_in_range`), there can be no more than 8192. With the machine layer's inputs as they
+are (a measurement is the eight words of a SHA-256, and only the manifest's two interrupt
+lines fire), the rest is bounded too: 18 tasks, at most one pending entry per interrupt
+line, eight words per measurement, eight USB channel shadows of each kind, three other
+cores (`state_bounded`). In all, the state is at most 447,556 heap objects
+(`stateSize_le`), which under the runtime's object layout is at most 22.8 MiB of the
+60.8 MiB kernel heap (TRUST.md has the arithmetic, and what it trusts). Five new mutants
+break a bound (a `map` that keeps the old mappings of the pages it maps, a `derive` or a
+grant past 64 capabilities, a call past 8 reply slots, an interrupt queued twice), and the
+proofs reject each. Before, no proof caught the `derive`, the grant or the call, and the
+other two only broke a proof script, not a stated theorem.
+
+What is proved is the live state between two kernel entries. Next here: the memory a
+step uses while it computes the next state, which may briefly hold an old and a new copy
+of what it changes (argued in TRUST.md, not proved); that the runtime frees garbage as
+soon as nothing holds it (its reference counting, trusted); preallocating each task's
+share when it starts; and the kernel stack's bound.
 
 Done too: page tables in one pass. The machine layer asked Lean for a task's 8192 level-3
 words one at a time (`l3Word`), and each answer walked the task's mappings from the start,

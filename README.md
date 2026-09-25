@@ -71,8 +71,8 @@ This is the start. The next steps, in order:
 
 ## What is proved
 
-65 theorems in [`LeanOS/Proofs.lean`](LeanOS/Proofs.lean), [`LeanOS/Tables.lean`](LeanOS/Tables.lean)
-and [`LeanOS/Journal.lean`](LeanOS/Journal.lean), for every state the kernel can reach,
+68 theorems in [`LeanOS/Proofs.lean`](LeanOS/Proofs.lean), [`LeanOS/Tables.lean`](LeanOS/Tables.lean),
+[`LeanOS/Bounds.lean`](LeanOS/Bounds.lean) and [`LeanOS/Journal.lean`](LeanOS/Journal.lean), for every state the kernel can reach,
 under any sequence of system calls with any arguments. Among them:
 
 - **Authority flows only along grants.** A task holds a frame of memory only if a chain of
@@ -92,6 +92,9 @@ under any sequence of system calls with any arguments. Among them:
 - **The clock never goes back**, and `sleep` never ends early.
 - **Scheduling**: the scheduler picks only ready tasks, and never gives a core a task
   another core is running.
+- **The kernel's memory is bounded.** No system call can make the kernel's state grow past
+  a fixed size: at most 64 capabilities, 8192 mappings and 8 reply slots per task, and
+  447,556 heap objects in all (`stateSize_le`), at most 22.8 MiB under the runtime's layout.
 - **Down to the page tables**: Lean computes every translation-table word, and against a
   model of the Armv8-A MMU, user mode reaches exactly its own mappings and nothing of the
   kernel's (`walk_eq_view`).
@@ -105,7 +108,7 @@ declarations, 0 rejected). Start with
 or [`crash_atomic`](https://keithadler.github.io/leanviz/?p=leanos#/d/LeanOS.Journal.crash_atomic).
 
 Every theorem rests only on Lean's standard axioms (checked by `make test`), and
-`make mutants` breaks the kernel in 97 specific ways and checks that the proofs reject every
+`make mutants` breaks the kernel in 102 specific ways and checks that the proofs reject every
 one. [TRUST.md](TRUST.md) says exactly what is proved and what is trusted: the Lean
 compiler, a small runtime shim, the machine layer, the MMU model, and the hardware.
 
@@ -143,7 +146,7 @@ make test     # proofs, axioms, boot transcript, pixels on screen, apps, USB, ne
 ```
 
 ```bash
-make mutants  # break the kernel 97 ways; the proofs must reject each (about 15 minutes)
+make mutants  # break the kernel 102 ways; the proofs must reject each (about 15 minutes)
 ```
 
 Things to try once it is up:
@@ -184,6 +187,7 @@ What you need to know first:
 |---|---|
 | [`LeanOS/Kernel.lean`](LeanOS/Kernel.lean) | Every kernel decision: capabilities, mappings, system calls, scheduling, the boot manifest. Compiled into the image. |
 | [`LeanOS/Proofs.lean`](LeanOS/Proofs.lean) | The theorems about `Kernel.lean`. |
+| [`LeanOS/Bounds.lean`](LeanOS/Bounds.lean) | The proof that the kernel's state stays within a fixed number of heap objects. |
 | [`LeanOS/Arm.lean`](LeanOS/Arm.lean), [`LeanOS/Tables.lean`](LeanOS/Tables.lean) | A model of the MMU's translation walk, and the proof that the page tables give user mode exactly its mappings. |
 | [`LeanOS/JournalModel.lean`](LeanOS/JournalModel.lean), [`LeanOS/Journal.lean`](LeanOS/Journal.lean) | The file system journal's model, and the proof that a power cut never leaves a change half done. |
 | [`arch/`](arch) | The machine layer: boot, exception vectors, MMU, interrupts, four cores, the SD card. It carries out what the Lean kernel returns. |
