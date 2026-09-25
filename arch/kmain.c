@@ -790,6 +790,15 @@ static void do_syscall(uint64_t cur) {
         kputs(" started\n");
         measure_and_verify(k);
         build_user_pages(k);
+        /* The heap once a start is done: the same programs in the same slots must give the
+           same number, however often a slot was restarted (test/chaos.sh). */
+        kputs("leanos: kernel heap ");
+        kputdec(rt_heap_live());
+        kputs(" bytes live, ");
+        kputdec(rt_heap_peak());
+        kputs(" peak, after starting ");
+        kputs(names[k]);
+        kputs("\n");
     } else if (remap) build_user_pages(cur);
 }
 

@@ -201,6 +201,21 @@ rows by the host's clock):
 Starting a program still rebuilds every task's tables, not only those of the tasks that
 lost a mapping: the kernel does not say which did, and it now takes a few milliseconds.
 
+Done too: the trusted base at its limits. `test/chaos.sh` runs one program from the card
+(`user/progs/chaos.c`) under seven names into all six open slots, again and again: every
+per-task limit at once (64 capabilities and 8192 mappings each, the display's 8 reply slots
+all held), every way a program ends (it exits, it faults, `kill` while it waits on the
+display, in the middle of a round, asleep), thirty restarts of one slot beside five stopped
+programs that still hold 8192 mappings each, windows until the display refuses one, four
+busy programs on the four cores, and grants nobody asked for. The machine layer reports the
+kernel heap after every start, and with the same programs in the same slots that number is
+the same to the byte after all thirty restarts, and at the end back at its baseline but for
+192 bytes: the display's list of reply slots, grown once to its bound of 8 (the peak:
+5.8 MB). Nothing in the runtime or the machine layer gave way. The file server did: it kept a
+capability granted by a plain send, which it does not answer, and 58 of them left no room
+for the one every file request carries, so no file could be read or written again until a
+restart. It lets go of them now.
+
 ## 9. A system people can use — files on the SD card, done; the rest, next
 
 Done: a file server in user space, with its own endpoint, keeps up to 48 files of up to

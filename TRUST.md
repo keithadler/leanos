@@ -138,7 +138,12 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   1,325,600 bytes with its list cell (1,310,720 of them for 8192 mappings of 160 bytes
   each: the cell, the `Mapping` and its `Rights`), 18 tasks 23,860,800, and the whole state
   23,861,920 bytes (22.8 MiB), 37% of the heap. For scale: in `test/stack.sh`, with one
-  task holding all 8192 mappings, the heap's peak is 1,276,960 bytes.
+  task holding all 8192 mappings, the heap's peak is 1,276,960 bytes. In `test/chaos.sh`,
+  with six programs from the card each holding 64 capabilities and 8192 mappings at once,
+  then one slot restarted 30 times beside five of them, it is 5,787,136 bytes. The machine
+  layer reports the heap after every start (`leanos: kernel heap N bytes live`), and with
+  the same programs in the same slots that number is the same to the byte every time: what
+  a stopped, faulted or exited program held is all freed when its slot starts again.
 
   Not proved: the memory a step uses while it computes the next state. A step builds the
   new state from the old; compiled Lean updates an object in place when nothing else holds
@@ -411,8 +416,13 @@ QEMU's model of them, because leanos has only run under QEMU.
   (`test/crash.sh`), not proved; and both assume the card writes a 512-byte block whole and in the order asked,
   which SD cards generally do but do not promise.
 - Capability lists are bounded (64 per task) but a server that is sent grants it does not
-  want must drop them; the display server and the file server do. A client that floods a
-  server with grants between the server's drops is not stopped by the kernel.
+  want must drop them, from a plain send as from a call; the display server, the file
+  server and the network service do. The file server did not, for a plain send (which
+  it does not answer), until `test/chaos.sh` found it: a program from the card sent it 58
+  grants that way, its 64 capabilities were full, and since every file request carries a
+  grant, from then on no program could read or write a file, and Terminal could run
+  nothing, until the machine restarted. A client that floods a server with grants between
+  the server's drops is not stopped by the kernel.
 - Confinement is about capabilities. A task that holds a frame can still copy its bytes
   into a message it sends, so the proofs bound what each task can *hold*, and a task on a
   grant path (the server, here) is trusted with what passes through it.

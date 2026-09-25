@@ -1019,7 +1019,12 @@ __attribute__((section(".text.start"))) void _start(void) {
     for (;;) {
         struct res r = sys1(SYS_RECV, EP);
         u64 badge = r.x[1], op = r.x[2], arg = r.x[3], grant = r.x[5], slot = r.x[6];
-        if (!slot) continue;              /* a plain send: nobody to answer */
+        if (!slot) {                      /* a plain send: nobody to answer */
+            /* A capability it grants is let go of all the same: kept, 58 of them would
+               fill the server's 64, and every request carries one (test/chaos.sh). */
+            if (grant) sys1(SYS_DROP, grant - 1);
+            continue;
+        }
         u64 code = FS_BAD, value = 0, more = 0;
         if (grant) {
             struct res info = sys1(SYS_CAPINFO, grant - 1);
