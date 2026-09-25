@@ -133,7 +133,25 @@ tasks, a task's reply slots, the pending interrupt lines. `test/stack.sh` has a 
 all 8192 pages of its window and makes the kernel walk them end to end: the stack's peak
 went from 918,384 bytes to 2,128. Each core's stack is 64 KiB again, still painted and
 checked on every return to user mode, and the 7.75 MiB this frees went to the kernel heap.
-The stack's bound no longer depends on what tasks hold, but it is measured, not proved.
+
+Done: the stack's bound, from the code. `tools/stackcheck.py` computes how deep each kernel
+stack can go, and `make test` fails if that is over half the stack (`test/stackcheck.sh`).
+Each C file of the kernel is compiled again with `-fstack-usage` and the shipped flags, so
+clang reports every function's frame; the tool checks the code is the shipped code, reads
+the calls from the linked image, and walks the graph from `kmain`, `secondary_main` and
+`trap` (below the 288-byte register frame of an exception). Every recursion it finds must
+be in its table with a bound (the task list, 19 calls deep with the empty tail, for
+`revokeAll`, `wakeSleepers`, `setNth` and `mkTasksFrom`; a task's reply slots, 9, for
+`placeCaller` and `forgetCaller`; the pending lines, 3, for `dropLine`), from
+`state_bounded` and `task_bounded`. Indirect calls are traced to the addresses loaded
+before them: the runtime's one-time initializers at each of their calls, and `trap`'s
+conversion of message words; a call through a pointer from memory, a jump that is not a
+jump table, or a frame of variable size fails. The worst case is 6,016 bytes: 3,008 for
+the deepest system call (`start` taking back a slot's memory from every task), and a kernel
+exception on top of it. That is 2.8 times the deepest measured (2,128) and under a tenth
+of the 64 KiB stack. It rests on clang's frame sizes (checked against each function's
+own stack adjustments), on the call graph read from the image, and on each walk running
+over the list its bound is about, which is read from the code, not proved (TRUST.md).
 
 Done: the kernel's state is bounded (`LeanOS/Bounds.lean`). No sequence of system calls,
 with any arguments, makes a list in the state grow past a fixed length. In every reachable
@@ -157,8 +175,8 @@ other two only broke a proof script, not a stated theorem.
 What is proved is the live state between two kernel entries. Next here: the memory a
 step uses while it computes the next state, which may briefly hold an old and a new copy
 of what it changes (argued in TRUST.md, not proved); that the runtime frees garbage as
-soon as nothing holds it (its reference counting, trusted); preallocating each task's
-share when it starts; and the kernel stack's bound.
+soon as nothing holds it (its reference counting, trusted); and preallocating each
+task's share when it starts.
 
 Done too: page tables in one pass. The machine layer asked Lean for a task's 8192 level-3
 words one at a time (`l3Word`), and each answer walked the task's mappings from the start,

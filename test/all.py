@@ -27,9 +27,8 @@ OUT = os.path.join(ROOT, "build", "test")
 # Every test, in the order `make test` ran them, and about how long each takes alone
 # (seconds, on a 10-core Mac), to start the longest first.
 TESTS = {"boot": 4, "apps": 31, "programs": 25, "power": 8, "piimage": 3, "tamper": 8, "fuzz": 64,
-         "usb": 6, "touch": 5, "crash": 245, "bigprog": 14, "stack": 15, "edit": 9, "net": 23, "kill": 7, "web": 14,
-         "timezone": 25, "clipboard": 14,
-         "term-history": 14}
+         "usb": 6, "touch": 5, "crash": 245, "bigprog": 14, "stack": 15, "stackcheck": 5, "edit": 9, "net": 23,
+         "kill": 7, "web": 14, "timezone": 25, "clipboard": 14, "term-history": 14}
 # Tests that must not overlap: each group runs as one chain, in this order.
 CHAINS = [("net", "web", "timezone")]
 

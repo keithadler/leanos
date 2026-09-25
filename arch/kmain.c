@@ -808,11 +808,15 @@ static void load_result(uint64_t j) {
  * capabilities run as loops (the `@[csimp]` theorems in LeanOS/Kernel.lean), so how deep the
  * stack goes no longer depends on how many a task holds. What recursion is left walks short
  * lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines (at most
- * one of each). The deepest measured, with a task holding all 8192 mappings, is about 2 KiB
- * (test/stack.sh). Nothing proves the bound, so it is checked instead: the stack is painted
- * at boot, and every return to user mode checks that the bottom of the paint is intact.
- * Running past it stops the machine rather than letting the stack grow into the kernel's
- * other data. */
+ * one of each). tools/stackcheck.py computes the worst case from the code (clang's frame
+ * sizes, the calls in the linked image, and a bound for each of those recursions): 6,016
+ * bytes, with a kernel exception on top of the deepest system call, and `make test` fails if
+ * it passes half the stack. The deepest measured, with a task holding all 8192 mappings, is
+ * 2,128 bytes (test/stack.sh). The computation trusts clang, the call graph it reads and the
+ * recursion bounds it is given (TRUST.md), so the stack is still checked as well: it is
+ * painted at boot, and every return to user mode checks that the bottom of the paint is
+ * intact. Running past it stops the machine rather than letting the stack grow into the
+ * kernel's other data. */
 extern char __stack_bottom[], __stack_top[], __core_stacks[], __core_stacks_end[];
 #define STACK_SIZE 0x10000UL
 static char *stack_bottom(uint64_t c) { return c == 0 ? __stack_bottom : __core_stacks + (c - 1) * STACK_SIZE; }

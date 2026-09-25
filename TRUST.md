@@ -290,10 +290,53 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   the stack goes does not depend on how many a task holds. What recursion is left walks
   short lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines
   (at most two; `task_bounded`, `state_bounded`).
-  The deepest use measured is about 2 KiB, with a task holding all 8192 mappings
-  (`test/stack.sh`; it was about 900 KiB before the loops). Nothing proves a bound, so the
-  stack is painted at boot and its bottom is checked on every return to user mode: an
-  overflow stops the machine instead of corrupting kernel memory silently.
+  The deepest use measured is 2,128 bytes, with a task holding all 8192 mappings
+  (`test/stack.sh`; it was about 900 KiB before the loops).
+
+  The worst case is also computed from the code: `tools/stackcheck.py` (`make stackcheck`,
+  and `test/stackcheck.sh` in `make test`) finds how deep the stack can go from each place
+  the kernel starts on it: `kmain` on core 0, `secondary_main` on cores 1-3, and `trap`
+  below the 288 bytes of registers each exception entry in `arch/boot.S` saves, with one
+  kernel exception on top of the deepest of them (another 288 bytes and `trap`, which stops
+  the machine). Every recursion it finds must be in its table, with a bound: `revokeAll`,
+  `wakeSleepers`, `setNth` and `mkTasksFrom` walk the 18 tasks (19 calls deep, with the empty
+  tail), `placeCaller` and `forgetCaller` a task's reply slots (9), `dropLine` the pending
+  lines (3). Recursion not in the table, an indirect call it cannot resolve, a frame of
+  variable size (alloca, a variable-length array) or a worst case over 32 KiB, half the
+  stack, fails the check. The worst case is 6,016 bytes: 3,008 for a system call (`start`
+  taking back a slot's memory: `revokeAll` over the tasks, then `forgetCaller` over one
+  task's reply slots, then an allocation that can fail into `kpanic`), and a kernel
+  exception on top of that. What it trusts:
+  - clang's frame sizes. Each C file of the kernel (`arch/`, `rt/`, the Lean kernel's and
+    the standard library's generated C) is compiled a second time into `build/stack/`, with
+    the shipped flags and `-fstack-usage`; the tool checks that each object's code and
+    relocations are the shipped object's, that every frame is static, and that each
+    function's own stack adjustments add up to clang's number.
+  - The call graph, read from `build/leanos.elf` with `llvm-objdump`. Every branch that
+    leaves a function must go to a function's start; every `br` must be a jump table, whose
+    entries the tool reads from the image and finds inside the function; every `blr` must be
+    traced back, through the function's code, to the function addresses put in its register
+    (in `trap`, the message-word conversion `arg` or `msg_word`), or be the runtime's
+    one-time initialization of closed terms (`lean_obj_once_cold` and its kin), whose
+    `init` is traced the same way at each call. A call through a pointer loaded from memory
+    fails. Lean closures are never applied: no `lean_apply_*` is in the image. Every C
+    function in the image must be reached from the three entries, and the assembly may call
+    only them. Called functions keep x19-x28, as the AArch64 calling convention says.
+  - The recursion bounds. Each is a proved bound on a list in the state (`state_bounded`:
+    18 tasks, at most two pending lines, eight USB shadows; `task_bounded`: at most 8 reply
+    slots), but that each walk runs over such a list, or over one no longer, is read from
+    `Kernel.lean`, not proved. One cycle is in the call graph only: `kpanic` draws the panic
+    screen, which asks `leanos_fb_width` and `leanos_fb_height` for its size, and they could
+    free their argument (`lean_dec_ref_cold`, which can panic), but `kpanic` passes a
+    scalar, which is never freed.
+  - Exceptions do not nest further. Every exception entry masks interrupts, SError and FIQ,
+    and no code in the image unmasks them (the tool checks nothing writes DAIF), so only a
+    synchronous exception can come in the kernel; it goes straight to `kpanic`, whose own
+    path is taken not to fault again.
+  The check covers the image `make` builds for QEMU; the Pi's (`make pi-image`) differs
+  only in `poweroff`. The stack is still painted at boot and its bottom checked on every
+  return to user mode, for what the tool trusts: an overflow stops the machine instead of
+  corrupting kernel memory silently.
 - User mode may read the processor's virtual counter (CNTKCTL_EL1.EL0VCTEN), for
   animations and timeouts. This gives no new power: a task could already time itself by
   counting loops. Timing side channels remain out of scope.

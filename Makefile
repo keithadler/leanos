@@ -6,6 +6,7 @@
 #   make test     boot it, start the apps, and check the transcripts and the screens (JOBS=N at once)
 #   make proofs   check the proofs only
 #   make mutants  break the kernel on purpose and check the proofs notice
+#   make stackcheck  the kernel stack's worst case, computed from the code (make test runs it)
 
 TOOLCHAIN := $(shell cat lean-toolchain | sed 's|/|--|; s|:|---|')
 LEAN_HOME := $(HOME)/.elan/toolchains/$(TOOLCHAIN)
@@ -37,7 +38,7 @@ USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
 ARCH_O := build/boot.o build/kmain.o build/sd.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
 
-.PHONY: all run test mutants proofs clean pi-image
+.PHONY: all run test mutants proofs clean pi-image stackcheck
 ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files launcher open)
 
 all: $(ASSET_BLOBS) build/kernel8.img build/sd-template.img build/sd-desktop.img proofs
@@ -239,6 +240,37 @@ QEMU_ARGS := -M raspi4b -display none -serial stdio -semihosting -kernel build/k
 
 run: build/kernel8.img $(SD_IMAGE)
 	$(QEMU) $(QEMU_ARGS)
+
+# The kernel stack's worst case, from the code (tools/stackcheck.py): every C file of the kernel
+# compiled again into build/stack/ with the same flags and -fstack-usage, so clang writes each
+# function's frame size beside the object (NAME.su). The tool checks each object has the same
+# code as the shipped one, then walks the call graph of build/leanos.elf. test/stackcheck.sh
+# runs it as part of `make test`.
+STACK_O := $(patsubst build/%,build/stack/%,$(filter-out build/boot.o,$(ARCH_O))) \
+  $(patsubst build/c/%,build/stack/%,$(INIT_O))
+
+build/stack/Kernel.o: $(KERNEL_LEAN_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(LEANC_FLAGS) -fstack-usage -c $< -o $@
+
+build/stack/Manifest.o: $(MANIFEST_LEAN_C)
+	@mkdir -p $(dir $@)
+	$(CC) $(LEANC_FLAGS) -fstack-usage -c $< -o $@
+
+build/stack/Init_%.o: build/c/Init_%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(LEANC_FLAGS) -fstack-usage -c $< -o $@
+
+build/stack/%.o: arch/%.c arch/arch.h build/user/font.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Ibuild/user -Wall -Werror -fstack-usage -c $< -o $@
+
+build/stack/%.o: rt/%.c arch/arch.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Wall -Wno-unused-parameter -fstack-usage -c $< -o $@
+
+stackcheck: build/leanos.elf $(STACK_O)
+	python3 tools/stackcheck.py --self-test
 
 # The tests run several at once (JOBS=N: at most N; JOBS=1: one after the other), each in
 # its own folder, build/test/NAME, where its output stays (test/all.py).
