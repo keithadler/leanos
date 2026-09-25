@@ -267,7 +267,8 @@ static void set_used(unsigned cl, int on) {
     S->map_dirty[b / 8] |= (unsigned char)(1 << (b % 8));
 }
 
-/* A new, zeroed cluster, or 0 if the card is full. */
+/* A new, zeroed cluster, or 0 if the card is full. It may be one this request freed and
+   still has in memory (a file's pointers, read while it was emptied): zeroed all the same. */
 static unsigned alloc_cluster(void) {
     for (unsigned k = 0; k < S->sb.clusters; k++) {
         unsigned cl = (S->rover + k) % S->sb.clusters;
@@ -275,7 +276,9 @@ static unsigned alloc_cluster(void) {
         set_used(cl, 1);
         S->free_clusters--;
         S->rover = cl + 1;
-        if (!cluster(cl, 0)) return 0;
+        char *p = cluster(cl, 0);
+        if (!p) return 0;
+        zero(p, CLUSTER);
         dirty(cl);
         return cl;
     }
@@ -342,10 +345,13 @@ static unsigned bmap(unsigned ino, unsigned idx, int make) {
     return p[idx];
 }
 
-/* Clusters a write of `n` bytes at `off` may need, pointer clusters included. */
-static unsigned clusters_needed(u64 off, u64 n) {
-    if (!n) return 0;
-    return (unsigned)((off + n - 1) / CLUSTER - off / CLUSTER + 1) + 3;
+/* Clusters a write of `n` bytes at `off` may need: those the file does not have yet, and 3
+   more for pointer clusters if it needs any. Bytes written over need none, so a full card
+   still takes them (a folder's entry changed in place: a rename, a delete). */
+static unsigned clusters_needed(unsigned ino, u64 off, u64 n) {
+    unsigned need = 0;
+    for (u64 idx = off / CLUSTER; n && idx <= (off + n - 1) / CLUSTER; idx++) need += !bmap(ino, (unsigned)idx, 0);
+    return need ? need + 3 : 0;
 }
 
 /* Free every cluster of the file, and make it empty. The pointer clusters are read one
@@ -398,7 +404,7 @@ static u64 file_read(unsigned ino, u64 off, char *dst, u64 max) {
 
 static int file_write(unsigned ino, u64 off, const char *src, u64 n) {
     struct inode *in = &INODES[ino];
-    if (clusters_needed(off, n) > S->free_clusters) return FS_FULL;
+    if (clusters_needed(ino, off, n) > S->free_clusters) return FS_FULL;
     u64 done = 0;
     while (done < n) {
         u64 at = off + done, in_cl = at % CLUSTER, take = CLUSTER - in_cl;
@@ -752,7 +758,11 @@ static u64 share_op(u64 badge, u64 op, u64 arg, char *buf, u64 *value) {
                 u64 code = serve_op(FS_STAT, 0, buf, &v, &m);
                 if (code == FS_NOT_FOUND) code = serve_op(FS_MKDIR, 0, buf, &v, &m);
                 else if (m != FS_DIR) code = FS_NOT_DIR;
-                if (code != FS_OK) return code;
+                if (code != FS_OK) {      /* a folder not made (the card full): as serve() does */
+                    load_metadata();
+                    op_begin();
+                    return code;
+                }
             }
             if (!p[i]) break;
         }
@@ -819,26 +829,37 @@ static void claim_file(unsigned char *map, unsigned ino) {
 }
 
 /* Walk the tree from the top folder: count what is there, drop entries that point at
-   nothing, and remember which inodes are reachable. */
-static void walk_tree(unsigned dir, int depth, unsigned *files, unsigned *dirs) {
-    if (depth > 32) return;
-    struct inode *d = &INODES[dir];
-    for (u64 at = 0; at + sizeof(struct dirent) <= d->size; at += sizeof(struct dirent)) {
-        struct dirent e;
-        file_read(dir, at, (char *)&e, sizeof e);
-        if (!e.ino) continue;
-        int bad = e.ino >= S->sb.inode_count || e.ino < 2 || !INODES[e.ino].kind ||
-                  INODES[e.ino].kind != e.kind || (S->seen_ino[e.ino / 8] & (1 << (e.ino % 8)));
-        if (bad) {
-            dir_remove(dir, (long)at);
-            S->repaired++;
-            continue;
+   nothing, and remember which inodes are reachable. In rounds over the inodes: each folder
+   found is read once, so a tree of any depth is walked without recursion (a path of 200
+   bytes goes 100 folders down, and a folder moved into another can go deeper still). */
+static void walk_tree(unsigned *files, unsigned *dirs) {
+    unsigned char walked[MAX_INODES / 8];
+    zero((char *)walked, sizeof walked);
+    for (int again = 1; again;) {
+        again = 0;
+        for (unsigned dir = 1; dir < S->sb.inode_count; dir++) {
+            if (!(S->seen_ino[dir / 8] & (1 << (dir % 8))) || (walked[dir / 8] & (1 << (dir % 8))) ||
+                INODES[dir].kind != FS_DIR)
+                continue;
+            walked[dir / 8] |= (unsigned char)(1 << (dir % 8));
+            again = 1;
+            struct inode *d = &INODES[dir];
+            for (u64 at = 0; at + sizeof(struct dirent) <= d->size; at += sizeof(struct dirent)) {
+                struct dirent e;
+                file_read(dir, at, (char *)&e, sizeof e);
+                if (!e.ino) continue;
+                int bad = e.ino >= S->sb.inode_count || e.ino < 2 || !INODES[e.ino].kind ||
+                          INODES[e.ino].kind != e.kind || (S->seen_ino[e.ino / 8] & (1 << (e.ino % 8)));
+                if (bad) {
+                    dir_remove(dir, (long)at);
+                    S->repaired++;
+                    continue;
+                }
+                S->seen_ino[e.ino / 8] |= (unsigned char)(1 << (e.ino % 8));
+                if (e.kind == FS_DIR) (*dirs)++;
+                else (*files)++;
+            }
         }
-        S->seen_ino[e.ino / 8] |= (unsigned char)(1 << (e.ino % 8));
-        if (e.kind == FS_DIR) {
-            (*dirs)++;
-            walk_tree(e.ino, depth + 1, files, dirs);
-        } else (*files)++;
     }
 }
 
@@ -860,7 +881,7 @@ static void check(struct line *l, unsigned *files, unsigned *dirs) {
     zero((char *)S->seen_ino, sizeof S->seen_ino);
     S->seen_ino[0] |= 3;
     *files = *dirs = 0;
-    walk_tree(1, 0, files, dirs);
+    walk_tree(files, dirs);
     for (unsigned i = 2; i < S->sb.inode_count; i++)
         if (INODES[i].kind && !(S->seen_ino[i / 8] & (1 << (i % 8)))) {
             truncate_all(i);

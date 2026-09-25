@@ -471,6 +471,43 @@ QEMU's model of them, because leanos has only run under QEMU.
   (`LeanOS/Journal.lean`: `crash_atomic`); that `user/fs.c` follows the model is tested
   (`test/crash.sh`), not proved; and both assume the card writes a 512-byte block whole and in the order asked,
   which SD cards generally do but do not promise.
+- What else the file server is trusted to do, tested by `test/fsfuzz.sh`, not proved: answer
+  every request, whatever its words, path, offset and buffer hold, and never stop, since
+  nothing can restart it; answer each with the result the protocol (`user/fs.h`) allows;
+  refuse a program from the card anything outside its folder and what it was given, and say
+  nothing more when it does (no size, no count, its buffer untouched); keep what each file
+  holds through failed requests, a full card and restarts; and leave the card so that the
+  check at the next start has nothing to repair. The test runs a fuzzer from the open slots
+  (`user/progs/fsfuzz.c`). First fixed requests: every operation and numbers that are none;
+  paths empty, too long, all '/', with '.', '..', a 0 or bytes outside printable ASCII
+  inside, through files, into the top folder and other programs' folders (one whose name
+  starts with its own); offsets and lengths at every limit, from a cluster to the double
+  indirect clusters, 4 GiB, 2^63 and 2^64 - 1; buffers missing, of the wrong size or
+  rights, not mapped, or not memory at all (the kernel refuses to grant those). Then the card
+  filled until the file server says full, and emptied. Then random requests in its folder
+  checked against a model of every file, from three programs at once, with Terminal writing
+  beside them and requests for what is not theirs mixed in. Every answer must be the one
+  allowed and come within 2 seconds, none may hold a secret kept outside their folders, and
+  after a restart the card must check clean, with every file as the fuzzer left it and
+  Notes' and Terminal's files unchanged. The seed is printed, so a run can be repeated. What
+  it does not show: that its requests reach every path through the code (nothing measures
+  that), or anything about power cuts, which `test/crash.sh` covers. It found four bugs, now
+  fixed and kept in its fixed requests:
+  - The check at every start walked folders only 32 deep. It freed what was deeper as if it
+    were in no folder, but kept the entries that named it, so the next file made anywhere
+    could take a freed inode and be reached through a name in another program's folder: a
+    folder 34 down, after a restart, read the file Terminal had just written in the top
+    folder. The check now walks a tree of any depth, in rounds, without recursion.
+  - A cluster freed and given out again in the same request (a file rewritten on a card
+    nearly full) was not zeroed when the request still held it in memory: past the end of
+    the file, where the file then grew, its old pointers read back instead of zeros.
+  - Every write asked for 4 free clusters, even one that needed none, so on a full card a
+    rename, deleting an empty file or making a folder where its folder had room was refused
+    as full. A write now counts only the clusters it does not have yet.
+  - Making a program's folder as it starts (Terminal and Apps share `apps/NAME`) did not
+    drop what a failed attempt changed in memory, as every other request does: on a full
+    card the inode it took stayed taken, until a later change wrote it to the card and the
+    next start repaired it.
 - Capability lists are bounded (64 per task) but a server that is sent grants it does not
   want must drop them, from a plain send as from a call; the display server, the file
   server and the network service do. The file server did not, for a plain send (which

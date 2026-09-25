@@ -397,6 +397,18 @@ each page and compares the kernel's answer with a typical Linux desktop; `calc`,
 `life` and `tiles` (2048); and a user guide. Six open slots now, and the arrow keys reach
 programs (the browser console sends them as a terminal would, ESC [ A to D).
 
+Done too: the file server under a fuzzer. `test/fsfuzz.sh` runs `fsfuzz` from the open
+slots: fixed requests at every limit and in every way a program might reach past its folder,
+a card filled until the file server says full, and random requests checked against a model
+of every file, from three programs at once, then a restart after which the card must check
+clean and every file be as it was left. It found four bugs in `user/fs.c`, fixed and kept as
+regressions: the check at start stopped 32 folders down and freed what was deeper, so after
+a restart a name in one program's folder could reach a file made later in another's; a
+cluster given out again in the request that freed it kept its old bytes; a full card refused
+a rename or a delete that needed no room; and a program's folder that could not be made on a
+full card left its inode taken. TRUST.md says what the file server is trusted to do and
+what the fuzzer checks.
+
 Next: the first boot on real Pi 4 hardware (EMMC2, colors, timings), the USB-A ports
 (xHCI on PCIe), the Pi 4's own Ethernet (GENET), a kernel lock finer than the whole kernel
 (disk and USB transfers hold it today), and the Pi 5.
