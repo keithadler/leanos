@@ -8,12 +8,13 @@ registers, and print bytes. The theorems about these definitions are in
 `LeanOS/Proofs.lean` and `LeanOS/Tables.lean`, and they are about exactly this code,
 because this code is what runs.
 
-This module is a `prelude` module that imports only `Init.Core`, so the compiled kernel
-carries six small pieces of Lean's standard library and nothing that needs an operating
-system underneath it.
+This module is a `prelude` module that imports only `Init.Core` and `Init.Data.Array.Set`
+(writing one element of an array), so the compiled kernel carries seven small pieces of
+Lean's standard library and nothing that needs an operating system underneath it.
 -/
 prelude
 import Init.Core
+import Init.Data.Array.Set
 import LeanOS.Manifest
 
 namespace LeanOS
@@ -1560,6 +1561,25 @@ def l3Word (s : KState) (i k : Nat) : Nat :=
   | some m => pageDesc s m
   | none => 0
 
+/-- `a` with `n` zero words after it. -/
+def zeros : Nat → Array Nat → Array Nat
+  | 0, a => a
+  | n + 1, a => zeros n (a.push 0)
+
+/-- Store each mapping's descriptor at its virtual page, in list order, so of two mappings of
+the same page the later one stays. A page past the end of `a` is skipped. -/
+def l3Fill (s : KState) : Array Nat → List Mapping → Array Nat
+  | a, .nil => a
+  | a, m :: ms => l3Fill s (a.setIfInBounds m.vpn (pageDesc s m)) ms
+
+/-- All 8192 words of task `i`'s level-3 tables at once, in one pass over its mappings:
+8192 zeros, then each mapping's descriptor at its page, the mappings taken last to first so
+that the first mapping of a page is the one that stays, as with `findVpn`. Word `k` is
+`l3Word s i k` (`l3Table_spec` in `Tables.lean`). `l3Word` asks about one page and walks
+the whole list to answer, so building a table from it took 8192 walks. -/
+def l3Table (s : KState) (i : Nat) : Array Nat :=
+  l3Fill s (zeros userPages (Array.emptyWithCapacity userPages)) (revOnto (mapsOf s i) .nil)
+
 /-- The number of level-3 tables per task: the window is 16 × 2 MiB. -/
 def l3Tables : Nat := 16
 
@@ -1581,7 +1601,7 @@ def l1Word (l2 k : Nat) : Nat := if k = 2 then l2 + dValid + dTableOrPage else k
 @[export leanos_kernel_l1] def exKernelL1 (k : Nat) : Nat := kernelL1Word k
 @[export leanos_l1] def exL1 (l2 k : Nat) : Nat := l1Word l2 k
 @[export leanos_l2] def exL2 (l3 k : Nat) : Nat := l2Word l3 k
-@[export leanos_l3] def exL3 (s : KState) (i k : Nat) : Nat := l3Word s i k
+@[export leanos_l3_table] def exL3Table (s : KState) (i : Nat) : Array Nat := l3Table s i
 
 
 end LeanOS

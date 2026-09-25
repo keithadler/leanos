@@ -17,6 +17,12 @@ mutant "derive lets a task pick its badge" \
   "⟨o, c.rights.meet (Rights.ofBits bits), c.badge⟩" "⟨o, c.rights.meet (Rights.ofBits bits), bits⟩"
 mutant "level-2 table points past the 16 level-3 tables" \
   "def l2Word (l3 k : Nat) : Nat := if k < l3Tables then" "def l2Word (l3 k : Nat) : Nat := if k < l3Tables + 1 then"
+mutant "level-3 table keeps the last mapping of a page, not the first" \
+  "(revOnto (mapsOf s i) .nil)" "(mapsOf s i)"
+mutant "level-3 table puts a page's word one entry along" \
+  "l3Fill s (a.setIfInBounds m.vpn (pageDesc s m)) ms" "l3Fill s (a.setIfInBounds (m.vpn + 1) (pageDesc s m)) ms"
+mutant "level-3 table lets user mode run physical page 0 where nothing is mapped" \
+  "  | n + 1, a => zeros n (a.push 0)" "  | n + 1, a => zeros n (a.push 1027)"
 mutant "map ignores the capability's frames" \
   "app (runMaps vpn base c.rights count)" "app (runMaps vpn (base + 1) c.rights count)"
 mutant "derive cuts a piece past the end of the run" \

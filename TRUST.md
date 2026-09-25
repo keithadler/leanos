@@ -58,11 +58,13 @@ slot's memory (`RunOK`), so taking back the runs that start in a slot takes back
 that slot's frames and nothing else.
 
 And down to the hardware, in `LeanOS/Tables.lean`. The Lean kernel computes every
-translation-table word. If the machine layer stores those words (the `Installed`
-hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
+translation-table word. If the machine layer stores those words (the `Stored`
+hypotheses, which give the `Installed` ones every theorem below assumes), then under the
+MMU model in `LeanOS/Arm.lean`:
 
 | Theorem | Statement |
 |---|---|
+| `l3Table_spec`, `Stored.installed` | The level-3 table Lean returns for a task in one call, built in one pass over its mappings, holds at each of its 8192 indices the word `l3Word` gives for that page (the first mapping of the page, or nothing), so tables stored from it are `Installed`. |
 | `walk_eq_view` | For every virtual address, what user mode may do there is exactly what the task's mappings say, and nothing outside the 32 MiB user window. |
 | `physOf_inj` | Different frames are different physical pages: the framebuffer never overlaps the pool. |
 | `el0_no_write_execute` | No address user mode can reach is both writable and executable. |
@@ -71,10 +73,11 @@ hypotheses), then under the MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 94 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 97 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
-pool, a kernel page-table entry missing its execute-never bit, a `start` that forgets to take back
+pool, a kernel page-table entry missing its execute-never bit, a level-3 table that keeps the
+wrong mapping of a page or maps page 0 where nothing is mapped, a `start` that forgets to take back
 mappings, capabilities, waiting grants or reply slots, and so on) and checks that the proofs reject every one.
 
 `make test` checks that each theorem rests only on Lean's standard axioms (`propext`,
@@ -92,8 +95,9 @@ though every proof checks.
   `Kernel.lean` gives a loop for one of its list walks, the compiler runs the loop in its
   place only because a `@[csimp]` theorem proves the two equal (`dropRange_eq_dropRangeTR`
   and eight more, checked for axioms with the rest).
-- The C that the same compiler generates for the six standard-library modules the kernel
-  imports (`Init.Prelude`, `Coe`, `Notation`, `SizeOf`, `Tactics`, `Core`).
+- The C that the same compiler generates for the seven standard-library modules the kernel
+  imports (`Init.Prelude`, `Coe`, `Notation`, `SizeOf`, `Tactics`, `Core`, and
+  `Data.Array.Set`, for writing one word of the level-3 table).
 - clang and ld.lld.
 
 **`rt/runtime.c` (~440 lines)**: the part of Lean's runtime compiled code needs, rewritten
@@ -111,7 +115,12 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 **`arch/boot.S` and `arch/kmain.c` (~1,350 lines)**
 - Storing the tables: `mmu_init`, `tables_init` and `build_user_pages` must store each
   word Lean computes at its index, in the page-aligned arrays whose addresses they pass to
-  Lean (a level-1 table, a level-2 table, and 16 level-3 tables in one array). This is exactly the `Installed` hypothesis. The kernel is identity-mapped,
+  Lean (a level-1 table, a level-2 table, and 16 level-3 tables in one array). For level 3,
+  `build_user_pages` asks Lean once per task for the whole table (`l3Table`, an array of
+  8192 words, `l3Table_size`) and must store word k of it at index k, reading the array as
+  the runtime lays it out (`lean_array_get_core`). This is exactly the `Stored`
+  hypothesis, and `Stored.installed` turns it into the `Installed` one the theorems
+  assume. The kernel is identity-mapped,
   so those addresses are physical. TTBR0 must point at the task's level-1 table, and the
   TLB must be invalidated after every change (`tlb_flush_all`).
 - MMU configuration: TCR_EL1 and SCTLR_EL1 must be set as `LeanOS/Arm.lean` assumes (4 KiB

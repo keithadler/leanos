@@ -13,6 +13,8 @@ task's mapping names, or nothing.
 Combined with the authority-flow theorems, this means user code cannot touch the kernel or
 the peripherals, and reaches another task's memory only along grant edges. The hypotheses are exactly what `build_user_pages` and
 `tables_init` in `arch/kmain.c` do, so the page-table encoding is no longer trusted C.
+`build_user_pages` takes all of a task's level-3 words from one call (`l3Table`), and
+`l3Table_spec` proves word `k` of that table is `l3Word`'s: `Stored.installed`.
 -/
 
 namespace LeanOS
@@ -92,6 +94,81 @@ theorem findVpn_mem : ∀ {ms : List Mapping} {v : Nat} {m : Mapping},
     split at h
     · rename_i hx; simp at h; subst h; exact ⟨List.mem_cons_self .., by simpa using hx⟩
     · have := findVpn_mem h; exact ⟨List.mem_cons_of_mem _ this.1, this.2⟩
+
+/-! ## The level-3 tables in one pass
+
+`build_user_pages` asks Lean once for all 8192 words of a task's level-3 tables
+(`l3Table`), instead of once per word (`l3Word`), which walked the task's mappings each
+time. The two agree at every index. -/
+
+theorem revOnto_eq {α : Type} (l : List α) : ∀ acc, revOnto l acc = l.reverse ++ acc := by
+  induction l with
+  | nil => intro acc; rfl
+  | cons a l ih => intro acc; simp [revOnto, ih]
+
+theorem zeros_size : ∀ (n : Nat) (a : Array Nat), (zeros n a).size = a.size + n
+  | 0, _ => rfl
+  | n + 1, a => by rw [zeros, zeros_size n, Array.size_push]; omega
+
+/-- Every word of `zeros n a` is zero if every word of `a` is. -/
+theorem zeros_get : ∀ (n : Nat) (a : Array Nat), (∀ k : Nat, a[k]! = 0) → ∀ k : Nat, (zeros n a)[k]! = 0
+  | 0, _, h => h
+  | n + 1, a, h => by
+    rw [zeros]
+    refine zeros_get n _ fun k => ?_
+    by_cases hk : k < (a.push 0).size
+    · rw [getElem!_pos (a.push 0) k hk, Array.getElem_push]
+      split
+      · rename_i hk'; rw [← getElem!_pos a k hk', h k]
+      · rfl
+    · rw [getElem!_neg (a.push 0) k hk]; rfl
+
+theorem findVpn_append (l l' : List Mapping) (v : Nat) :
+    findVpn (l ++ l') v = (findVpn l v).or (findVpn l' v) := by
+  induction l with
+  | nil => rfl
+  | cons m l ih =>
+    simp only [List.cons_append, findVpn]
+    split <;> simp [ih]
+
+theorem l3Fill_size (s : KState) : ∀ (ms : List Mapping) (a : Array Nat), (l3Fill s a ms).size = a.size
+  | [], _ => rfl
+  | m :: ms, a => by rw [l3Fill, l3Fill_size s ms, Array.size_setIfInBounds]
+
+/-- Word `k` of `l3Fill s a ms` is the descriptor of the last mapping of page `k` in `ms`
+(the first in `ms` reversed), or what `a` held. -/
+theorem l3Fill_get (s : KState) : ∀ (ms : List Mapping) (a : Array Nat) (k : Nat), k < a.size →
+    (l3Fill s a ms)[k]! = match findVpn ms.reverse k with
+      | some m => pageDesc s m
+      | none => a[k]!
+  | [], a, k, _ => by simp [l3Fill, findVpn]
+  | m :: ms, a, k, hk => by
+    rw [l3Fill, l3Fill_get s ms _ k (by rwa [Array.size_setIfInBounds]),
+      List.reverse_cons, findVpn_append]
+    have hs : (a.setIfInBounds m.vpn (pageDesc s m))[k]! = if m.vpn = k then pageDesc s m else a[k]! := by
+      rw [getElem!_pos (a.setIfInBounds m.vpn (pageDesc s m)) k (by rwa [Array.size_setIfInBounds]),
+        Array.getElem_setIfInBounds hk, getElem!_pos a k hk]
+    rw [hs]
+    cases findVpn ms.reverse k with
+    | some x => rfl
+    | none =>
+      simp only [Option.none_or, findVpn]
+      by_cases h : m.vpn = k <;> simp [h]
+
+/-- The table has one word per page of the window, so the size check in
+`build_user_pages` never fires. -/
+theorem l3Table_size (s : KState) (i : Nat) : (l3Table s i).size = userPages := by
+  rw [l3Table, l3Fill_size, zeros_size]; rfl
+
+/-- **The one-pass table is the per-word one.** Word `k` of `l3Table` is `l3Word s i k`,
+for every page `k` of the window. -/
+theorem l3Table_spec (s : KState) (i : Nat) {k : Nat} (hk : k < userPages) :
+    (l3Table s i)[k]! = l3Word s i k := by
+  rw [l3Table, l3Fill_get _ _ _ _ (by rw [zeros_size]; simpa using hk), revOnto_eq,
+    List.append_nil, List.reverse_reverse, l3Word]
+  cases findVpn (mapsOf s i) k with
+  | some m => rfl
+  | none => exact zeros_get _ _ (fun k => by simp) k
 
 /-! ## Reading the descriptors back -/
 
@@ -273,6 +350,31 @@ theorem Installed.walk {s : KState} {i : Nat} {mem : Arm.Mem} {l1 l2 l3 : Nat}
     Arm.walkEL0 mem l1 va = el0View s i va :=
   walk_eq_view h i mem l1 l2 l3 hi.l2_aligned hi.l3_aligned hi.l2_lt hi.l3_lt
     hi.l1_words hi.l2_words hi.l3_words va
+
+/-- What the machine layer does (`tables_init` and `build_user_pages` in `arch/kmain.c`):
+`Installed`, with the level-3 words copied from the table `l3Table` returns, word `k` at
+index `k`. -/
+structure Stored (s : KState) (i : Nat) (mem : Arm.Mem) (l1 l2 l3 : Nat) : Prop where
+  l2_aligned : l2 % 4096 = 0
+  l3_aligned : l3 % 4096 = 0
+  l2_lt : l2 < 2 ^ 47
+  l3_lt : l3 < 2 ^ 47
+  l1_words : ∀ k < 512, mem (l1 + 8 * k) = l1Word l2 k
+  l2_words : ∀ k < 512, mem (l2 + 8 * k) = l2Word l3 k
+  l3_words : ∀ k < userPages, mem (l3 + 8 * k) = (l3Table s i)[k]!
+
+/-- **Tables stored from `l3Table` are installed**, so every theorem below about `Installed`
+tables holds for them. -/
+theorem Stored.installed {s : KState} {i : Nat} {mem : Arm.Mem} {l1 l2 l3 : Nat}
+    (h : Stored s i mem l1 l2 l3) : Installed s i mem l1 l2 l3 :=
+  ⟨h.l2_aligned, h.l3_aligned, h.l2_lt, h.l3_lt, h.l1_words, h.l2_words,
+    fun k hk => (h.l3_words k hk).trans (l3Table_spec s i hk)⟩
+
+/-- And the other way: `Stored` asks exactly what `Installed` asks, no more. -/
+theorem stored_iff_installed {s : KState} {i : Nat} {mem : Arm.Mem} {l1 l2 l3 : Nat} :
+    Stored s i mem l1 l2 l3 ↔ Installed s i mem l1 l2 l3 :=
+  ⟨Stored.installed, fun h => ⟨h.l2_aligned, h.l3_aligned, h.l2_lt, h.l3_lt, h.l1_words,
+    h.l2_words, fun k hk => (h.l3_words k hk).trans (l3Table_spec s i hk).symm⟩⟩
 
 /-- User mode can only ever reach the frame pool, the framebuffer (if the firmware's address
 for it is sane), and the UART's register page: never the kernel image, its heap, its

@@ -135,6 +135,29 @@ went from 918,384 bytes to 2,128. Each core's stack is 64 KiB again, still paint
 checked on every return to user mode, and the 7.75 MiB this frees went to the kernel heap.
 Next here: prove the bound, now that it no longer depends on what tasks hold.
 
+Done too: page tables in one pass. The machine layer asked Lean for a task's 8192 level-3
+words one at a time (`l3Word`), and each answer walked the task's mappings from the start,
+so one task's tables took 8192 walks, and starting any program rebuilt the tables of all
+18 tasks. Now one call returns the whole table (`l3Table`): 8192 zeros, then each mapping's
+word at its page, the mappings taken last to first so the first mapping of a page is the
+one that stays. `l3Table_spec` proves every word equal to `l3Word`'s, so every theorem in
+`Tables.lean` holds for what the MMU reads (`Stored.installed`), and three new mutants (the
+last mapping kept, a word one entry along, page 0 where nothing is mapped) are caught.
+Measured under QEMU on the development Mac, with the kernel's own counter (the last two
+rows by the host's clock):
+
+| | before | after |
+|---|---|---|
+| starting an app (the tables of all 18 tasks) | 144 to 330 ms | 3 to 9 ms |
+| the same, with a task holding all 8192 mappings | 832 ms | 10 ms |
+| the tables of that task alone | 624 ms | 5.6 ms |
+| every table built from boot to the desktop (88) | 1.14 s | 21 ms |
+| `deep` mapping its window (38 calls, each a rebuild) | 6 s | 0.12 s |
+| `test/stack.sh`, `test/apps.sh`, start to end | 14 s, 32 s | 4 s, 24 s |
+
+Starting a program still rebuilds every task's tables, not only those of the tasks that
+lost a mapping: the kernel does not say which did, and it now takes a few milliseconds.
+
 ## 9. A system people can use — files on the SD card, done; the rest, next
 
 Done: a file server in user space, with its own endpoint, keeps up to 48 files of up to

@@ -23,6 +23,11 @@ open LeanOS
 #print axioms walk_eq_view
 #print axioms el0_only_pool_fb_uart
 #print axioms physOf_inj
+-- the level-3 tables, built in one pass (Tables.lean)
+#print axioms l3Table_size
+#print axioms l3Table_spec
+#print axioms Stored.installed
+#print axioms stored_iff_installed
 #print axioms el0_no_write_execute
 #print axioms el0_flow
 #print axioms el0_shared

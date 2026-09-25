@@ -25,8 +25,9 @@ UCFLAGS := $(TARGET) -ffreestanding -fno-stack-protector -mgeneral-regs-only -O2
 # Lean's generated C trips warnings that are not ours to fix.
 LEANC_FLAGS := $(CFLAGS) -w
 
-# The pieces of Lean's standard library the kernel imports (Init.Core and what it imports).
-INIT_MODULES := Prelude Coe Notation SizeOf Tactics Core
+# The pieces of Lean's standard library the kernel imports (Init.Core and what it imports, and
+# Init.Data.Array.Set, which writes one element of an array).
+INIT_MODULES := Prelude Coe Notation SizeOf Tactics Core Data/Array/Set
 INIT_C := $(patsubst %,build/c/Init_%.c,$(INIT_MODULES))
 INIT_O := $(INIT_C:.c=.o)
 
@@ -69,7 +70,7 @@ build/Manifest.o: $(MANIFEST_LEAN_C)
 	$(CC) $(LEANC_FLAGS) -c $< -o $@
 
 build/c/Init_%.c: $(LEAN_HOME)/src/lean/Init/%.lean
-	@mkdir -p build/c
+	@mkdir -p $(dir $@)
 	$(LEAN) --root=$(LEAN_HOME)/src/lean -c $@ $<
 
 build/c/Init_%.o: build/c/Init_%.c

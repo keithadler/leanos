@@ -30,7 +30,7 @@ lean_object *leanos_result(lean_object *s, lean_object *j, lean_object *k);
 lean_object *leanos_kernel_l1(lean_object *k);
 lean_object *leanos_l1(lean_object *l2, lean_object *k);
 lean_object *leanos_l2(lean_object *l3, lean_object *k);
-lean_object *leanos_l3(lean_object *s, lean_object *i, lean_object *k);
+lean_object *leanos_l3_table(lean_object *s, lean_object *i);
 lean_object *leanos_reply_out_va(lean_object *r);
 lean_object *leanos_reply_out_len(lean_object *r);
 uint8_t leanos_reply_remap(lean_object *r);
@@ -400,9 +400,10 @@ static void usb_request(uint64_t op, uint64_t a, uint64_t b, uint64_t c, uint64_
 }
 
 /* ---- memory management unit ----
- * The Lean kernel computes every translation-table word (`l1Word`, `l2Word`, `l3Word` in
- * LeanOS/Kernel.lean); this layer only stores them. LeanOS/Tables.lean proves that, stored
- * this way, the tables give user mode exactly the task's mappings (`walk_eq_view`),
+ * The Lean kernel computes every translation-table word (`l1Word`, `l2Word`, and a task's
+ * whole level-3 table at once, `l3Table`, in LeanOS/Kernel.lean); this layer only stores
+ * them (`Stored` in LeanOS/Tables.lean). LeanOS/Tables.lean proves that, stored this way,
+ * the tables give user mode exactly the task's mappings (`walk_eq_view`),
  * assuming the MMU is configured as LeanOS/Arm.lean describes, which `mmu_init` does:
  * 4 KiB granule, 39-bit addresses (T0SZ = 25), TTBR0 only (EPD1 = 1), WXN off.
  * Every task has its own tables and address-space number (ASID = task + 1). Kernel
@@ -462,10 +463,18 @@ static void tables_init(uint64_t i) {
     }
 }
 
-/* Rewrite task i's level-3 tables from the Lean state. Only level 3 changes, so the
-   kernel's own entries stay valid even when i is the task whose address space is live. */
+/* Rewrite task i's level-3 tables from the Lean state: one call returns all 8192 words
+   (`l3Table`, made in one pass over the task's mappings), and word k goes to index k.
+   `l3Table_spec` proves word k is `l3Word`'s, and `l3Table_size` that there are 8192, so
+   the check below never fires unless this layer and the runtime disagree. Only level 3
+   changes, so the kernel's own entries stay valid even when i is the task whose address
+   space is live. */
 static void build_user_pages(uint64_t i) {
-    for (uint64_t k = 0; k < USER_PAGES; k++) tl3[i][k] = word(leanos_l3(K1, lean_box(i), lean_box(k)));
+    lean_object *t = leanos_l3_table(K1, lean_box(i));
+    if (lean_is_scalar(t) || !lean_is_array(t) || lean_array_size(t) != USER_PAGES)
+        kpanic("level-3 table of the wrong size");
+    for (uint64_t k = 0; k < USER_PAGES; k++) tl3[i][k] = word(lean_array_get_core(t, k));
+    lean_dec(t);
     tlb_flush_all();
 }
 
@@ -766,7 +775,9 @@ static void do_syscall(uint64_t cur) {
     if (load) {
         /* `start`: the Lean kernel has already taken back every capability and mapping that
            reached the slot's frames. Rebuild every task's tables from that state before the
-           frames are cleared and loaded, then measure what was loaded. */
+           frames are cleared and loaded, then measure what was loaded. Every task, not only
+           those that lost a mapping: the kernel does not say which did, and with one pass
+           over each task's mappings all 18 take a few milliseconds under QEMU. */
         uint64_t k = load - 1;
         if (k >= ntasks || k == cur) kpanic("start of a slot the kernel should have refused");
         evict(k);

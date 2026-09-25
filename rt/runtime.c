@@ -276,6 +276,10 @@ lean_object *lean_copy_expand_array(lean_object *a, bool expand) {
     return r;
 }
 
+/* The same copy, called when an array about to be written in place is shared (lean.h's
+   `lean_ensure_exclusive_array`, which `Array.set` goes through). */
+lean_object *lean_copy_expand_array_nonlinear(lean_object *a, bool expand) { return lean_copy_expand_array(a, expand); }
+
 lean_object *lean_array_push(lean_object *a, lean_object *v) {
     if (!lean_is_exclusive(a) || lean_array_size(a) == lean_array_capacity(a))
         a = lean_copy_expand_array(a, lean_array_size(a) == lean_array_capacity(a));

@@ -105,7 +105,7 @@ declarations, 0 rejected). Start with
 or [`crash_atomic`](https://keithadler.github.io/leanviz/?p=leanos#/d/LeanOS.Journal.crash_atomic).
 
 Every theorem rests only on Lean's standard axioms (checked by `make test`), and
-`make mutants` breaks the kernel in 94 specific ways and checks that the proofs reject every
+`make mutants` breaks the kernel in 97 specific ways and checks that the proofs reject every
 one. [TRUST.md](TRUST.md) says exactly what is proved and what is trusted: the Lean
 compiler, a small runtime shim, the machine layer, the MMU model, and the hardware.
 
@@ -143,7 +143,7 @@ make test     # proofs, axioms, boot transcript, pixels on screen, apps, USB, ne
 ```
 
 ```bash
-make mutants  # break the kernel 94 ways; the proofs must reject each (about 15 minutes)
+make mutants  # break the kernel 97 ways; the proofs must reject each (about 15 minutes)
 ```
 
 Things to try once it is up:
