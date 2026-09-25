@@ -1,5 +1,7 @@
 # leanos
 
+[![Tenet](https://keithadler.github.io/leanviz/data/leanos/badge.svg)](https://keithadler.github.io/leanviz/?p=leanos)
+
 **An operating system for the Raspberry Pi 4 whose kernel decisions are written in Lean 4
 and proved correct.**
 
@@ -92,6 +94,14 @@ under any sequence of system calls with any arguments. Among them:
 - **Down to the page tables**: Lean computes every translation-table word, and against a
   model of the Armv8-A MMU, user mode reaches exactly its own mappings and nothing of the
   kernel's (`walk_eq_view`).
+
+**Browse every proof in [LeanViz](https://keithadler.github.io/leanviz/?p=leanos)**: each
+theorem's statement, what it uses, what uses it, and the axioms it rests on, re-checked by
+[Tenet](https://github.com/keithadler/tenet), an independent Lean 4 kernel (66,608
+declarations, 0 rejected). Start with
+[`confined`](https://keithadler.github.io/leanviz/?p=leanos#/d/LeanOS.confined),
+[`no_write_execute`](https://keithadler.github.io/leanviz/?p=leanos#/d/LeanOS.no_write_execute)
+or [`crash_atomic`](https://keithadler.github.io/leanviz/?p=leanos#/d/LeanOS.Journal.crash_atomic).
 
 Every theorem rests only on Lean's standard axioms (checked by `make test`), and
 `make mutants` breaks the kernel in 94 specific ways and checks that the proofs reject every
