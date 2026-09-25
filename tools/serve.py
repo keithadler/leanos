@@ -170,7 +170,7 @@ inputEl.addEventListener('mousemove', (e) => {
   else { clearTimeout(pendingMove); pendingMove = setTimeout(() => { lastMove = performance.now(); mouse('v', e); }, 30); }
 });
 /* Text arrives through the field's input events, so typing, pasting and input methods all
-   work; Enter and Backspace come from the key events. A line break inside text (pasted
+   work; Enter, Backspace and Tab come from the key events. A line break inside text (pasted
    lines) is a Return too. Ctrl+C and Ctrl+V are leanos's copy and paste (bytes 3 and 22,
    as a serial terminal sends them); the host's own paste (Cmd+V on a Mac) types its text. */
 inputEl.addEventListener('keydown', (e) => {
@@ -182,6 +182,7 @@ inputEl.addEventListener('keydown', (e) => {
   else if (arrows[e.key]) { sendBytes('\x1b[' + arrows[e.key]); e.preventDefault(); }
   else if (e.key === 'Enter') { sendBytes('\r'); e.preventDefault(); }
   else if (e.key === 'Backspace') { sendBytes('\x7f'); e.preventDefault(); }
+  else if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) { sendBytes('\t'); e.preventDefault(); }
 });
 inputEl.addEventListener('input', () => {
   const text = [...inputEl.value].map(c => c === '\n' ? '\r' : c)

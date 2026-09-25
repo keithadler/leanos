@@ -271,6 +271,13 @@ mallory's request for the clipboard and her unasked copy are refused, and so are
 once with nothing asked of it and once 2.5 seconds after the user pressed Ctrl+C in its
 window.
 
+Done too: a command line that edits as a shell's does. Terminal keeps the last 32 commands
+for Up and Down (not empty lines, nor one repeated at once), and the line being typed comes
+back after them; Left and Right move the cursor, and typing, Backspace and a paste go in
+where it is. Tab completes a command's name, or a file or folder name from the file
+server's listing, and a second Tab lists what matches. The browser console now sends Tab.
+`test/term-history.sh` recalls, edits and runs commands and completes names.
+
 Done too: touchscreens and tablets. The USB driver reads a HID device's report
 descriptor when it does not speak the boot protocol, finds the absolute X and Y and the
 button or tip switch, and scales them to the screen; a 7-inch 1024x600 HDMI touchscreen

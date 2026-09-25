@@ -6,7 +6,14 @@
    Copy (Ctrl+C) takes the command line being typed, or, when it is empty, what the last
    command printed (as far as the scrollback still shows it). A paste (Ctrl+V) goes onto the
    command line, line breaks as spaces: pasted text never runs a command until you press
-   Return. */
+   Return.
+
+   The command line edits as a shell's does: Left and Right move the cursor, and typing,
+   Backspace and a paste work where it is. Up and Down step through the last HIST commands
+   (the line being typed is kept, and Down past the newest comes back to it). Tab completes a
+   command's name at the start of the line, and a file or folder name after it (a folder with
+   a '/'), from the file server's listing; when several match, it completes what they share,
+   and a second Tab lists them. */
 #include "app.h"
 #include "fs.h"
 #include "elfload.h"
@@ -27,6 +34,7 @@
 #define COLS 52
 #define CMD_MAX 160      /* a command line may be longer than the window; it scrolls */
 #define LINE_H 19
+#define HIST 32          /* commands Up and Down recall, oldest first */
 enum { F_MONO = 1 };
 
 struct term {
@@ -36,13 +44,18 @@ struct term {
     int n;
     int paste_from, dropped;    /* where a paste began on the command line (-1: none), and what did not fit */
     char cmd[CMD_MAX + 1];
-    int len;
+    int len, cur;               /* the command line's length, and where the cursor is in it */
+    int hn, hpos, tabbed;       /* commands kept; which is on the line (hn: the one being typed); the last key was Tab */
+    char typed[CMD_MAX + 1];    /* the line being typed, kept while Up and Down show others */
+    char hist[HIST][CMD_MAX + 1];
     struct font mono;
     struct surface win;
     struct fs_client fs;
     struct net_client net;
     char cwd[FS_PATH_MAX + 1];  /* the folder commands are in: "" is the top */
 };
+
+_Static_assert(sizeof(struct term) <= 8 * 4096, "Terminal's state is larger than its data run");
 
 static const unsigned BG = 0x171a21, FG = 0xdde2ec, DIM = 0x8a93a6, GREEN = 0x7fd1a0;
 
@@ -87,10 +100,51 @@ static void draw(struct term *t) {
     }
     int x = font_text(s, &t->mono, PAD, y, "$ ", GREEN);
     t->cmd[t->len] = 0;
-    /* the end of the line, if it is wider than the window */
+    /* the end of the line, if it is wider than the window, or from the cursor if that is further back */
     int from = t->len > COLS - 3 ? t->len - (COLS - 3) : 0;
-    x = font_text(s, &t->mono, x, y, t->cmd + from, FG);
+    if (t->cur < from) from = t->cur;
+    font_text(s, &t->mono, x, y, t->cmd + from, FG);
+    /* the cursor: a block, with the letter under it (if any) drawn in the background's color */
+    char under[2] = {t->cmd[t->cur], 0};
+    t->cmd[t->cur] = 0;
+    x += font_width(&t->mono, t->cmd + from);
+    t->cmd[t->cur] = under[0];
     fill(s, x + 1, y - 12, 8, 16, GREEN);
+    font_text(s, &t->mono, x, y, under, BG);
+}
+
+static int scopy(char *d, const char *s) { int n = 0; while ((d[n] = s[n])) n++; return n; }
+static int same(const char *a, const char *b) { while (*a && *a == *b) a++, b++; return *a == *b; }
+
+/* A letter onto the command line at the cursor. */
+__attribute__((noinline)) static void insert(struct term *t, char c) {
+    if (t->len >= CMD_MAX) return;
+    for (int i = t->len; i > t->cur; i--) t->cmd[i] = t->cmd[i - 1];
+    t->cmd[t->cur++] = c;
+    t->len++;
+}
+
+/* Return: keep the line for Up, unless it is empty or the same as the last one kept. */
+__attribute__((noinline)) static void remember(struct term *t) {
+    const char *c = t->cmd;
+    while (*c == ' ') c++;
+    if (*c && !(t->hn && same(t->hist[t->hn - 1], t->cmd))) {
+        if (t->hn == HIST) {
+            for (int i = 1; i < HIST; i++) scopy(t->hist[i - 1], t->hist[i]);
+            t->hn--;
+        }
+        scopy(t->hist[t->hn++], t->cmd);
+    }
+    t->hpos = t->hn;
+}
+
+/* Up and Down: command `to` onto the line (t->hn: the line that was being typed). */
+__attribute__((noinline)) static void recall(struct term *t, int to) {
+    if (to < 0 || to > t->hn) return;
+    t->cmd[t->len] = 0;
+    if (t->hpos == t->hn) scopy(t->typed, t->cmd);
+    t->hpos = to;
+    t->len = t->cur = scopy(t->cmd, to == t->hn ? t->typed : t->hist[to]);
 }
 
 static int starts(const char *s, const char *w) {
@@ -312,6 +366,8 @@ static void cmd_cd(struct term *t, struct line *l, const char *args) {
         t->cwd[n > 0 ? n - 1 : 0] = 0;
     } else {
         resolve(t, arg, path);
+        int n = slen(path);
+        while (n > 0 && path[n - 1] == '/') path[--n] = 0;   /* "docs/", as Tab completes it */
         if (fs_stat(&t->fs, path, 0) != FS_DIR) {
             say(t, "no such folder");
             fs_log(l, "cd", arg, "no such folder");
@@ -685,6 +741,7 @@ static void run(struct term *t, struct line *l) {
         say(t, "ip, ping HOST, get http://URL [FILE], kill SLOT");
         say(t, "date, ntp [HOST[:PORT]]");
         say(t, "tour: why leanos is harder to attack than Linux");
+        say(t, "Up, Down: earlier commands; Tab completes names");
     } else if (starts(c, "whoami")) {
         u64 me = sys0(SYS_WHOAMI).x[1];
         put_s(l, "task ");
@@ -762,6 +819,107 @@ static void run(struct term *t, struct line *l) {
     }
 }
 
+/* ---- Tab completion ---- */
+
+/* The commands Tab completes: every one help lists. */
+static const char COMMANDS[] = "boot caps cat cd clear date echo exit fill get help ip kill ls mkdir mv ntp "
+                               "ping ps pwd rm run tour uptime verify whoami write";
+
+/* The name before the cursor (`pre`), and the names that start with it: how many, and what
+   they all share (a folder's name ends in '/'). On the listing pass, the names themselves,
+   as rows of the scrollback and on the log line. */
+struct comp {
+    char pre[FS_NAME_MAX + 1];
+    int pn, count, cn, listing;
+    char common[FS_NAME_MAX + 2];
+    struct line row, *log;
+};
+
+__attribute__((minsize)) static void consider(struct term *t, struct comp *c, const char *name, int dir) {
+    for (int i = 0; i < c->pn; i++) if (name[i] != c->pre[i]) return;
+    char full[FS_NAME_MAX + 2];
+    int n = scopy(full, name);
+    if (dir) full[n++] = '/';
+    full[n] = 0;
+    if (c->listing) {
+        if (c->row.n && c->row.n + 2 + (u64)n > COLS) out(t, &c->row);
+        if (c->row.n) put_s(&c->row, "  ");
+        put_s(&c->row, full);
+        if (c->log->n + (u64)n < 180) { put_s(c->log, " "); put_s(c->log, full); }
+        return;
+    }
+    if (!c->count++) c->cn = scopy(c->common, full);
+    else { int k = 0; while (k < c->cn && c->common[k] == full[k]) k++; c->cn = k; }
+}
+
+/* Every command name, or every name in the folder `dir`, through consider(). */
+__attribute__((minsize)) static void scan(struct term *t, struct comp *c, int command, const char *dir) {
+    if (command) {
+        char w[8];
+        for (const char *p = COMMANDS; *p;) { p = word_of(p, w, 7); consider(t, c, w, 0); }
+        return;
+    }
+    u64 total = 0, from = 0;
+    for (;;) {
+        long n = fs_list_dir(&t->fs, dir, from, &total);
+        if (n <= 0) return;
+        const struct fs_entry *e = fs_entries(&t->fs);
+        for (long i = 0; i < n; i++) consider(t, c, e[i].name, e[i].kind == FS_DIR);
+        from += (u64)n;
+        if (from >= total) return;
+    }
+}
+
+/* Tab: complete the word before the cursor, a command's name if it is the first on the
+   line, else a name in the folder it names (the current one if none). `again`: the key
+   before was Tab too, so if nothing more can be completed, list what matches. Tab is
+   rare and Terminal's code run is nearly full (64 KiB), so these are built for size. */
+__attribute__((noinline, minsize)) static void complete(struct term *t, struct line *l, int again) {
+    t->cmd[t->len] = 0;
+    int start = t->cur, command = 1;
+    while (start > 0 && t->cmd[start - 1] != ' ') start--;
+    for (int i = 0; i < start; i++) if (t->cmd[i] != ' ') command = 0;
+    int base = t->cur;
+    while (base > start && t->cmd[base - 1] != '/') base--;
+    command &= base == start;          /* a path is never a command's name */
+    struct comp c = {.pn = t->cur - base};
+    if (c.pn > FS_NAME_MAX) return;
+    for (int i = 0; i < c.pn; i++) c.pre[i] = t->cmd[base + i];
+    c.pre[c.pn] = 0;
+    /* the folder: the word up to its last '/', without it (unless that is all: the top) */
+    char dir[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    int dn = base - start > FS_PATH_MAX ? FS_PATH_MAX : base - start;
+    for (int i = 0; i < dn; i++) dir[i] = t->cmd[start + i];
+    dir[dn > 1 ? dn - 1 : dn] = 0;
+    resolve(t, dir, path);
+    scan(t, &c, command, path);
+    const char *name = c.pn ? c.pre : 0;
+    if (!c.count) { fs_log(l, "completed", name, "no match"); return; }
+    c.common[c.cn] = 0;
+    int add = c.cn - c.pn;
+    for (int i = c.pn; i < c.cn; i++) insert(t, c.common[i]);
+    /* one file or command: a space after it, as a shell does */
+    if (c.count == 1 && c.common[c.cn - 1] != '/' && (t->cur == t->len || t->cmd[t->cur] != ' ')) {
+        insert(t, ' ');
+        add++;
+    }
+    if (add) { fs_log(l, "completed", name, c.common); return; }
+    if (c.count == 1 || !again) return;
+    /* like a shell: the line as typed, then every name that matches */
+    push(t, t->cmd, (u64)t->len, 1);
+    put_s(l, "terminal: completions");
+    if (name) { put_s(l, " for "); put_s(l, name); }
+    put_s(l, " -> ");
+    put_dec(l, (u64)c.count);
+    put_s(l, ":");
+    c.listing = 1;
+    c.log = l;
+    scan(t, &c, command, path);
+    if (c.row.n) out(t, &c.row);
+    put_s(l, "\n");
+    flush(l);
+}
+
 /* Ctrl+C: the command line, if something is typed on it, else what the last command printed. */
 static void copy_out(struct term *t, struct line *l) {
     char buf[ROWS * (COLS + 1)];
@@ -793,19 +951,22 @@ static void copy_out(struct term *t, struct line *l) {
 static int paste_in(struct term *t, struct line *l, struct event e) {
     char piece[16];
     int k = paste_text(e, piece);
-    if (t->paste_from < 0) { t->paste_from = t->len; t->dropped = 0; }
+    if (t->paste_from < 0) { t->paste_from = t->cur; t->dropped = 0; }
     for (int i = 0; i < k; i++) {
         char c = piece[i] == '\n' || piece[i] == '\r' || piece[i] == '\t' ? ' ' : piece[i];
         if (c < 32 || c > 126) continue;
-        if (t->len < CMD_MAX) t->cmd[t->len++] = c;
+        if (t->len < CMD_MAX) insert(t, c);
         else t->dropped++;
     }
     if (k == 16) return 0;
-    t->cmd[t->len] = 0;
+    /* what arrived: from where the paste began to the cursor */
+    char after = t->cmd[t->cur];
+    t->cmd[t->cur] = 0;
     put_s(l, "terminal: pasted ");
-    put_dec(l, (u64)(t->len - t->paste_from));
+    put_dec(l, (u64)(t->cur - t->paste_from));
     put_s(l, " bytes: ");
     put_s(l, t->cmd + t->paste_from);
+    t->cmd[t->cur] = after;
     put_s(l, "\n");
     flush(l);
     if (t->dropped) {
@@ -827,7 +988,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     fs_init(&t->fs, SPARE_PAGE);
     net_init(&t->net, SPARE_PAGE);
     t->cwd[0] = 0;
-    t->n = t->len = 0;
+    t->n = t->len = t->cur = t->hn = t->hpos = t->tabbed = 0;
     t->paste_from = -1;
     say(t, "leanos terminal. Type help, or tour.");
     draw(t);
@@ -859,15 +1020,26 @@ __attribute__((section(".text.start"))) void _start(void) {
             continue;
         }
         if (e.kind != EV_KEY) continue;
-        char ch = (char)e.a;
-        if ((ch == 8 || ch == 127) && t->len > 0) t->len--;
-        else if (ch == '\r' || ch == '\n') {
+        u64 k = e.a;
+        if (k == '\t') complete(t, &l, t->tabbed);
+        else if (k == KEY_UP || k == KEY_DOWN) recall(t, t->hpos + (k == KEY_UP ? -1 : 1));
+        else if (k == KEY_LEFT) t->cur -= t->cur > 0;
+        else if (k == KEY_RIGHT) t->cur += t->cur < t->len;
+        else if (k == 8 || k == 127) {
+            if (t->cur > 0) {
+                for (int i = t->cur; i < t->len; i++) t->cmd[i - 1] = t->cmd[i];
+                t->cur--;
+                t->len--;
+            }
+        } else if (k == '\r' || k == '\n') {
             t->cmd[t->len] = 0;
             push(t, t->cmd, (u64)t->len, 1);
+            remember(t);
             run(t, &l);
-            t->len = 0;
-        } else if (ch >= 32 && ch < 127 && t->len < CMD_MAX) t->cmd[t->len++] = ch;
+            t->len = t->cur = 0;
+        } else if (k >= 32 && k < 127) insert(t, (char)k);
         else continue;
+        t->tabbed = k == '\t';
         draw(t);
         dirty = 1;
     }

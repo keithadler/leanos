@@ -20,8 +20,8 @@ Copy and paste
   Notes     the whole note; a paste goes at the end
   edit      the whole file (its first 4 KiB); a paste goes in at the cursor
   Terminal  the command line you are typing, or, when it is empty, what the last
-            command printed; a paste goes onto the command line, line breaks as
-            spaces, so it never runs anything until you press Return
+            command printed; a paste goes onto the command line at the cursor, line
+            breaks as spaces, so it never runs anything until you press Return
   Other programs do not answer a copy, and the clipboard stays as it was.
 
   Text moves between programs only by your hand. The display server keeps what you
@@ -46,6 +46,11 @@ Terminal
   kill SLOT                                 stop a program from the card (10 to 15), answering or not
   whoami, caps, boot, uptime                what the kernel says about this program
   tour                                      why leanos is harder to attack than Linux
+
+  Up, Down      the commands you ran before (the last 32), and back to the line you were typing
+  Left, Right   move along the command line; what you type goes in at the cursor
+  Tab           complete a command's name, or a file or folder name (a folder gets a /);
+                when several match, Tab completes what they share and a second Tab lists them
 
 Programs on the card
   tour    the guided tour: each page really tries an attack
