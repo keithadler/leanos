@@ -249,6 +249,7 @@ test: all
 	./test/touch.sh
 	./test/crash.sh
 	./test/bigprog.sh
+	./test/stack.sh
 	./test/edit.sh
 	./test/net.sh
 	./test/kill.sh

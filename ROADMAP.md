@@ -119,12 +119,21 @@ that, and needs more memory for the display server than its 1 MiB slot.
 
 Prove how much kernel memory each operation can use, and preallocate per task, so no
 system call can exhaust the kernel heap. Replace list-based state where it grows with
-the system. The kernel stack is the same problem: the Lean kernel recurses once per list
-element, and a task can hold up to 8192 mappings. Today the stack is sized for that (2 MiB),
-painted at boot and checked on every return to user mode, so an overflow stops the machine
-instead of corrupting it; stage 6 found this the hard way, when revocation walked the
-display server's 900 mappings and overran the old 64 KiB stack. The fix that belongs here
-is to prove a bound, or make the walks iterative.
+the system.
+
+Done: the kernel stack. The Lean kernel recursed once per list element, and a task can hold
+8192 mappings, so each core had a 2 MiB stack; stage 6 found this the hard way, when
+revocation walked the display server's 900 mappings and overran the old 64 KiB stack. Now
+every walk over a task's mappings or capabilities (`dropRange`, `runMaps`, `app`, `snoc`,
+`len`, `removeNth`, `keepBacked`, `dropCaps`, `dropMaps`) has a twin in `Kernel.lean` that
+carries its result so far and calls itself only last, which Lean compiles to a loop, and a
+`@[csimp]` theorem proves the two equal, so the compiler runs the loop while every proof
+stays about the original definition. What recursion is left walks short lists: the 18
+tasks, a task's reply slots, the pending interrupt lines. `test/stack.sh` has a program map
+all 8192 pages of its window and makes the kernel walk them end to end: the stack's peak
+went from 918,384 bytes to 2,128. Each core's stack is 64 KiB again, still painted and
+checked on every return to user mode, and the 7.75 MiB this frees went to the kernel heap.
+Next here: prove the bound, now that it no longer depends on what tasks hold.
 
 ## 9. A system people can use — files on the SD card, done; the rest, next
 

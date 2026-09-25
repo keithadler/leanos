@@ -138,7 +138,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # proofs, axioms, boot transcript, pixels on screen, apps, USB, network, power cuts, the fuzzer
+make test     # proofs, axioms, boot transcript, pixels on screen, apps, USB, network, power cuts, the fuzzer, the kernel stack
 ```
 
 ```bash
@@ -188,7 +188,7 @@ What you need to know first:
 | [`arch/`](arch) | The machine layer: boot, exception vectors, MMU, interrupts, four cores, the SD card. It carries out what the Lean kernel returns. |
 | [`rt/`](rt) | The bare-metal slice of Lean's runtime: allocator, reference counts, closures. |
 | [`user/`](user) | Everything in user space: the display server, the file server, the USB driver and network stack, the apps, and the programs on the card (`user/progs/`). |
-| [`test/`](test) | `make test` and `make mutants`: boot transcripts, screenshots, the apps, USB, network, power cuts, tampering, the fuzzer. |
+| [`test/`](test) | `make test` and `make mutants`: boot transcripts, screenshots, the apps, USB, network, power cuts, tampering, the fuzzer, the kernel stack at its deepest. |
 | [`tools/`](tools) | Building assets and SD cards, and the browser console (`serve.py`). |
 
 A system call works like this. The machine layer saves the task's registers and hands the

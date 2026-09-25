@@ -67,3 +67,13 @@ open LeanOS
 #print axioms net_server_frames
 #print axioms sysStop_only
 #print axioms only_launchers_stop
+-- the loops the compiled kernel runs in place of its list walks (`@[csimp]`, Kernel.lean)
+#print axioms app_eq_appTR
+#print axioms snoc_eq_snocTR
+#print axioms len_eq_lenTR
+#print axioms dropRange_eq_dropRangeTR
+#print axioms runMaps_eq_runMapsTR
+#print axioms removeNth_eq_removeNthTR
+#print axioms keepBacked_eq_keepBackedTR
+#print axioms dropCaps_eq_dropCapsTR
+#print axioms dropMaps_eq_dropMapsTR

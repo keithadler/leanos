@@ -705,6 +705,8 @@ static void evict(uint64_t k) {
         }
 }
 
+static void report(const char *what);
+
 static void do_syscall(uint64_t cur) {
     struct frame *f = &saved[cur];
     syscalls++;
@@ -755,6 +757,7 @@ static void do_syscall(uint64_t cur) {
        on the card: the file server writes each change through before it answers. */
     if (power == 1) {
         kputs("leanos: switching off, as the display server asked\n");
+        report("leanos: switched off");
         poweroff();
     } else if (power == 2) {
         kputs("leanos: restarting, as the display server asked\n");
@@ -790,13 +793,17 @@ static void load_result(uint64_t j) {
 }
 
 /* ---- the kernel stack ----
- * The Lean kernel recurses once per list element (a task's mappings, at most USER_PAGES of
- * them), so the stack is sized for that (arch/kernel.ld). Nothing proves the bound, so it is
- * checked instead: the stack is painted at boot, and every return to user mode checks that
- * the bottom of the paint is intact. Running past it stops the machine rather than letting
- * the stack grow into the kernel's other data. */
-extern char __stack_bottom[], __stack_top[], __core_stacks[];
-#define STACK_SIZE 0x200000UL
+ * 64 KiB per core (arch/kernel.ld). The Lean kernel's walks over a task's mappings and
+ * capabilities run as loops (the `@[csimp]` theorems in LeanOS/Kernel.lean), so how deep the
+ * stack goes no longer depends on how many a task holds. What recursion is left walks short
+ * lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines (at most
+ * one of each). The deepest measured, with a task holding all 8192 mappings, is about 2 KiB
+ * (test/stack.sh). Nothing proves the bound, so it is checked instead: the stack is painted
+ * at boot, and every return to user mode checks that the bottom of the paint is intact.
+ * Running past it stops the machine rather than letting the stack grow into the kernel's
+ * other data. */
+extern char __stack_bottom[], __stack_top[], __core_stacks[], __core_stacks_end[];
+#define STACK_SIZE 0x10000UL
 static char *stack_bottom(uint64_t c) { return c == 0 ? __stack_bottom : __core_stacks + (c - 1) * STACK_SIZE; }
 #define STACK_PAINT 0x5a5a5a5a5a5a5a5aUL
 #define STACK_GUARD 512   /* bytes at the bottom that must stay painted */
@@ -1020,6 +1027,9 @@ void kmain(void) {
     stack_paint();
     uart_init();
     kputs("leanos \xc2\xa9 2026 Keith Adler\n");
+    if ((uint64_t)(__stack_top - __stack_bottom) != STACK_SIZE ||
+        (uint64_t)(__core_stacks_end - __core_stacks) != (NCORES - 1) * STACK_SIZE)
+        kpanic("the kernel stacks in arch/kernel.ld are not STACK_SIZE each");
     kputs("leanos: Raspberry Pi 4, booting on ");
     uint64_t el = SYSREG_READ(CurrentEL) >> 2;
     kputs(el == 1 ? "EL1" : "EL?");

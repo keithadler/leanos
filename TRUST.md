@@ -88,7 +88,10 @@ though every proof checks.
 **Tools**
 - Lean's kernel, which checks the proofs.
 - Lean's compiler, which turns `Kernel.lean` into C. The proofs are about the Lean
-  definitions, and this compiler is what makes the running code match them.
+  definitions, and this compiler is what makes the running code match them. Where
+  `Kernel.lean` gives a loop for one of its list walks, the compiler runs the loop in its
+  place only because a `@[csimp]` theorem proves the two equal (`dropRange_eq_dropRangeTR`
+  and eight more, checked for axioms with the rest).
 - The C that the same compiler generates for the six standard-library modules the kernel
   imports (`Init.Prelude`, `Coe`, `Notation`, `SizeOf`, `Tactics`, `Core`).
 - clang and ld.lld.
@@ -159,7 +162,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - Four cores (`arch/kmain.c`, "the cores"; `arch/boot.S`, `secondary`). Core 0 boots, then
   hands cores 1-3 their entry through the boot stub's spin table; each turns on its own
   MMU with the same kernel tables, its own timer and its own part of the interrupt
-  controller, and has its own 2 MiB kernel stack, painted and checked like core 0's. The
+  controller, and has its own 64 KiB kernel stack, painted and checked like core 0's. The
   machine layer must:
   - take the kernel lock (`lock`, an exclusive-access spin lock with acquire and release
     semantics) before any Lean call or runtime use, and let go only just before returning
@@ -216,10 +219,15 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   (`ioFailed`, a reachable transition), which gives the caller an I/O error. Tested only on
   QEMU, where the card sits on the older EMMC controller; the Pi 4's slot is on EMMC2, which
   may need more setup (clock, 1.8 V signaling) than this does.
-- The kernel stack: the Lean kernel recurses once per list element, and nothing proves a
-  bound. The stack is sized for the largest lists the proofs allow (2 MiB for 8192
-  mappings), painted at boot, and its bottom is checked on every return to user mode, so
-  an overflow stops the machine instead of corrupting kernel memory silently.
+- The kernel stack: 64 KiB per core. The Lean kernel's walks over a task's mappings and
+  capabilities (`dropRange`, `runMaps`, `app`, `snoc`, `len`, `removeNth`, `keepBacked`,
+  `dropCaps`, `dropMaps`) run as loops, each proved equal to its definition, so how deep
+  the stack goes does not depend on how many a task holds. What recursion is left walks
+  short lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines.
+  The deepest use measured is about 2 KiB, with a task holding all 8192 mappings
+  (`test/stack.sh`; it was about 900 KiB before the loops). Nothing proves a bound, so the
+  stack is painted at boot and its bottom is checked on every return to user mode: an
+  overflow stops the machine instead of corrupting kernel memory silently.
 - User mode may read the processor's virtual counter (CNTKCTL_EL1.EL0VCTEN), for
   animations and timeouts. This gives no new power: a task could already time itself by
   counting loops. Timing side channels remain out of scope.

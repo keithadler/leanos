@@ -182,6 +182,100 @@ def runMaps (vpn base : Nat) (r : Rights) : Nat → List Mapping
   | 0 => .nil
   | k + 1 => ⟨vpn, base, r⟩ :: runMaps (vpn + 1) (base + 1) r k
 
+/-! ## The same walks, as loops
+
+Written as above, `app`, `snoc`, `len`, `dropRange` and `runMaps` take one frame of the
+kernel stack per list element, and a task may hold 8192 mappings. So each has a second
+version here that carries what it has built so far (a count, or the list reversed and
+turned round at the end with `revOnto`): every recursive call is a tail call, which Lean
+compiles to a loop.
+The `@[csimp]` theorems prove each pair equal, and the compiler then uses the loop
+wherever the kernel calls the original. The theorems in `Proofs.lean` and `Tables.lean`
+stay about the definitions above, and the code that runs is proved to compute the same. -/
+
+/-- `acc` reversed, in front of `l`. -/
+def revOnto {α : Type} : List α → List α → List α
+  | .nil, l => l
+  | a :: acc, l => revOnto acc (a :: l)
+
+def appTR {α : Type} (l l' : List α) : List α := revOnto (revOnto l .nil) l'
+
+theorem revOnto_app {α : Type} (l l' : List α) :
+    ∀ acc, revOnto (revOnto l acc) l' = revOnto acc (app l l') := by
+  induction l with
+  | nil => intro acc; rfl
+  | cons a l ih => intro acc; exact ih (a :: acc)
+
+@[csimp] theorem app_eq_appTR : @app = @appTR :=
+  funext fun (_ : Type) => funext fun l => funext fun l' => (revOnto_app l l' .nil).symm
+
+def snocTR {α : Type} (l : List α) (v : α) : List α := revOnto (revOnto l .nil) (v :: .nil)
+
+theorem revOnto_snoc {α : Type} (l : List α) (v : α) :
+    ∀ acc, revOnto (revOnto l acc) (v :: .nil) = revOnto acc (snoc l v) := by
+  induction l with
+  | nil => intro acc; rfl
+  | cons a l ih => intro acc; exact ih (a :: acc)
+
+@[csimp] theorem snoc_eq_snocTR : @snoc = @snocTR :=
+  funext fun (_ : Type) => funext fun l => funext fun v => (revOnto_snoc l v .nil).symm
+
+/-- `n` plus the length of the list. -/
+def lenGo {α : Type} : List α → Nat → Nat
+  | .nil, n => n
+  | _ :: l, n => lenGo l (n + 1)
+
+def lenTR {α : Type} (l : List α) : Nat := lenGo l 0
+
+theorem lenGo_succ {α : Type} (l : List α) : ∀ n, lenGo l (n + 1) = lenGo l n + 1 := by
+  induction l with
+  | nil => intro n; rfl
+  | cons _ l ih => intro n; exact ih (n + 1)
+
+theorem len_eq_lenGo {α : Type} (l : List α) : len l = lenGo l 0 := by
+  induction l with
+  | nil => rfl
+  | cons _ l ih => exact (congrArg (· + 1) ih).trans (lenGo_succ l 0).symm
+
+@[csimp] theorem len_eq_lenTR : @len = @lenTR :=
+  funext fun (_ : Type) => funext fun l => len_eq_lenGo l
+
+def dropRangeGo (vpn count : Nat) : List Mapping → List Mapping → List Mapping
+  | .nil, acc => revOnto acc .nil
+  | m :: ms, acc => if vpn ≤ m.vpn && m.vpn < vpn + count then dropRangeGo vpn count ms acc
+                    else dropRangeGo vpn count ms (m :: acc)
+
+def dropRangeTR (vpn count : Nat) (ms : List Mapping) : List Mapping := dropRangeGo vpn count ms .nil
+
+theorem dropRangeGo_eq (vpn count : Nat) (l : List Mapping) :
+    ∀ acc, dropRangeGo vpn count l acc = revOnto acc (dropRange vpn count l) := by
+  induction l with
+  | nil => intro acc; rfl
+  | cons m ms ih =>
+    intro acc
+    unfold dropRangeGo dropRange
+    split
+    next => exact ih acc
+    next => exact ih (m :: acc)
+
+@[csimp] theorem dropRange_eq_dropRangeTR : @dropRange = @dropRangeTR :=
+  funext fun vpn => funext fun count => funext fun l => (dropRangeGo_eq vpn count l .nil).symm
+
+def runMapsGo (r : Rights) : Nat → Nat → Nat → List Mapping → List Mapping
+  | _, _, 0, acc => revOnto acc .nil
+  | vpn, base, k + 1, acc => runMapsGo r (vpn + 1) (base + 1) k (⟨vpn, base, r⟩ :: acc)
+
+def runMapsTR (vpn base : Nat) (r : Rights) (k : Nat) : List Mapping := runMapsGo r vpn base k .nil
+
+theorem runMapsGo_eq (r : Rights) (k : Nat) :
+    ∀ vpn base acc, runMapsGo r vpn base k acc = revOnto acc (runMaps vpn base r k) := by
+  induction k with
+  | zero => intro vpn base acc; rfl
+  | succ k ih => intro vpn base acc; exact ih (vpn + 1) (base + 1) (⟨vpn, base, r⟩ :: acc)
+
+@[csimp] theorem runMaps_eq_runMapsTR : @runMaps = @runMapsTR :=
+  funext fun vpn => funext fun base => funext fun r => funext fun k => (runMapsGo_eq r k vpn base .nil).symm
+
 /-! ## The boot manifest
 
 The tasks the system starts with and the capabilities each one holds. Endpoint
@@ -1027,6 +1121,49 @@ def keepBacked (cs : List Cap) : List Mapping → List Mapping
   | .nil => .nil
   | m :: ms => if backedBy cs m then m :: keepBacked cs ms else keepBacked cs ms
 
+/-! `removeNth` and `keepBacked` as loops, proved the same (see "The same walks, as
+loops"). -/
+
+def removeNthGo {α : Type} : List α → Nat → List α → List α
+  | .nil, _, acc => revOnto acc .nil
+  | _ :: xs, 0, acc => revOnto acc xs
+  | x :: xs, n + 1, acc => removeNthGo xs n (x :: acc)
+
+def removeNthTR {α : Type} (l : List α) (n : Nat) : List α := removeNthGo l n .nil
+
+theorem removeNthGo_eq {α : Type} (l : List α) :
+    ∀ n acc, removeNthGo l n acc = revOnto acc (removeNth l n) := by
+  induction l with
+  | nil => intro n acc; cases n <;> rfl
+  | cons x xs ih =>
+    intro n acc
+    cases n with
+    | zero => rfl
+    | succ n => exact ih n (x :: acc)
+
+@[csimp] theorem removeNth_eq_removeNthTR : @removeNth = @removeNthTR :=
+  funext fun (_ : Type) => funext fun l => funext fun n => (removeNthGo_eq l n .nil).symm
+
+def keepBackedGo (cs : List Cap) : List Mapping → List Mapping → List Mapping
+  | .nil, acc => revOnto acc .nil
+  | m :: ms, acc => if backedBy cs m then keepBackedGo cs ms (m :: acc) else keepBackedGo cs ms acc
+
+def keepBackedTR (cs : List Cap) (ms : List Mapping) : List Mapping := keepBackedGo cs ms .nil
+
+theorem keepBackedGo_eq (cs : List Cap) (l : List Mapping) :
+    ∀ acc, keepBackedGo cs l acc = revOnto acc (keepBacked cs l) := by
+  induction l with
+  | nil => intro acc; rfl
+  | cons m ms ih =>
+    intro acc
+    unfold keepBackedGo keepBacked
+    split
+    next => exact ih (m :: acc)
+    next => exact ih acc
+
+@[csimp] theorem keepBacked_eq_keepBackedTR : @keepBacked = @keepBackedTR :=
+  funext fun cs => funext fun l => (keepBackedGo_eq cs l .nil).symm
+
 /-- Let go of capability `ci`. Every page the task could see only through it goes too; the
 task's other capabilities move down one place. -/
 def sysDrop (s : KState) (t : Task) (ci : Nat) : Reply :=
@@ -1062,6 +1199,49 @@ def dropCaps (k : Nat) : List Cap → List Cap
 def dropMaps (k : Nat) : List Mapping → List Mapping
   | .nil => .nil
   | m :: ms => if inSlot k m.frame then dropMaps k ms else m :: dropMaps k ms
+
+/-! `dropCaps` and `dropMaps` as loops, proved the same (see "The same walks, as loops"):
+starting a slot walks every task's capabilities and mappings. -/
+
+def dropCapsGo (k : Nat) : List Cap → List Cap → List Cap
+  | .nil, acc => revOnto acc .nil
+  | c :: cs, acc => if capInSlot k c then dropCapsGo k cs acc else dropCapsGo k cs (c :: acc)
+
+def dropCapsTR (k : Nat) (cs : List Cap) : List Cap := dropCapsGo k cs .nil
+
+theorem dropCapsGo_eq (k : Nat) (l : List Cap) :
+    ∀ acc, dropCapsGo k l acc = revOnto acc (dropCaps k l) := by
+  induction l with
+  | nil => intro acc; rfl
+  | cons c cs ih =>
+    intro acc
+    unfold dropCapsGo dropCaps
+    split
+    next => exact ih acc
+    next => exact ih (c :: acc)
+
+@[csimp] theorem dropCaps_eq_dropCapsTR : @dropCaps = @dropCapsTR :=
+  funext fun k => funext fun l => (dropCapsGo_eq k l .nil).symm
+
+def dropMapsGo (k : Nat) : List Mapping → List Mapping → List Mapping
+  | .nil, acc => revOnto acc .nil
+  | m :: ms, acc => if inSlot k m.frame then dropMapsGo k ms acc else dropMapsGo k ms (m :: acc)
+
+def dropMapsTR (k : Nat) (ms : List Mapping) : List Mapping := dropMapsGo k ms .nil
+
+theorem dropMapsGo_eq (k : Nat) (l : List Mapping) :
+    ∀ acc, dropMapsGo k l acc = revOnto acc (dropMaps k l) := by
+  induction l with
+  | nil => intro acc; rfl
+  | cons m ms ih =>
+    intro acc
+    unfold dropMapsGo dropMaps
+    split
+    next => exact ih acc
+    next => exact ih (m :: acc)
+
+@[csimp] theorem dropMaps_eq_dropMapsTR : @dropMaps = @dropMapsTR :=
+  funext fun k => funext fun l => (dropMapsGo_eq k l .nil).symm
 
 /-- A waiting sender's message loses a granted capability into slot `k`. -/
 def scrubStatus (k : Nat) : Status → Status
