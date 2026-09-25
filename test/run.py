@@ -4,8 +4,11 @@
 When the kernel reports it is idle (tasks waiting, nothing to run), the optional input is
 typed into the Pi's serial line, one step at a time; after the last step the runner waits
 for the line it names. Then the screen is captured through QEMU's control socket to
-build/screen.ppm and build/screen.png, and QEMU is told to quit. If the machine powers
-itself off instead, there is no screen to capture.
+screen.ppm and screen.png, and QEMU is told to quit. If the machine powers itself off
+instead, there is no screen to capture.
+
+Every file a run makes (the screens, the test card) goes in one folder: $LEANOS_TEST_DIR,
+or build/ when it is not set. test/all.py gives each test its own, so tests run at once.
 
 Usage: test/run.py [timeout-seconds]    (exit status: QEMU's, or 124 on timeout)
 """
@@ -21,6 +24,9 @@ import zlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMAGE = os.path.join(ROOT, "build", "kernel8.img")
+# Where this run's files go (a relative path is from the top of the project).
+SCRATCH = os.path.join(ROOT, os.environ.get("LEANOS_TEST_DIR") or "build")
+os.makedirs(SCRATCH, exist_ok=True)
 
 
 def ppm_to_png(ppm_path, png_path):
@@ -108,7 +114,7 @@ def wait_for(prefix, times=1):
     return ("wait", prefix, times)
 
 
-TEST_CARD = os.path.join(ROOT, "build", "sd-test.img")
+TEST_CARD = os.path.join(SCRATCH, "sd-test.img")
 
 
 def blank_card(path=TEST_CARD):
@@ -174,9 +180,9 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
     cond = threading.Condition()
 
     def capture():
-        ppm = os.path.join(ROOT, "build", "screen.ppm")
+        ppm = os.path.join(SCRATCH, "screen.ppm")
         qmp.cmd("screendump", filename=ppm)
-        png = os.path.join(ROOT, "build", "screen.png")
+        png = os.path.join(SCRATCH, "screen.png")
         ppm_to_png(ppm, png)
         if on_screen:
             on_screen(png)
@@ -192,9 +198,9 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                     cond.notify_all()
             for prefix, name in (snaps or {}).items():
                 if line.startswith(prefix):
-                    ppm = os.path.join(ROOT, "build", name + ".ppm")
+                    ppm = os.path.join(SCRATCH, name + ".ppm")
                     qmp.cmd("screendump", filename=ppm)
-                    ppm_to_png(ppm, os.path.join(ROOT, "build", name + ".png"))
+                    ppm_to_png(ppm, os.path.join(SCRATCH, name + ".png"))
             if waiting_for and line.startswith(waiting_for):
                 time.sleep(settle)   # let the display finish drawing
                 capture()
@@ -228,9 +234,9 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                 waiting_for = until or "\0"
                 continue
             if line.startswith("leanos: idle") and waiting_for is None:
-                ppm = os.path.join(ROOT, "build", "screen.ppm")
+                ppm = os.path.join(SCRATCH, "screen.ppm")
                 qmp.cmd("screendump", filename=ppm)
-                png = os.path.join(ROOT, "build", "screen.png")
+                png = os.path.join(SCRATCH, "screen.png")
                 ppm_to_png(ppm, png)
                 if on_screen:
                     on_screen(png)
@@ -299,7 +305,7 @@ if __name__ == "__main__":
     apps = "--apps" in sys.argv
     image = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--image=")), None)
     steps = DEMO_STEPS if demo else APP_STEPS if apps else ()
-    # --keep-sd: boot with the card the last run left (build/sd-test.img); --no-sd: no card
+    # --keep-sd: boot with the card the last run left (sd-test.img); --no-sd: no card
     sd = (TEST_CARD if "--keep-sd" in sys.argv else "" if "--no-sd" in sys.argv
           else blank_card() if "--blank-sd" in sys.argv else raw_card() if "--raw-sd" in sys.argv else None)
     until = "display: the drag drew" if demo else "security: 13" if apps else None

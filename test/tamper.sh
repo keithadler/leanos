@@ -3,20 +3,24 @@
 # and check the kernel refuses carol (and only carol), and that the boot screen says so.
 set -u
 cd "$(dirname "$0")/.."
+# this run's files (screens, cards): test/all.py gives each test its own folder
+T=${LEANOS_TEST_DIR:-build}
+mkdir -p "$T"
 fail() { echo "FAIL: $*"; exit 1; }
 
-python3 - <<'PY' || fail "could not tamper with the image"
+python3 - "$T/kernel8-tampered.img" <<'PY' || fail "could not tamper with the image"
+import sys
 image = open("build/kernel8.img", "rb").read()
 carol = open("build/user/carol.bin", "rb").read()
 at = image.find(carol)
 assert at >= 0 and image.find(carol, at + 1) < 0, "carol's code is not in the image exactly once"
 patched = bytearray(image)
 patched[at + len(carol) // 2] ^= 0x01
-open("build/kernel8-tampered.img", "wb").write(patched)
+open(sys.argv[1], "wb").write(patched)
 print(f"tampered: flipped one bit of carol's code at image offset {at + len(carol) // 2:#x}")
 PY
 
-out=$(python3 test/run.py 40 --image=build/kernel8-tampered.img)
+out=$(python3 test/run.py 40 --image="$T/kernel8-tampered.img")
 status=$?
 echo "$out" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the tampered image did not reach idle (status $status)"
@@ -29,8 +33,9 @@ echo "$out" | grep -q "^carol: " && fail "carol ran"
 echo "$out" | grep -qx "display: boot checks shown: 5 verified, 1 refused" || fail "the boot screen did not show the refusal"
 echo "$out" | grep -q "^mallory: I am task 2" || fail "the other tasks did not run"
 
-python3 - <<'PY' || fail "the boot screen does not show carol refused"
-data = open("build/logo.ppm", "rb").read()
+python3 - "$T" <<'PY' || fail "the boot screen does not show carol refused"
+import os, sys
+data = open(os.path.join(sys.argv[1], "logo.ppm"), "rb").read()
 _, dims, _, px = data.split(b"\n", 3)
 w, h = map(int, dims.split())
 at = lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
@@ -48,23 +53,24 @@ echo "ok: a one-bit change to carol's code keeps carol from running"
 
 # The same attack on an app that is not loaded at boot: Security is only loaded, and checked,
 # when the dock starts it. It must be refused then, and nothing else may change.
-python3 - <<'PY' || fail "could not tamper with the image"
+python3 - "$T/kernel8-tampered.img" <<'PY' || fail "could not tamper with the image"
+import sys
 image = open("build/kernel8.img", "rb").read()
 app = open("build/user/security.bin", "rb").read()
 at = image.find(app)
 assert at >= 0 and image.find(app, at + 1) < 0, "Security's code is not in the image exactly once"
 patched = bytearray(image)
 patched[at + len(app) // 2] ^= 0x01
-open("build/kernel8-tampered.img", "wb").write(patched)
+open(sys.argv[1], "wb").write(patched)
 print(f"tampered: flipped one bit of Security's code at image offset {at + len(app) // 2:#x}")
 PY
 
-out=$(python3 - <<'PY'
+out=$(python3 - "$T/kernel8-tampered.img" <<'PY'
 import sys
 sys.path.insert(0, "test")
 from run import boot, mouse, wait_for, DOCK
 steps = [mouse("d", *DOCK["Security"]), mouse("u", *DOCK["Security"]), wait_for("display: Security was refused")]
-sys.exit(boot(60, steps=steps, until="display: Security was refused", image="build/kernel8-tampered.img"))
+sys.exit(boot(60, steps=steps, until="display: Security was refused", image=sys.argv[1]))
 PY
 )
 status=$?

@@ -3,6 +3,9 @@
 # on, the serial transcript, and the pixels on the screen.
 set -u
 cd "$(dirname "$0")/.."
+# this run's files (screens, cards): test/all.py gives each test its own folder
+T=${LEANOS_TEST_DIR:-build}
+mkdir -p "$T"
 
 fail() { echo "FAIL: $*"; exit 1; }
 
@@ -13,7 +16,7 @@ echo "$axioms" | grep -v "depends on axioms: \[\(propext\|Classical.choice\|Quot
   | grep -v "does not depend on any axioms$" | grep -q . && fail "unexpected axiom: $axioms"
 echo "ok: $(echo "$axioms" | wc -l | tr -d ' ') theorems rest only on Lean's standard axioms"
 
-rm -f build/screen.ppm build/screen.png build/logo.ppm build/logo.png
+rm -f "$T/screen.ppm" "$T/screen.png" "$T/logo.ppm" "$T/logo.png"
 # Boot, wait for the desktop to settle, type "Hi!" into the Notes window, drag it by its
 # title bar, then capture the screen (test/run.py, DEMO_STEPS).
 out=$(python3 test/run.py 40 --demo)
@@ -109,7 +112,8 @@ frame_ms=$(echo "$timing" | sed -n 's/^display: the drag drew [0-9]* frames, \([
 echo "ok: drawing speed: $(echo "$timing" | sed 's/^display: //' | paste -sd ';' - | sed 's/;/; /g')"
 
 # The screens themselves.
-python3 - <<'PY' || fail "the screen is not what the display drew"
+python3 - "$T" <<'PY' || fail "the screen is not what the display drew"
+import os, sys
 def load(path):
     data = open(path, "rb").read()
     _, dims, _, px = data.split(b"\n", 3)
@@ -117,7 +121,7 @@ def load(path):
     assert (w, h) == (1024, 600), (w, h)
     return lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
 
-logo = load("build/logo.ppm")
+logo = load(os.path.join(sys.argv[1], "logo.ppm"))
 r, g, b = logo(566, 172)          # the logo tile, off the lambda: indigo to teal
 assert b > r + 40 and b > 120, ("logo", (r, g, b))
 assert logo(512, 434)[1] > 150, ("progress bar, full", logo(512, 434))
@@ -128,7 +132,7 @@ for k in range(6):               # a green check beside every program on the boo
     y0 = 462 + k * 16
     assert sum(1 for y in range(y0, y0 + 14) for x in range(382, 396) if green(*logo(x, y))) > 30, ("check", k)
 
-at = load("build/screen.ppm")
+at = load(os.path.join(sys.argv[1], "screen.ppm"))
 # mallory wrote 0xbad over the first two pixels of the menu bar; they match their neighbors
 assert at(0, 0) == at(2, 0) == at(3, 0) and at(1, 0) == at(2, 0), ("menu bar", at(0, 0), at(2, 0))
 assert min(at(500, 214)) > 220, ("title bar after the drag", at(500, 214))

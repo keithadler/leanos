@@ -3,7 +3,7 @@
 #   make          build build/leanos.elf (and check every proof)
 #   make run      boot it in QEMU, headless (serial on the terminal; watch the screen in
 #                 the browser console, tools/serve.py)
-#   make test     boot it, start the apps, and check the transcripts and the screens
+#   make test     boot it, start the apps, and check the transcripts and the screens (JOBS=N at once)
 #   make proofs   check the proofs only
 #   make mutants  break the kernel on purpose and check the proofs notice
 
@@ -239,24 +239,10 @@ QEMU_ARGS := -M raspi4b -display none -serial stdio -semihosting -kernel build/k
 run: build/kernel8.img $(SD_IMAGE)
 	$(QEMU) $(QEMU_ARGS)
 
+# The tests run several at once (JOBS=N: at most N; JOBS=1: one after the other), each in
+# its own folder, build/test/NAME, where its output stays (test/all.py).
 test: all
-	./test/boot.sh
-	./test/apps.sh
-	./test/programs.sh
-	./test/power.sh
-	./test/piimage.sh
-	./test/tamper.sh
-	./test/fuzz.sh
-	./test/usb.sh
-	./test/touch.sh
-	./test/crash.sh
-	./test/bigprog.sh
-	./test/stack.sh
-	./test/edit.sh
-	./test/net.sh
-	./test/kill.sh
-	./test/web.sh
-	./test/timezone.sh
+	./test/all.py
 
 # Break the kernel in known ways and check the proofs catch every one (slow).
 mutants:

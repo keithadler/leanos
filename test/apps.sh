@@ -5,10 +5,13 @@
 # program verified. Then the pixels.
 set -u
 cd "$(dirname "$0")/.."
+# this run's files (screens, cards): test/all.py gives each test its own folder
+T=${LEANOS_TEST_DIR:-build}
+mkdir -p "$T"
 
 fail() { echo "FAIL: $*"; exit 1; }
 
-rm -f build/screen.ppm build/screen.png
+rm -f "$T/screen.ppm" "$T/screen.png"
 out=$(python3 test/run.py 120 --apps)
 status=$?
 echo "$out" | grep -vE "^(mallory|carol): " | sed 's/^/  | /'
@@ -104,8 +107,9 @@ echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 echo "$out" | grep -qE "SHOULD NOT|CHANGED" && fail "a protection failed"
 echo "ok: apps start from the dock, are checked on every start, stop when closed, and keep their files"
 
-python3 - <<'PY' || fail "the screen is not what the apps drew"
-data = open("build/screen.ppm", "rb").read()
+python3 - "$T" <<'PY' || fail "the screen is not what the apps drew"
+import os, sys
+data = open(os.path.join(sys.argv[1], "screen.ppm"), "rb").read()
 _, dims, _, px = data.split(b"\n", 3)
 w, h = map(int, dims.split())
 at = lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
@@ -155,5 +159,5 @@ raw=$(python3 test/run.py 40 --raw-sd)
 [ $? -eq 0 ] || fail "the boot with an unpartitioned card did not reach idle"
 echo "$raw" | grep -qx "leanos: SD card has no data partition (type 0xDA); files stay in memory" || fail "an unpartitioned card was not noticed"
 echo "$raw" | grep -qx "fs: no SD card; files are kept in memory only; ready, 1 file" || fail "the file server used an unpartitioned card"
-python3 -c "import sys; d=open('build/sd-test.img','rb').read(); sys.exit(any(d))" || fail "something was written to the unpartitioned card"
+python3 -c "import sys; d=open(sys.argv[1],'rb').read(); sys.exit(any(d))" "$T/sd-test.img" || fail "something was written to the unpartitioned card"
 echo "ok: the files and the note survive a restart on the SD card, a blank card is formatted, an unpartitioned card is never written, and the system runs without a card"

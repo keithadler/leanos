@@ -138,8 +138,10 @@ Headless, with the serial console in your terminal (Ctrl-C quits):
 make run
 ```
 
-The whole test suite (about 10 minutes; it boots the system many times and checks what it
-prints and what is on the screen):
+The whole test suite (about 2 to 3 minutes on a 10-core Mac; it boots the system many times
+and checks what it prints and what is on the screen). It runs up to four tests at once, half
+your cores at most; `make test JOBS=1` runs them one after the other (about 8 minutes), and
+each test's output stays in `build/test/NAME/output.txt`:
 
 ```bash
 make test
@@ -235,6 +237,6 @@ the Pi, connect the screen, and power it on. The first lines start with
 | The browser page stays black | The page loads noVNC from cdn.jsdelivr.net: check the browser is online. Check the terminal running `serve.py` for errors. |
 | `Address already in use` from `serve.py` | Another copy is running: stop it, or anything else on port 8796. |
 | Keys do nothing in the browser | Click the screen first; keys go to the window in front. |
-| `make test` fails on "drawing speed" | The timing check is loose but can trip on a very busy machine: run it again. |
+| `make test` fails on "drawing speed" | The timing check is loose but can trip on a very busy machine: run it again, or with fewer tests at once (`make test JOBS=2`). |
 
 Still stuck? Open an issue with what you ran and what it printed.

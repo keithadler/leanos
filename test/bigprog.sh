@@ -5,10 +5,13 @@
 # back whole, and survives a restart.
 set -u
 cd "$(dirname "$0")/.."
+# this run's files (screens, cards): test/all.py gives each test its own folder
+T=${LEANOS_TEST_DIR:-build}
+mkdir -p "$T"
 fail() { echo "FAIL: $*"; exit 1; }
 make -s build/progs/big.elf || fail "big did not build"
-card=build/sd-big.img
-python3 tools/mksd.py $card big=build/progs/big.elf || fail "no card"
+card=$T/sd-big.img
+python3 tools/mksd.py "$card" big=build/progs/big.elf || fail "no card"
 
 out=$(python3 - "$card" <<'PY'
 import sys
