@@ -962,7 +962,7 @@ theorem statusOK_scrub {j k : Nat} {st : Status} (h : StatusOK j st) :
     obtain ⟨h1, h2⟩ := h
     refine ⟨h1, fun g hg => h2 g ?_⟩
     revert hg
-    simp only [scrubStatus]
+    simp only
     cases hm : m.grant with
     | none => simp
     | some c => by_cases hc : capInSlot k c = true <;> simp [hc]
@@ -2209,14 +2209,14 @@ theorem tick_wakes_only_sleepers (s : KState) (j : Nat) {u u' : Task}
     split at hch
     · rename_i hle
       left
-      exact ⟨w, hst, by simpa using hle, by simp [hst, hle]⟩
+      exact ⟨w, hst, by simpa using hle, by simp [hle]⟩
     · exact absurd rfl hch
   · rename_i e w hst
     split at hch
     · rename_i hle
       right
       simp only [Bool.and_eq_true, Bool.not_eq_true', beq_eq_false_iff_ne, ne_eq, Nat.ble_eq] at hle
-      refine ⟨e, w, hst, hle.1, hle.2, ?_, ?_⟩ <;> simp [hst, hle.1, hle.2]
+      refine ⟨e, w, hst, hle.1, hle.2, ?_, ?_⟩ <;> simp [hle.1, hle.2]
     · exact absurd rfl hch
   · exact absurd rfl hch
 
@@ -2637,7 +2637,7 @@ theorem syscall_now (s : KState) (num a0 a1 a2 a3 a4 : Nat) :
         | (unfold sysBlock; repeat' (first | split | dsimp only)
            all_goals simp [ret_now])
         | (unfold sysSleep; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
+           all_goals simp)
         | (unfold sysPower; repeat' (first | split | dsimp only)
            all_goals simp [ret_now])
         | (unfold sysTime; simp [ret_now])
@@ -2698,7 +2698,7 @@ theorem syscall_wall (s : KState) (num a0 a1 a2 a3 a4 : Nat) (hn : num ≠ 27) :
         | (unfold sysBlock; repeat' (first | split | dsimp only)
            all_goals simp [ret_wall])
         | (unfold sysSleep; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
+           all_goals simp)
         | (unfold sysPower; repeat' (first | split | dsimp only)
            all_goals simp [ret_wall])
         | (unfold sysTime; simp [ret_wall])
@@ -2887,10 +2887,10 @@ theorem boardRequest_listed (w v : Nat) : boardRequest w v = 0 ∨ boardRequest 
   by_cases h1 : w = 1
   · simp [h1, boardRequests]
   by_cases h2 : w = 2
-  · simp only [h0, h1, h2, if_false, if_true]
+  · simp only [h2, if_true]
     rcases v with _ | _ | _ | v <;> simp [nth?, cpuSpeeds, boardRequests]
   by_cases h3 : w = 3 ∧ v < 2
-  · simp only [h0, h1, h2, h3, if_false, if_true, and_self]
+  · simp only [h3, if_true, and_self]
     right
     rcases h3 with ⟨_, hv⟩
     rcases v with _ | _ | v
