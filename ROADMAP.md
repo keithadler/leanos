@@ -176,9 +176,9 @@ be in its table with a bound (the task list, 19 calls deep with the empty tail, 
 `state_bounded` and `task_bounded`. Indirect calls are traced to the addresses loaded
 before them: the runtime's one-time initializers at each of their calls, and `trap`'s
 conversion of message words; a call through a pointer from memory, a jump that is not a
-jump table, or a frame of variable size fails. The worst case is 6,016 bytes: 3,008 for
+jump table, or a frame of variable size fails. The worst case is 6,048 bytes: 3,024 for
 the deepest system call (`start` taking back a slot's memory from every task), and a kernel
-exception on top of it. That is 2.8 times the deepest measured (2,128) and under a tenth
+exception on top of it. That is 2.8 times the deepest measured (2,144) and under a tenth
 of the 64 KiB stack. It rests on clang's frame sizes (checked against each function's
 own stack adjustments), on the call graph read from the image, and on each walk running
 over the list its bound is about, which is read from the code, not proved (TRUST.md).

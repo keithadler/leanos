@@ -818,10 +818,10 @@ static void load_result(uint64_t j) {
  * stack goes no longer depends on how many a task holds. What recursion is left walks short
  * lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines (at most
  * one of each). tools/stackcheck.py computes the worst case from the code (clang's frame
- * sizes, the calls in the linked image, and a bound for each of those recursions): 6,016
+ * sizes, the calls in the linked image, and a bound for each of those recursions): 6,048
  * bytes, with a kernel exception on top of the deepest system call, and `make test` fails if
  * it passes half the stack. The deepest measured, with a task holding all 8192 mappings, is
- * 2,128 bytes (test/stack.sh). The computation trusts clang, the call graph it reads and the
+ * 2,144 bytes (test/stack.sh). The computation trusts clang, the call graph it reads and the
  * recursion bounds it is given (TRUST.md), so the stack is still checked as well: it is
  * painted at boot, and every return to user mode checks that the bottom of the paint is
  * intact. Running past it stops the machine rather than letting the stack grow into the

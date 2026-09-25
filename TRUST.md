@@ -160,9 +160,9 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   1,325,600 bytes with its list cell (1,310,720 of them for 8192 mappings of 160 bytes
   each: the cell, the `Mapping` and its `Rights`), 18 tasks 23,860,800, and the whole state
   23,862,064 bytes (22.8 MiB), 37% of the heap. For scale: in `test/stack.sh`, with one
-  task holding all 8192 mappings, the heap's peak is 1,276,960 bytes. In `test/chaos.sh`,
+  task holding all 8192 mappings, the heap's peak is 1,448,544 bytes. In `test/chaos.sh`,
   with six programs from the card each holding 64 capabilities and 8192 mappings at once,
-  then one slot restarted 30 times beside five of them, it is 5,787,136 bytes. The machine
+  then one slot restarted 30 times beside five of them, it is 5,787,200 bytes. The machine
   layer reports the heap after every start (`leanos: kernel heap N bytes live`), and with
   the same programs in the same slots that number is the same to the byte every time: what
   a stopped, faulted or exited program held is all freed when its slot starts again.
@@ -333,7 +333,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   the stack goes does not depend on how many a task holds. What recursion is left walks
   short lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines
   (at most two; `task_bounded`, `state_bounded`).
-  The deepest use measured is 2,128 bytes, with a task holding all 8192 mappings
+  The deepest use measured is 2,144 bytes, with a task holding all 8192 mappings
   (`test/stack.sh`; it was about 900 KiB before the loops).
 
   The worst case is also computed from the code: `tools/stackcheck.py` (`make stackcheck`,
@@ -346,7 +346,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   tail), `placeCaller` and `forgetCaller` a task's reply slots (9), `dropLine` the pending
   lines (3). Recursion not in the table, an indirect call it cannot resolve, a frame of
   variable size (alloca, a variable-length array) or a worst case over 32 KiB, half the
-  stack, fails the check. The worst case is 6,016 bytes: 3,008 for a system call (`start`
+  stack, fails the check. The worst case is 6,048 bytes: 3,024 for a system call (`start`
   taking back a slot's memory: `revokeAll` over the tasks, then `forgetCaller` over one
   task's reply slots, then an allocation that can fail into `kpanic`), and a kernel
   exception on top of that. What it trusts:
