@@ -192,9 +192,18 @@ tied to the hash the kernel measured, so a different program in that slot is ref
 
 Done too: the time of day. The kernel keeps when tick 0 was in Unix seconds (`wall`), set
 only through a time capability the USB driver alone holds (`only_usb_driver_sets_time`); the
-driver asks a time server over NTP after DHCP. The menu bar and Clock show the date and time
-in UTC. Next here: a time zone in Settings, and NTP answers checked against more than one
-server.
+driver asks a time server over NTP after DHCP. Next here: NTP answers checked against more
+than one server.
+
+Done too: a time zone. Settings steps through the zones people live in, UTC-12 to UTC+14 with
+the half and quarter hours (UTC-3:30, UTC+5:30, UTC+5:45), and tells the display server,
+which takes a zone only from Settings' badge. The menu bar shows the date and time in it at
+once, and Clock asks the display for it every second, over the endpoint every window already
+has. No kernel change and no new capability: the display cannot write the card, so it asks
+Apps, which can, to keep the zone in `timezone.txt`, as it already asks Apps to start the
+dock's programs; at boot Apps reads it back and hands it to the display, which takes that
+once. The time itself stays UTC, set only by the USB driver. `test/timezone.sh` checks what
+the menu bar and Clock show against the time each read, across midnight, and after a restart.
 
 Done too: touchscreens and tablets. The USB driver reads a HID device's report
 descriptor when it does not speak the boot protocol, finds the absolute X and Y and the

@@ -4,7 +4,7 @@ The dock
   Notes     a note that is saved to the SD card as you type
   Files     every file on the card; click one to read it, Delete removes it
   Terminal  commands; type help
-  Settings  the background
+  Settings  the background, the time zone, and the Raspberry Pi's speed and light
   Security  what every program's boot check found, and what is proved
   Apps      every program, built in or on the card, with its icon; click one to start it
 
@@ -31,7 +31,7 @@ Programs on the card
   snake   the arrow keys steer; space plays again
   life    Conway's Game of Life; space pauses, a click adds a cell, r reseeds
   tiles   2048: the arrow keys slide the tiles
-  clock   how long the Pi has been up
+  clock   the time in your time zone (until a time server answers, how long the Pi has been up)
   hello   the smallest program
   fuzz    20,000 system calls with made-up arguments, each answer checked
   edit    a text editor: run edit FILE gives it that file; it saves by itself

@@ -156,6 +156,11 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - The time of day: that the time server's answer is right is trusted, not proved (SNTP, one
   question, no authentication: anyone on the network path could send a wrong time). The
   proofs say only who can set it and that it then moves with the kernel's own clock.
+- The time zone changes only what the menu bar and Clock show; the kernel's time stays UTC.
+  The display server keeps it and takes a new one only from Settings' badge (and once at
+  boot from Apps, which reads back the one it saved on the card), a quarter hour between
+  -12:00 and +14:00. That rule is the display server's C (`on_set` in `user/display.c`),
+  trusted, not proved.
 - The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
   then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.

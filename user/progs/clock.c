@@ -4,9 +4,14 @@
    only on a timer tick, by exactly one, and never back (`clock_monotone`); the hours,
    minutes and seconds add up to exactly the uptime (`time_reads_clock`); and the sleep it
    waits in never ends early (`sleep_on_time`). It asks the display server for events
-   without blocking, so the close button still works. */
+   without blocking, so the close button still works.
+
+   The time of day is shown in the time zone chosen in Settings. The kernel keeps only UTC;
+   the zone is the display server's, and Clock asks it every second (ZONE, over the endpoint
+   every window already has), so a new zone shows at once and Clock needs nothing more: no
+   file, no new capability. */
 #include "../ui.h"
-#include "../date.h"
+#include "../zone.h"
 
 #define CW 300
 #define CH 150
@@ -16,6 +21,8 @@ struct clock {
     struct surface win;
     u64 shown;               /* the second on screen */
     u64 ticks;               /* the kernel's tick count behind it */
+    long zone;               /* the time zone it shows, minutes east of UTC */
+    int said;                /* the time of day was logged in this zone */
 };
 
 /* The kernel's clock: ticks since boot, milliseconds, and hours, minutes, seconds. */
@@ -34,7 +41,7 @@ static void draw(struct clock *c, struct time t) {
     struct surface *s = &c->win;
     fill(s, 0, 0, CW, CH, rgb(20, 22, 32));
     /* The time of day, if the network has said what it is; else the time since boot. */
-    struct date d = date_of(t.wall);
+    struct date d = date_of(local_of(t.wall, c->zone));
     struct line l = {.n = 0};
     two(&l, t.wall ? (u64)d.h : t.h);
     put_s(&l, ":");
@@ -53,7 +60,9 @@ static void draw(struct clock *c, struct time t) {
         put_dec(&u, (u64)d.day);
         put_s(&u, ", ");
         put_dec(&u, (u64)d.year);
-        put_s(&u, " (UTC)");
+        put_s(&u, " (");
+        put_zone(&u, c->zone);
+        put_s(&u, ")");
     } else put_s(&u, "up since the Pi started");
     u.b[u.n] = 0;
     font_text(s, &c->ui.small, CW / 2 - font_width(&c->ui.small, u.b) / 2, 96, u.b, rgb(130, 136, 160));
@@ -84,6 +93,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     struct time t = kernel_time();
     c->shown = t.ms / 1000;
     c->ticks = t.ticks;
+    c->zone = app_zone();
+    c->said = 0;
     draw(c, t);
     u64 opened = app_open(CW, CH, "Clock");
     put_s(&l, "clock: opened a window");
@@ -106,10 +117,27 @@ __attribute__((section(".text.start"))) void _start(void) {
             flush(&l);
         }
         c->ticks = t.ticks;
+        long zone = app_zone();
+        if (zone != c->zone) {
+            c->zone = zone;
+            c->said = 0;
+            c->shown = ~0UL;             /* draw it now */
+        }
         if (t.ms / 1000 != c->shown) {
             c->shown = t.ms / 1000;
             draw(c, t);
             dirty = 1;
+            if (t.wall && !c->said) {    /* for the log: the time shown, and UTC, from one reading */
+                c->said = 1;
+                put_s(&l, "clock: in ");
+                put_zone(&l, c->zone);
+                put_s(&l, " it is ");
+                put_local(&l, t.wall, c->zone);
+                put_s(&l, " (Unix time ");
+                put_dec(&l, t.wall);
+                put_s(&l, ")\n");
+                flush(&l);
+            }
             if (++ticked == 3) {         /* for the log: it keeps up with the kernel */
                 put_s(&l, "clock: ticked 3 times, at tick ");
                 put_dec(&l, t.ticks);

@@ -37,16 +37,17 @@ This is the start. The next steps, in order:
    over PCIe) and the Pi's own Ethernet.
 2. **Newer Pis.** The Raspberry Pi 5, whose peripherals sit behind its RP1 chip, and later
    boards. The Lean kernel carries over unchanged; the machine layer and drivers are the work.
-3. **Wider.** `https`, time zones, more programs, and the proofs pushed further down into the
-   machine layer.
+3. **Wider.** `https`, more programs, and the proofs pushed further down into the machine
+   layer.
 
 [ROADMAP.md](ROADMAP.md) has the details, and what each stage proved.
 
 ## What it does
 
-- **A desktop** at 1024×600: windows you can drag, a menu bar with the date and time, and a
-  dock. Built-in apps: Notes, Files, Terminal, Settings, Security, Apps and Clock. What opens
-  at startup is a list on the SD card (`startup.txt`: Apps and the tour, to begin with).
+- **A desktop** at 1024×600: windows you can drag, a menu bar with the date and time in the
+  time zone chosen in Settings, and a dock. Built-in apps: Notes, Files, Terminal, Settings,
+  Security, Apps and Clock. What opens at startup is a list on the SD card (`startup.txt`:
+  Apps and the tour, to begin with).
 - **Programs from the SD card**: `web` (a text web browser), `edit` (a text editor),
   `calc`, `snake`, `life`, `tiles` (2048), `tour`, `fuzz` and `hello`. Up to six run at once,
   each confined to its own memory, a window, its own folder, the files you hand it, and the

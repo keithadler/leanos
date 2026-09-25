@@ -17,7 +17,12 @@
    Settings, Security, Files). Clicking an app in the dock starts it if it is not running; the
    kernel first takes back everything the app's last run shared, including its window, so
    the server drops that window before it asks. SET (w0 = 3) changes the desktop, and only
-   Settings (badge 6) may ask.
+   Settings (badge 6) may ask: the background, or the time zone (user/zone.h).
+
+   The time zone is the display's to keep. ZONE (9): anyone may ask it, and hears the minutes
+   east of UTC (biased); Clock asks every second. The display cannot write the card, so when
+   Settings changes the zone it asks Apps, which can, to save it (as it asks Apps to start a
+   pinned program); at boot Apps reads it back and gives it here, once.
 
    It keeps a copy of its own capability list's layout (which app granted each capability,
    and for which window), so it can drop a window's capability when the window goes, drop
@@ -29,7 +34,7 @@
 #include "lib.h"
 #include "gfx.h"
 #include "assets.h"
-#include "date.h"
+#include "zone.h"
 
 #define FRAMEBUFFER 5
 #define FB_PAGE 1024
@@ -49,11 +54,12 @@
 #define H 600
 #define RADIUS 12
 
-enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8 };
+enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
+       OP_ZONE = 9 };
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6 };
 enum { BADGE_USB = 17, BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
        BADGE_SECURITY = 7, BADGE_FILES = 9 };
-enum { SET_BACKGROUND = 1 };
+enum { SET_BACKGROUND = 1, SET_ZONE = 2 };
 #define LAUNCH_FIRST 6  /* launch capabilities: Notes, Terminal, Settings, Security */
 #define POWER 11        /* the power capability: switch off, restart */
 #define APPS_LAUNCH 12  /* the launch capability for Apps (slot 16) */
@@ -111,6 +117,9 @@ struct state {
     char pending[16];           /* a pinned program to start when Apps next asks */
     char bar_time[24];          /* the menu bar's clock ("Wed Sep 23  14:05"), empty until known */
     u64 bar_minute;             /* the minute it shows */
+    long zone;                  /* the time zone, minutes east of UTC (user/zone.h) */
+    int zone_unsaved;           /* Settings changed it, and Apps has not been asked to save it */
+    int zone_restore;           /* Apps, started at boot, may give the zone saved on the card */
     int spread;                 /* until the first click or key: place windows apart, not cascaded */
     /* the background pattern: a color per row, a glow per column, and a 32 x 32 tile */
     unsigned bg_row[H];
@@ -342,16 +351,13 @@ static void top_bar(struct state *st) {
 
 static void composite(struct state *st, int x, int y, int w, int h);
 
-/* The menu bar's clock: the kernel's time of day, to the minute. Returns the milliseconds
-   until the next minute (or a few seconds, while the time is not known). */
-static u64 bar_clock(struct state *st) {
-    struct res r = sys0(SYS_TIME);
-    u64 wall = r.x[6];
-    if (!wall) return 5000;
+/* The menu bar's clock: the kernel's time of day in the time zone, to the minute. Every
+   zone is a whole number of minutes from UTC, so its minutes turn over with UTC's. */
+static void bar_show(struct state *st, u64 wall, int again) {
     u64 minute = wall / 60;
-    if (minute != st->bar_minute) {
+    if (minute != st->bar_minute || again) {
         st->bar_minute = minute;
-        struct date d = date_of(wall);
+        struct date d = date_of(local_of(wall, st->zone));
         struct line l = {.n = 0};
         const char *m = month_names[d.month - 1];
         const char *wd = day_names[d.weekday];
@@ -370,6 +376,33 @@ static u64 bar_clock(struct state *st) {
         st->bar_time[n] = 0;
         composite(st, 0, 0, W, BAR_H + 1);
     }
+}
+
+/* The zone, said: and what the menu bar shows with it, beside UTC, for the log. */
+static void say_zone(struct state *st, struct line *l, const char *why) {
+    put_s(l, "display: time zone ");
+    put_zone(l, st->zone);
+    put_s(l, why);
+    u64 wall = sys0(SYS_TIME).x[6];
+    if (wall) {
+        bar_show(st, wall, 1);
+        put_s(l, "; the menu bar shows ");
+        put_s(l, st->bar_time);
+        put_s(l, " at Unix time ");
+        put_dec(l, wall);
+    } else put_s(l, "; the time of day is not known yet");
+    say(l);
+}
+
+/* Returns the milliseconds until the next minute (or a few seconds, while the time is not
+   known). The first time it is known, the log says what the menu bar shows. */
+static u64 bar_clock(struct state *st) {
+    u64 wall = sys0(SYS_TIME).x[6];
+    if (!wall) return 5000;
+    if (!st->bar_time[0]) {
+        struct line l = {.n = 0};
+        say_zone(st, &l, "");
+    } else bar_show(st, wall, 0);
     return (60 - wall % 60) * 1000 + 50;
 }
 
@@ -801,6 +834,8 @@ static void open_pinned(struct state *st, struct line *l, int p) {
 static void on_pending(struct state *st, struct res *r) {
     u64 w[2] = {0, 0};
     if (r->x[1] == 16) {
+        st->zone_restore = same_name(st->pending, "@startup");
+        if (same_name(st->pending, "@zone")) st->zone_unsaved = 0;
         for (int i = 0; i < 15 && st->pending[i]; i++) w[i / 8] |= (u64)(unsigned char)st->pending[i] << (8 * (i % 8));
         st->pending[0] = 0;
     }
@@ -1136,9 +1171,43 @@ static void on_start(struct state *st, struct line *l, struct res *r) {
     launch(st, l, (int)which);
 }
 
-/* SET: only Settings may change the desktop. */
+/* Ask Apps to save the time zone on the card: as an event if its window is open, else by
+   starting it with "@zone" waiting (OP_PENDING). If Apps is busy starting, or another request
+   is waiting for it, this is tried again once it is done. */
+static void save_zone(struct state *st, struct line *l) {
+    for (int k = 0; k < MAX_WIN; k++) {
+        struct win *w = &st->win[k];
+        if (w->used && !w->closing && slot_of(w->badge) == 16) {
+            deliver_event(w, EV_LAUNCH, 0x6e6f7a40 /* "@zon" */, 'e');
+            st->zone_unsaved = 0;
+            return;
+        }
+    }
+    if (run_state(16) == 1 || (st->pending[0] && !same_name(st->pending, "@zone"))) return;
+    const char *z = "@zone";
+    for (int i = 0; i < 6; i++) st->pending[i] = z[i];
+    launch(st, l, APPS_DOCK);   /* Apps takes it from pending (on_pending) */
+}
+
+/* ZONE: the time zone, for anyone who asks. */
+static void on_zone(struct state *st, struct res *r) {
+    sys(SYS_REPLY, r->x[6] - 1, 0, (u64)(st->zone + ZONE_BIAS), 0, 0);
+}
+
+/* SET: only Settings may change the desktop. Apps, started at boot, may give the time zone
+   it read from the card, once, unless Settings has chosen one since. */
 static void on_set(struct state *st, struct line *l, struct res *r) {
     u64 badge = r->x[1], what = r->x[3], value = r->x[4], slot = r->x[6];
+    if (what == SET_ZONE && value <= (u64)(ZONE_MAX + ZONE_BIAS) && zone_ok((long)value - ZONE_BIAS) &&
+        (badge == BADGE_SETTINGS || (badge == 16 && st->zone_restore))) {
+        st->zone = (long)value - ZONE_BIAS;
+        if (badge == BADGE_SETTINGS) st->zone_unsaved = 1;
+        st->zone_restore = 0;
+        sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
+        if (badge == BADGE_SETTINGS) say_zone(st, l, ", as Settings asked");
+        else if (st->zone) say_zone(st, l, ", saved on the card");
+        return;
+    }
     if (badge != BADGE_SETTINGS || what != SET_BACKGROUND || value >= NTHEME) {
         if (st->ignored[badge & 31] < 3) {
             st->ignored[badge & 31]++;
@@ -1195,6 +1264,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->drag_frames = st->drag_us = 0;
     st->bar_time[0] = 0;
     st->bar_minute = 0;
+    st->zone = 0;
+    st->zone_unsaved = st->zone_restore = 0;
     make_background(st);
     st->px = W / 2;
     st->py = H / 2;
@@ -1225,6 +1296,7 @@ __attribute__((section(".text.start"))) void _start(void) {
             bar_wait = bar_clock(st);
             bar_at = millis();
         }
+        if (st->zone_unsaved) save_zone(st, &l);
         if (st->drag_pending) {
             r = sys(SYS_RECVT, ENDPOINT, 0, 0, 0, 0);   /* anything else waiting? */
             if (r.status != OK) {
@@ -1232,8 +1304,10 @@ __attribute__((section(".text.start"))) void _start(void) {
                 continue;
             }
         } else {
-            /* wait for a message, or until the menu bar's clock turns over */
+            /* wait for a message, or until the menu bar's clock turns over (or, while the
+               time zone waits for Apps to save it, a moment) */
             u64 left = bar_wait - (millis() - bar_at);
+            if (st->zone_unsaved && left > 100) left = 100;
             r = sys(SYS_RECVT, ENDPOINT, left ? left : 1, 0, 0, 0);
             if (r.status != OK) continue;
         }
@@ -1263,6 +1337,8 @@ __attribute__((section(".text.start"))) void _start(void) {
             on_raise(st, &l, &r);
         } else if (slot && op == OP_PENDING) {
             on_pending(st, &r);
+        } else if (slot && op == OP_ZONE) {
+            on_zone(st, &r);
         } else {
             /* A request the display does not understand, from anyone: it answers no, and
                says so the first few times, so a program that floods it cannot flood the log. */

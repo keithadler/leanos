@@ -9,11 +9,12 @@
 #include "gfx.h"
 #include "assets.h"
 
-enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8 };
+enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
+       OP_ZONE = 9 };
 enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6 };
 /* The arrow keys, as EV_KEY codes (the input driver turns ESC [ A..D into these). */
 enum { KEY_UP = 128, KEY_DOWN = 129, KEY_RIGHT = 130, KEY_LEFT = 131 };
-enum { SET_BACKGROUND = 1 };
+enum { SET_BACKGROUND = 1, SET_ZONE = 2 };
 
 #define SPARE 3
 #define SPARE_PAGE 64       /* where an app maps its spare run: assets first */
@@ -76,6 +77,15 @@ static inline struct event app_poll(int dirty) {
     struct res e = sys(SYS_CALL, ENDPOINT, OP_POLL, (u64)dirty, 0, 0);
     struct event ev = {e.status == OK ? e.x[1] : EV_NONE, e.x[2], e.x[3]};
     return ev;
+}
+
+/* The time zone the display server keeps (zone.h): minutes east of UTC. Anyone may ask; only
+   Settings may change it. The answer comes biased by 12 hours: a message word is never
+   negative. UTC if the display does not answer. */
+static inline long app_zone(void) {
+    struct res r = sys(SYS_CALL, ENDPOINT, OP_ZONE, 0, 0, 0);
+    long m = r.status == OK && r.x[1] == 0 && r.x[2] <= 26 * 60 ? (long)r.x[2] - 12 * 60 : 0;
+    return m % 15 ? 0 : m;
 }
 
 /* A slot's name, as the manifest orders them. */

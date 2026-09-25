@@ -155,7 +155,8 @@ build/user/font.h: user/font5x7.txt tools/mkfont.py
 	@mkdir -p build/user
 	python3 tools/mkfont.py $< $@
 
-build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/fs.h user/elf.h user/user.ld build/user/font.h
+build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/fs.h user/elf.h user/date.h user/zone.h \
+  user/user.ld build/user/font.h
 	@mkdir -p build/user
 	$(CC) $(UCFLAGS) -Ibuild/user -c $< -o build/user/$*.o
 	$(LD) -T user/user.ld --gc-sections build/user/$*.o -o $@
@@ -163,7 +164,8 @@ build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/f
 # Programs that live on the SD card, not in the kernel image: stripped ELF files.
 DISK_PROGS := hello clock tour calc snake life tiles fuzz edit web
 DISK_ELFS := $(patsubst %,build/progs/%.elf,$(DISK_PROGS))
-build/progs/%.elf: user/progs/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/user.ld build/user/font.h
+build/progs/%.elf: user/progs/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/ui.h user/date.h user/zone.h \
+  user/user.ld build/user/font.h
 	@mkdir -p build/progs
 	$(CC) $(UCFLAGS) -Ibuild/user -c $< -o build/progs/$*.o
 	$(LD) -T user/user.ld --gc-sections -z max-page-size=16 -z common-page-size=16 build/progs/$*.o -o $@
@@ -254,6 +256,7 @@ test: all
 	./test/net.sh
 	./test/kill.sh
 	./test/web.sh
+	./test/timezone.sh
 
 # Break the kernel in known ways and check the proofs catch every one (slow).
 mutants:

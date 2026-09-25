@@ -65,6 +65,7 @@ PY2
 check_order settings \
   "settings: opened a window -> ok" \
   "settings: Raspberry Pi 4 Model B, revision 0xb03115, 25.0 C, CPU at 700 MHz" \
+  "settings: time zone UTC" \
   "settings: background set to Graphite -> ok" \
   "settings: CPU speed 600 MHz -> ok" \
   "settings: the firmware reports the CPU at 600 MHz" \

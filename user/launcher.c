@@ -7,11 +7,16 @@
 
    It is in the manifest, slot 16: a window, the file server (to read programs and icons),
    and the launch capabilities for the open slots. What a program it starts may do is fixed
-   by the open slot, not by the launcher. */
+   by the open slot, not by the launcher.
+
+   It also keeps the time zone on the card for the display server, which cannot write the
+   card: "@zone" from the display (pending, or an event) saves it in timezone.txt, and at
+   boot ("@startup") it reads it back and gives it to the display (user/zone.h). */
 #include "app.h"
 #include "fs.h"
 #include "elfload.h"
 #include "net.h"
+#include "zone.h"
 
 #define AW 480
 #define AH 336
@@ -243,6 +248,36 @@ static void start_named(struct launcher *st, struct line *l, const char *name) {
     flush(l);
 }
 
+/* The display's time zone, saved on the card as text ("UTC+5:30"). */
+static void save_zone(struct launcher *st, struct line *l) {
+    long zone = app_zone();
+    struct line z = {.n = 0};
+    put_zone(&z, zone);
+    put_s(&z, "\n");
+    u64 ok = fs_write(&st->fs, ZONE_FILE, z.b, z.n);
+    put_s(l, "apps: saved the time zone, ");
+    put_zone(l, zone);
+    put_s(l, ", in " ZONE_FILE);
+    put_s(l, ok == FS_OK ? " -> ok\n" : " -> refused\n");
+    flush(l);
+}
+
+/* At boot: give the display the zone saved on the card (or UTC, if none is), which it takes
+   from Apps only this once. */
+static void restore_zone(struct launcher *st, struct line *l) {
+    long zone = 0, n = fs_read(&st->fs, ZONE_FILE);
+    int saved = n > 0 && parse_zone(fs_data(&st->fs), n, &zone);
+    struct res r = sys(SYS_CALL, ENDPOINT, OP_SET, SET_ZONE, (u64)(zone + ZONE_BIAS), 0);
+    if (n < 0) return;                            /* none saved: the display keeps UTC */
+    put_s(l, "apps: time zone ");
+    if (saved) put_zone(l, zone);
+    else put_s(l, "not understood");
+    put_s(l, ", from " ZONE_FILE);
+    put_s(l, outcome(saved && r.status == OK && r.x[1] == 0 ? OK : BAD_ARG));
+    put_s(l, "\n");
+    flush(l);
+}
+
 /* Which cell is at (x, y): 0-4 a built-in app, 10 + i a card program, -1 none. */
 static int hit(struct launcher *st, int x, int y) {
     if (x < GRID_X) return -1;
@@ -269,19 +304,24 @@ __attribute__((section(".text.start"))) void _start(void) {
     fs_init(&st->fs, SPARE_PAGE);
     net_init(&st->net, SPARE_PAGE);
     st->pressed = -1;
-    scan(st, &l);
     /* Started by a click on a program pinned in the dock? Then start that, and nothing else.
-       Started by the display server at boot ("@startup")? Then open what startup.txt on
-       the card lists: program names, and "apps" for this window (# starts a comment). */
+       Started by the display server at boot ("@startup")? Then give it the saved time zone,
+       and open what startup.txt on the card lists: program names, and "apps" for this window
+       (# starts a comment). Started to save the time zone ("@zone")? Then only that. */
     struct res pend = sys(SYS_CALL, ENDPOINT, OP_PENDING, 0, 0, 0);
-    char startup[512];
+    char startup[512], asked[17];
     int nstartup = 0, show = 1;
-    if (pend.status == OK && pend.x[2]) {
-        char name[17];
-        for (int i = 0; i < 16; i++) name[i] = (char)(pend.x[2 + i / 8] >> (8 * (i % 8)));
-        name[16] = 0;
-        if (name[0] != '@') {
-            start_named(st, &l, name);
+    for (int i = 0; i < 16; i++) asked[i] = pend.status == OK ? (char)(pend.x[2 + i / 8] >> (8 * (i % 8))) : 0;
+    asked[16] = 0;
+    if (asked[0] == '@' && asked[1] == 'z') {    /* "@zone" */
+        save_zone(st, &l);
+        exit_task();
+    }
+    if (asked[0] == '@') restore_zone(st, &l);  /* "@startup": first, so the menu bar has it */
+    scan(st, &l);
+    if (asked[0]) {
+        if (asked[0] != '@') {
+            start_named(st, &l, asked);
             exit_task();
         }
         long n = fs_read(&st->fs, "startup.txt");
@@ -327,7 +367,9 @@ __attribute__((section(".text.start"))) void _start(void) {
             char name[9];
             for (int i = 0; i < 8; i++) name[i] = (char)((i < 4 ? e.a : e.b) >> (8 * (i % 4)));
             name[8] = 0;
-            start_named(st, &l, name);
+            if (name[0] == '@' && name[1] == 'z' && name[2] == 'o' && name[3] == 'n' && name[4] == 'e' && !name[5])
+                save_zone(st, &l);
+            else start_named(st, &l, name);
             continue;
         }
         if (e.kind != EV_DOWN) continue;

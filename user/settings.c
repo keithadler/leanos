@@ -1,13 +1,17 @@
-/* Settings: the desktop's background, and the Raspberry Pi itself.
+/* Settings: the desktop's background and time zone, and the Raspberry Pi itself.
 
-   The background goes to the display server, which takes the request only from the badge
-   the manifest gives Settings. The Pi's own settings go to the kernel, through the board
+   The background and the time zone go to the display server, which takes them only from the
+   badge the manifest gives Settings. The time zone is a real one, from UTC-12 to UTC+14,
+   quarter hours included; the display keeps it, shows the menu bar's clock in it, tells
+   Clock, and has Apps save it on the card (user/zone.h). The kernel's time itself stays UTC,
+   and only the USB driver sets it. The Pi's own settings go to the kernel, through the board
    capability (its capability 5), which only Settings holds and which cannot be passed on
    (only frames can be granted). The kernel lets it read the board and its sensors, set the
    CPU clock to 600, 1000 or 1500 MHz (never above what a Pi 4 is rated for), and switch the
    green activity LED on or off; LeanOS/Proofs.lean proves those are the only requests that
    ever reach the hardware, and only from here. */
 #include "app.h"
+#include "zone.h"
 
 #define SW 480
 #define SH 340             /* 160 pages of pixels: an app has 164 after its assets */
@@ -25,6 +29,13 @@ static const unsigned bg_bottom[NBG] = {0x0e4656, 0x0c0d10, 0xd98a5c};
 #define SWATCH_Y 42
 static int swatch_x(int i) { return 24 + i * (SWATCH_W + 16); }
 
+/* The time zones people live in (standard time), minutes east of UTC; - and + step through them. */
+static const short zones[] = {-720, -660, -600, -570, -540, -480, -420, -360, -300, -240, -210, -180, -120,
+                              -60, 0, 60, 120, 180, 210, 240, 270, 300, 330, 345, 360, 390, 420, 480,
+                              525, 540, 570, 600, 630, 660, 720, 765, 780, 840};
+#define NZONES (int)(sizeof zones / sizeof zones[0])
+#define STEP_W 34            /* the - and + ends of the time zone's stepper */
+
 #define NSPEED 3
 static const char *const speed_names[NSPEED] = {"Power saver", "Balanced", "Full speed"};
 static const unsigned speed_mhz[NSPEED] = {600, 1000, 1500};
@@ -41,6 +52,7 @@ struct settings {
     struct font ui, bold, small;
     struct surface win;
     int chosen;
+    long zone;               /* the display's time zone, minutes east of UTC */
     int speed;               /* which speed button is lit, or -1 until one is chosen */
     int led;                 /* 1 on, 0 off, -1 not known */
     int have_board;
@@ -123,9 +135,62 @@ static void button(struct settings *st, int x, int y, int w, const char *label, 
     font_text(s, &st->ui, x + w / 2 - lw / 2, y + 20, label, lit ? rgb(255, 255, 255) : rgb(40, 40, 50));
 }
 
+/* The next zone in the list after (dir 1) or before (dir -1) this one, or this one at an end. */
+static long zone_step(long zone, int dir) {
+    long next = zone;
+    for (int i = 0; i < NZONES; i++) {
+        long z = zones[dir > 0 ? i : NZONES - 1 - i];
+        if (dir > 0 ? z > zone : z < zone) return z;
+    }
+    return next;
+}
+
+/* The time zone: a stepper beside the backgrounds, "- UTC+5:30 +", and the time there. */
+static void draw_zone(struct settings *st) {
+    struct surface *s = &st->win;
+    font_text(s, &st->bold, CTL_X, 32, "Time zone", rgb(30, 30, 36));
+    round_rect(s, CTL_X, SWATCH_Y, CTL_W, SWATCH_H, 10, rgb(232, 233, 238), 255);
+    for (int dir = -1; dir <= 1; dir += 2) {
+        int bx = dir < 0 ? CTL_X + 6 : CTL_X + CTL_W - 6 - 24, by = SWATCH_Y + 8;
+        int can = zone_step(st->zone, dir) != st->zone;
+        unsigned ink = can ? rgb(40, 40, 50) : rgb(180, 180, 188);
+        round_rect(s, bx, by, 24, 24, 7, can ? rgb(255, 255, 255) : rgb(242, 242, 246), 255);
+        fill(s, bx + 7, by + 11, 10, 2, ink);
+        if (dir > 0) fill(s, bx + 11, by + 7, 2, 10, ink);
+    }
+    struct line z = {.n = 0};
+    put_zone(&z, st->zone);
+    z.b[z.n] = 0;
+    int room = CTL_W - 2 * 30 - 2;
+    const struct font *f = font_width(&st->bold, z.b) <= room ? &st->bold
+                         : font_width(&st->ui, z.b) <= room ? &st->ui : &st->small;
+    font_text(s, f, CTL_X + CTL_W / 2 - font_width(f, z.b) / 2, SWATCH_Y + 26, z.b, rgb(30, 30, 36));
+    /* the time there, as the menu bar shows it */
+    u64 wall = sys0(SYS_TIME).x[6];
+    struct line t = {.n = 0};
+    if (wall) {
+        struct date d = date_of(local_of(wall, st->zone));
+        const char *wd = day_names[d.weekday], *m = month_names[d.month - 1];
+        char a[4] = {wd[0], wd[1], wd[2], 0}, b[4] = {m[0], m[1], m[2], 0};
+        put_s(&t, a);
+        put_s(&t, " ");
+        put_s(&t, b);
+        put_s(&t, " ");
+        put_dec(&t, (u64)d.day);
+        put_s(&t, ", ");
+        put_two(&t, (u64)d.h);
+        put_s(&t, ":");
+        put_two(&t, (u64)d.m);
+    } else put_s(&t, "time not known yet");
+    t.b[t.n] = 0;
+    font_text(s, &st->ui, CTL_X + CTL_W / 2 - font_width(&st->ui, t.b) / 2, SWATCH_Y + SWATCH_H + 20, t.b,
+              rgb(110, 110, 120));
+}
+
 static void draw(struct settings *st) {
     struct surface *s = &st->win;
     fill(s, 0, 0, SW, SH, rgb(246, 246, 248));
+    draw_zone(st);
     font_text(s, &st->bold, 24, 32, "Background", rgb(30, 30, 36));
     for (int i = 0; i < NBG; i++) {
         int x = swatch_x(i);
@@ -227,6 +292,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->small = font_of(assets, F_SMALL);
     st->win = app_surface(SW, SH);
     st->chosen = 0;
+    st->zone = app_zone();
     st->speed = -1;
     st->led = -1;
     read_board(st);
@@ -252,6 +318,10 @@ __attribute__((section(".text.start"))) void _start(void) {
         put_dec(&l, st->arm_hz / 1000000);
         put_s(&l, " MHz");
     }
+    put_s(&l, "\n");
+    flush(&l);
+    put_s(&l, "settings: time zone ");
+    put_zone(&l, st->zone);
     put_s(&l, "\n");
     flush(&l);
 
@@ -288,6 +358,24 @@ __attribute__((section(".text.start"))) void _start(void) {
             flush(&l);
             if (ok == OK) {
                 st->chosen = i;
+                draw(st);
+                dirty = 1;
+            }
+        }
+        for (int dir = -1; dir <= 1; dir += 2) {
+            int bx = dir < 0 ? CTL_X : CTL_X + CTL_W - STEP_W;
+            if (x < bx || x >= bx + STEP_W || y < SWATCH_Y || y >= SWATCH_Y + SWATCH_H) continue;
+            long zone = zone_step(st->zone, dir);
+            if (zone == st->zone) continue;
+            struct res r = sys(SYS_CALL, ENDPOINT, OP_SET, SET_ZONE, (u64)(zone + ZONE_BIAS), 0);
+            u64 ok = r.status == OK && r.x[1] == 0 ? OK : BAD_ARG;
+            put_s(&l, "settings: time zone set to ");
+            put_zone(&l, zone);
+            put_s(&l, outcome(ok));
+            put_s(&l, "\n");
+            flush(&l);
+            if (ok == OK) {
+                st->zone = zone;
                 draw(st);
                 dirty = 1;
             }

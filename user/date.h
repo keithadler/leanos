@@ -1,5 +1,5 @@
 /* Dates from Unix seconds (UTC): the civil calendar, by Howard Hinnant's days-from-civil
-   algorithm run backward. No time zones yet: leanos keeps and shows UTC. */
+   algorithm run backward. leanos keeps UTC; zone.h shifts it to the time zone Settings chose. */
 #pragma once
 #include "lib.h"
 
