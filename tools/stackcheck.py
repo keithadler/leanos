@@ -66,6 +66,8 @@ def lean_def(name):
 # it. A walk over a list of n entries calls itself once for each entry and once more for the
 # empty tail: n + 1 activations.
 TASKS, CALLERS, LINES = lean_def("numTasks"), lean_def("maxCallers"), lean_def("irqLines")
+ENDPOINTS = lean_def("numEndpoints")
+assert ENDPOINTS <= TASKS, "setNth's bound below covers the endpoints' list only if it is no longer"
 RECURSION = {
     # the task list: state_bounded (LeanOS/Bounds.lean) proves len s.tasks = numTasks
     "lp_leanos_LeanOS_revokeAll": (TASKS + 1, f"`start` takes back slot k's frames from every task: "
@@ -75,8 +77,9 @@ RECURSION = {
     "lp_leanos_LeanOS_mkTasksFrom": (TASKS + 1, f"`init` builds the task list, once at boot: "
                                      f"mkTasksFrom 0 numTasks, {TASKS} deep"),
     "lp_leanos_LeanOS_setNth___redArg": (TASKS + 1, f"replaces one entry of the task list ({TASKS}), a "
-                                         f"task's reply slots (at most {CALLERS}) or a USB shadow list "
-                                         f"(8): state_bounded; it stops at the entry, or at the end"),
+                                         f"task's reply slots (at most {CALLERS}), a USB shadow list "
+                                         f"(8) or the endpoints' last-served list ({ENDPOINTS}): "
+                                         f"state_bounded; it stops at the entry, or at the end"),
     # a task's reply slots: task_bounded (LeanOS/Bounds.lean), len t.callers <= maxCallers
     "lp_leanos_LeanOS_placeCaller": (CALLERS + 1, f"a call takes the first free reply slot of the "
                                      f"receiver: at most {CALLERS} (task_bounded)"),

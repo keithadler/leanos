@@ -75,6 +75,12 @@ open LeanOS
 #print axioms task_bounded
 #print axioms state_bounded
 #print axioms stateSize_le
+-- fair receive (Fair.lean)
+#print axioms recv_in_turn
+#print axioms recv_misses_nobody
+#print axioms served_only_by_recv
+#print axioms recv_wait_ahead
+#print axioms recv_bounded_wait
 -- the loops the compiled kernel runs in place of its list walks (`@[csimp]`, Kernel.lean)
 #print axioms app_eq_appTR
 #print axioms snoc_eq_snocTR

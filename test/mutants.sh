@@ -221,6 +221,19 @@ mutant "the scheduler ignores what the other cores run" \
   "def runnable (busy : List Nat) (ts : List Task) (j : Nat) : Bool := isReady ts j && !memNat j busy" "def runnable (busy : List Nat) (ts : List Task) (j : Nat) : Bool := isReady ts j"
 mutant "enter forgets one core" \
   "def enter (s : KState) (c b0 b1 b2 : Nat) : KState := { s with cur := c, busy := b0 :: b1 :: b2 :: .nil }" "def enter (s : KState) (c b0 b1 b2 : Nat) : KState := { s with cur := c, busy := b0 :: b1 :: .nil }"
+# fair receive (LeanOS/Fair.lean): a receive takes the waiting senders in turn
+mutant "receive searches from task 0 again, as it used to" \
+  "match findSender e s.tasks (lastServed s e + 1) (len s.tasks) with" "match findSender e s.tasks 0 (len s.tasks) with"
+mutant "receive searches from the task it served last, not the one after" \
+  "(lastServed s e + 1) (len s.tasks)" "(lastServed s e) (len s.tasks)"
+mutant "receive looks at one task too few" \
+  "(lastServed s e + 1) (len s.tasks) with" "(lastServed s e + 1) (len s.tasks - 1) with"
+mutant "receive forgets whom it served" \
+  "⟨serve (setTask (setTask s j u') s.cur t') e j," "⟨setTask (setTask s j u') s.cur t',"
+mutant "receive remembers whom it served under the wrong endpoint" \
+  "⟨serve (setTask (setTask s j u') s.cur t') e j," "⟨serve (setTask (setTask s j u') s.cur t') 0 j,"
+mutant "the search for a sender skips every other task" \
+  "    | none => findSender e ts (j + 1) fuel" "    | none => findSender e ts (j + 2) fuel"
 # the state's bounds (LeanOS/Bounds.lean): none of these may let a list in the state grow
 mutant "map keeps the old mappings of the pages it maps" \
   "                                               (dropRange vpn count t.maps)," "                                               t.maps,"

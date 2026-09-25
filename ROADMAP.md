@@ -38,6 +38,26 @@ frame only if a chain of explicit grants gave it one. (Done with endpoint capabi
 fixed by the boot manifest; creating and passing endpoints waits for stage 5.) A GUI needs this: clients talk to
 the display server over IPC and hand it the memory they draw into.
 
+Done later: fair receive. A receive took the lowest-numbered task waiting to send, so
+programs in low slots that kept a server busy could starve one in a higher slot: two `files`
+programs from the card in slots 10 and 11 kept a third in slot 12 from finishing a single
+file round, and five busy programs kept a sixth in slot 15 from the display (the Apps
+launcher, task 16, would wait the same way). Now each endpoint remembers the task whose
+message it took last (`served`, one entry for each of the three endpoints), and a receive
+looks for a waiting sender from the task after it on, wrapping around, as the scheduler
+does. A send that finds its receiver already waiting moves nothing: the receiver waits only
+when nobody waits to send, so nobody is passed over. Proved, in `LeanOS/Fair.lean`: a
+receive takes the first waiting sender in that order (`recv_in_turn`) and misses nobody
+(`recv_misses_nobody`), nothing else moves what an endpoint remembers
+(`served_only_by_recv`), and while a task stays blocked sending, its endpoint takes fewer
+than 18 messages (`recv_bounded_wait`). Six new mutants are caught: a search from task 0
+again, from the task served last instead of the one after, one task short, or skipping every
+other task; a receive that forgets whom it served, or remembers it for the wrong endpoint.
+`test/fair.sh` runs both cases. With the old kernel, slot 12 did no file round in 117 s
+while slot 10 did 3,100, and slot 15 not 16 busy rounds in 39 s while slot 10 did 672; now
+slot 12 does its first 4 file rounds while slot 10 does 4, and slot 15 its first 16 busy
+rounds while slot 10 does 16.
+
 ## 4. Drivers in user space — done
 
 Capabilities name runs of frames; each task has 256 frames (1 MiB) and a 32 MiB window. The
@@ -174,7 +194,8 @@ everything else only removes mappings; with every mapping in the 8192-page windo
 are (a measurement is the eight words of a SHA-256, and only the manifest's two interrupt
 lines fire), the rest is bounded too: 18 tasks, at most one pending entry per interrupt
 line, eight words per measurement, eight USB channel shadows of each kind, three other
-cores (`state_bounded`). In all, the state is at most 447,556 heap objects
+cores, and (since fair receive, stage 3) one last-served task per endpoint (`state_bounded`).
+In all, the state is at most 447,559 heap objects
 (`stateSize_le`), which under the runtime's object layout is at most 22.8 MiB of the
 60.8 MiB kernel heap (TRUST.md has the arithmetic, and what it trusts). Five new mutants
 break a bound (a `map` that keeps the old mappings of the pages it maps, a `derive` or a

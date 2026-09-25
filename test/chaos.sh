@@ -19,8 +19,8 @@
 #   4. Windows until the display refuses one (Notes and Terminal have two of its twelve).
 #   5. Four cores busy: busy in four slots at once (capabilities and mappings made and
 #      dropped, each map a new level-3 table; display calls with grants; files), and Terminal
-#      writing a file beside them. (Not six: a server answers the lowest slot waiting first,
-#      so the fifth and sixth would wait long for the display.)
+#      writing a file beside them. (Four, one for each core; test/fair.sh runs six at the
+#      display.)
 #   6. nap in all six slots again: the heap must be back at the baseline.
 #   7. pest sends the file server and the display 100 grants each by plain send, which
 #      wants no answer. Then the file server must still take requests (every one carries a

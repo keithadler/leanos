@@ -136,6 +136,11 @@ structure KState where
   busy : List Nat
   /-- The time of day: Unix seconds at tick 0, as the time's holder last said (0: not known). -/
   wall : Nat
+  /-- For each endpoint (`numEndpoints` of them), the task whose waiting message a receive
+  on it took last (0 before the first). The next receive looks for a waiting sender from
+  the task after it on, wrapping around (`findSender`), so waiting senders are served in
+  turn and none waits behind the others for good. -/
+  served : List Nat
 
 /-! ## List helpers
 
@@ -446,7 +451,15 @@ def mkTasksFrom (i : Nat) : Nat → List Task
   | 0 => .nil
   | k + 1 => mkTask i :: mkTasksFrom (i + 1) k
 
-def init (fbBase : Nat) : KState := ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil, 0, usbZeros, usbZeros, .nil, 0⟩
+/-- The endpoints the manifest names: 0 is the display server's, 1 the file server's, 2 the
+network service's (`initCaps`). -/
+def numEndpoints : Nat := 3
+
+/-- Whom each endpoint served last, at boot: nobody yet, so task 0. -/
+def servedInit : List Nat := 0 :: 0 :: 0 :: .nil
+
+def init (fbBase : Nat) : KState :=
+  ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil, 0, usbZeros, usbZeros, .nil, 0, servedInit⟩
 
 def setTask (s : KState) (j : Nat) (t : Task) : KState := { s with tasks := setNth s.tasks j t }
 
@@ -548,13 +561,30 @@ def findReceiver (e : Nat) : List Task → Nat → Option Nat
   | .nil, _ => none
   | t :: ts, j => if isReceiving e t.status then some j else findReceiver e ts (j + 1)
 
-/-- The first task (from index `j` on) blocked sending to endpoint `e`, with its message. -/
-def findSender (e : Nat) : List Task → Nat → Option (Nat × Msg)
-  | .nil, _ => none
-  | t :: ts, j =>
-    match sendingMsg e t.status with
+/-- The message task `j` of `ts` is blocked sending to endpoint `e`, if it is. -/
+def sendingAt (e : Nat) (ts : List Task) (j : Nat) : Option Msg :=
+  match nth? ts j with
+  | some t => sendingMsg e t.status
+  | none => none
+
+/-- The first task at or after `i`, wrapping around, blocked sending to endpoint `e`, with its
+message, looking at most `fuel` tasks. -/
+def findSender (e : Nat) (ts : List Task) (i : Nat) : Nat → Option (Nat × Msg)
+  | 0 => none
+  | fuel + 1 =>
+    let j := i % len ts
+    match sendingAt e ts j with
     | some m => some (j, m)
-    | none => findSender e ts (j + 1)
+    | none => findSender e ts (j + 1) fuel
+
+/-- The task whose waiting message endpoint `e` took last (`KState.served`). -/
+def lastServed (s : KState) (e : Nat) : Nat :=
+  match nth? s.served e with
+  | some j => j
+  | none => 0
+
+/-- Endpoint `e` has just taken task `j`'s waiting message. -/
+def serve (s : KState) (e j : Nat) : KState := { s with served := setNth s.served e j }
 
 /-- A free reply slot. -/
 def noTask : Nat := 1000000
@@ -792,7 +822,11 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply
     | _ => ret s t (eBadArg :: .nil)
 
 /-- Receive through endpoint capability `ci`: take a waiting sender's message, or wait for
-one. A waiting plain sender carries on with x0 = 0; a caller goes on waiting, for the reply. -/
+one. A waiting plain sender carries on with x0 = 0; a caller goes on waiting, for the reply.
+Of several waiting senders, the one taken is the first after the one the endpoint took last,
+wrapping around (round robin), so each waits for fewer than `numTasks` others. A send that
+finds the receiver already waiting is delivered at once and moves nothing: a receiver waits
+only when no sender does, so it passes nobody over. -/
 def sysRecv (s : KState) (t : Task) (ci : Nat) (block : Bool) (deadline : Nat) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
@@ -800,7 +834,7 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) (block : Bool) (deadline : Nat) :
     match c.obj with
     | .endpoint e =>
       if c.rights.r then
-        match findSender e s.tasks 0 with
+        match findSender e s.tasks (lastServed s e + 1) (len s.tasks) with
         | some (j, m) =>
           match nth? s.tasks j with
           | some u =>
@@ -808,7 +842,7 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) (block : Bool) (deadline : Nat) :
             | some t' =>
               let u' : Task := if m.call then { u with status := .awaiting s.cur, result := .nil }
                                else { u with status := .ready, result := 0 :: .nil }
-              ⟨setTask (setTask s j u') s.cur t', 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+              ⟨serve (setTask (setTask s j u') s.cur t') e j, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
             | none => ret s t (eFull :: .nil)
           | none => ret s t (eBadArg :: .nil)
         | none =>

@@ -5,8 +5,8 @@ import LeanOS.Proofs
 
 The kernel's state is a tree of lists: the tasks, each task's capabilities, mappings, reply
 slots, result registers and measurement, the pending interrupts, the USB channel shadows,
-and what the other cores run. The runtime keeps it on the kernel heap, which has a fixed
-size (TRUST.md). This file proves that no sequence of system calls, with any arguments,
+what the other cores run, and whom each endpoint served last. The runtime keeps it on the
+kernel heap, which has a fixed size (TRUST.md). This file proves that no sequence of system calls, with any arguments,
 can make any of those lists grow past a fixed length, and so that the whole state never
 needs more than `stateMax` heap objects (`stateSize_le`).
 
@@ -16,8 +16,8 @@ needs more than `stateMax` heap objects (`stateSize_le`).
   `maxResult` (7) result registers.
 * `state_bounded`: when the machine layer calls the kernel as it does (`Driven`), as well:
   exactly `numTasks` tasks, each measured with at most eight words, at most one pending
-  entry for each of the `irqLines`, eight USB channel shadows of each kind, and three other
-  cores.
+  entry for each of the `irqLines`, eight USB channel shadows of each kind, three other
+  cores, and one last-served entry for each of the `numEndpoints` endpoints.
 * `stateSize_le`: so the state is at most `stateMax` heap objects.
 
 `Reachable` lets a boot check hand over any list of words as a measurement, and lets any
@@ -230,6 +230,7 @@ structure Small (hp : List Nat → Prop) (lp : Nat → Prop) (s : KState) : Prop
   usbDma : len s.usbDma = 8
   usbSize : len s.usbSize = 8
   busy : len s.busy ≤ 3
+  served : len s.served = numEndpoints
 
 section
 variable {hp : List Nat → Prop} {lp : Nat → Prop}
@@ -246,13 +247,18 @@ theorem Small.task {s : KState} (hs : Small hp lp s) {j : Nat} {t : Task} (h : n
 theorem small_setTask {s : KState} (hs : Small hp lp s) {j : Nat} {t : Task} (ht : TaskSmall hp t) :
     Small hp lp (setTask s j t) :=
   ⟨fun u hu => (mem_setNth hu).elim (hs.tasks u) (fun h => h ▸ ht), hs.pending, hs.lines, hs.usbDma,
-    hs.usbSize, hs.busy⟩
+    hs.usbSize, hs.busy, hs.served⟩
 
 theorem small_schedule {s : KState} (hs : Small hp lp s) : Small hp lp (schedule s) := by
   unfold schedule
   split
-  · exact ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy⟩
+  · exact ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy, hs.served⟩
   · exact hs
+
+/-- Which task an endpoint served last is one entry of a list of `numEndpoints`. -/
+theorem small_serve {s : KState} (hs : Small hp lp s) (e j : Nat) : Small hp lp (serve s e j) :=
+  ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy, by
+    simp only [serve, len_setNth]; exact hs.served⟩
 
 theorem small_ret {s : KState} (hs : Small hp lp s) {t : Task} (ht : TaskSmall hp t) {r : List Nat}
     (hr : len r ≤ maxResult) : Small hp lp (ret s t r).state :=
@@ -337,7 +343,7 @@ theorem small_sysIrqWait {ci : Nat} : Small hp lp (sysIrqWait s t ci).state := b
       · rename_i n _ _
         exact small_ret (s := { s with pending := dropLine n s.pending })
           ⟨hs.tasks, hs.pending.sublist (dropLine_sublist _ _),
-            fun x hx => hs.lines x ((dropLine_sublist _ _).subset hx), hs.usbDma, hs.usbSize, hs.busy⟩
+            fun x hx => hs.lines x ((dropLine_sublist _ _).subset hx), hs.usbDma, hs.usbSize, hs.busy, hs.served⟩
           ht (by len_le)
       · exact small_schedule (small_setTask hs (ht.st _ (by len_le)))
     · exact small_ret hs ht (by len_le)
@@ -391,9 +397,9 @@ theorem small_sysUsb {ci op reg v : Nat} : Small hp lp (sysUsb s t ci op reg v).
     | exact small_ret hs ht (by len_le)
     | exact small_setTask hs (ht.res (by len_le))
     | exact small_ret (s := { s with usbDma := setNth s.usbDma (chanOf reg) v })
-        ⟨hs.tasks, hs.pending, hs.lines, by rw [len_setNth]; exact hs.usbDma, hs.usbSize, hs.busy⟩ ht (by len_le)
+        ⟨hs.tasks, hs.pending, hs.lines, by rw [len_setNth]; exact hs.usbDma, hs.usbSize, hs.busy, hs.served⟩ ht (by len_le)
     | exact small_ret (s := { s with usbSize := setNth s.usbSize (chanOf reg) v })
-        ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, by rw [len_setNth]; exact hs.usbSize, hs.busy⟩ ht (by len_le)
+        ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, by rw [len_setNth]; exact hs.usbSize, hs.busy, hs.served⟩ ht (by len_le)
 
 theorem small_sysStop {ci : Nat} : Small hp lp (sysStop s t ci).state := by
   unfold sysStop
@@ -415,7 +421,7 @@ theorem small_sysSetWall {ci secs : Nat} : Small hp lp (sysSetWall s t ci secs).
   · split
     · split
       · exact small_ret (s := { s with wall := secs - s.now * tickMs / 1000 })
-          ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy⟩ ht (by len_le)
+          ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy, hs.served⟩ ht (by len_le)
       · exact small_ret hs ht (by len_le)
     · exact small_ret hs ht (by len_le)
 
@@ -467,6 +473,8 @@ theorem small_sysRecv {ci : Nat} {block : Bool} {deadline : Nat} :
             split
             · rename_i t' hd
               dsimp only
+              -- `try`: a receive that forgot whom it served must break `recv_in_turn`, not this
+              try apply small_serve
               refine small_setTask (small_setTask hs ?_) (deliver_small ht hd)
               split
               · exact (hs.task hu).st _ (by len_le)
@@ -509,7 +517,7 @@ theorem small_sysStart {s : KState} {t : Task} (hs : Small hp lp s) (ht : TaskSm
   have h0 : Small hp lp { s with tasks := revokeAll k s.tasks } :=
     ⟨fun u hu => by
       obtain ⟨t0, ht0, rfl⟩ := mem_revokeAll hu
-      exact (hs.tasks t0 ht0).revoke k, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy⟩
+      exact (hs.tasks t0 ht0).revoke k, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy, hs.served⟩
   have h1 := small_setTask (j := k) h0 (mkTask_small hnil k)
   dsimp only
   split
@@ -590,7 +598,7 @@ theorem TaskSmall.wake {t : Task} (h : TaskSmall hp t) (now : Nat) : TaskSmall h
 theorem small_tick {s : KState} (hs : Small hp lp s) : Small hp lp (tick s) := by
   unfold tick
   apply small_schedule
-  refine ⟨fun u hu => ?_, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy⟩
+  refine ⟨fun u hu => ?_, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy, hs.served⟩
   obtain ⟨t, ht, rfl⟩ := mem_wakeSleepers hu
   exact (hs.tasks t ht).wake _
 
@@ -621,7 +629,7 @@ theorem small_usbDone {s : KState} (hs : Small hp lp s) (v : Nat) : Small hp lp 
 
 theorem small_enter {s : KState} (hs : Small hp lp s) (c b0 b1 b2 : Nat) :
     Small hp lp (enter s c b0 b1 b2) :=
-  ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, hs.usbSize, by len_le⟩
+  ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, hs.usbSize, by len_le, hs.served⟩
 
 theorem small_irqFired {s : KState} (hs : Small hp lp s) (n : Nat) (hn : lp n) :
     Small hp lp (irqFired s n) := by
@@ -634,7 +642,7 @@ theorem small_irqFired {s : KState} (hs : Small hp lp s) (n : Nat) (hn : lp n) :
     · exact hs
     · rename_i hno
       have hnot : n ∉ s.pending := fun hm => hno (hasLine_of_mem hm)
-      refine ⟨hs.tasks, ?_, fun x hx => ?_, hs.usbDma, hs.usbSize, hs.busy⟩
+      refine ⟨hs.tasks, ?_, fun x hx => ?_, hs.usbDma, hs.usbSize, hs.busy, hs.served⟩
       · rw [snoc_eq_append]
         exact List.pairwise_append.2 ⟨hs.pending, List.pairwise_singleton _ _,
           fun a ha b hb => by rw [List.mem_singleton] at hb; subst hb; exact fun e => hnot (e ▸ ha)⟩
@@ -665,7 +673,7 @@ theorem mem_mkTasksFrom : ∀ {k n : Nat} {t : Task}, t ∈ mkTasksFrom k n → 
 
 theorem small_init (hnil : hp .nil) (fb : Nat) : Small hp lp (init fb) :=
   ⟨fun t ht => by obtain ⟨i, rfl⟩ := mem_mkTasksFrom ht; exact mkTask_small hnil i,
-    List.Pairwise.nil, fun _ h => by simp [init] at h, rfl, rfl, by len_le⟩
+    List.Pairwise.nil, fun _ h => by simp [init] at h, rfl, rfl, by len_le, rfl⟩
 
 end
 
@@ -762,14 +770,16 @@ theorem small_driven {s : KState} (h : Driven s) :
 /-- **The state is bounded.** When the machine layer calls the kernel as it does, the state
 has exactly `numTasks` tasks, each within `task_bounded`'s limits and measured with at most
 eight words; at most one pending entry for each interrupt line; eight DMA addresses and
-eight transfer sizes for the USB channels; and at most three other cores. -/
+eight transfer sizes for the USB channels; at most three other cores; and one entry per
+endpoint for the task it served last. -/
 theorem state_bounded {s : KState} (h : Driven s) :
     len s.tasks = numTasks ∧
       (∀ t ∈ s.tasks, len t.caps ≤ maxCaps ∧ len t.maps ≤ userPages ∧ len t.callers ≤ maxCallers ∧
         len t.result ≤ maxResult ∧ len t.hash ≤ 8) ∧
-      len s.pending ≤ len irqLines ∧ len s.usbDma = 8 ∧ len s.usbSize = 8 ∧ len s.busy ≤ 3 := by
+      len s.pending ≤ len irqLines ∧ len s.usbDma = 8 ∧ len s.usbSize = 8 ∧ len s.busy ≤ 3 ∧
+      len s.served = numEndpoints := by
   have hs := small_driven h
-  refine ⟨(reachable_inv h.reachable).len, fun t ht => ?_, ?_, hs.usbDma, hs.usbSize, hs.busy⟩
+  refine ⟨(reachable_inv h.reachable).len, fun t ht => ?_, ?_, hs.usbDma, hs.usbSize, hs.busy, hs.served⟩
   · obtain ⟨h1, h2, -, h3, h4⟩ := task_bounded h.reachable ht
     exact ⟨h1, h2, h3, h4, (hs.tasks t ht).hash⟩
   · rw [len_eq_length, len_eq_length]
@@ -817,13 +827,13 @@ def taskObjs (t : Task) : Nat :=
 /-- The heap objects state `s` can take (at most). -/
 def stateSize (s : KState) : Nat :=
   1 + listObjs taskObjs s.tasks + listObjs (fun _ => 0) s.pending + listObjs (fun _ => 0) s.usbDma +
-    listObjs (fun _ => 0) s.usbSize + listObjs (fun _ => 0) s.busy
+    listObjs (fun _ => 0) s.usbSize + listObjs (fun _ => 0) s.busy + listObjs (fun _ => 0) s.served
 
 /-- The most one task takes: 1 + 64 × 4 + 8192 × 3 + 6 + 7 + 8 + 8. -/
 def taskMax : Nat := 24862
 
-/-- The most the state takes: 1 + 18 × (1 + `taskMax`) + 2 + 8 + 8 + 3. -/
-def stateMax : Nat := 447556
+/-- The most the state takes: 1 + 18 × (1 + `taskMax`) + 2 + 8 + 8 + 3 + 3. -/
+def stateMax : Nat := 447559
 
 theorem listObjs_le {α : Type} {f : α → Nat} {k : Nat} :
     ∀ {l : List α}, (∀ a ∈ l, f a ≤ k) → listObjs f l ≤ len l * (1 + k)
@@ -853,17 +863,19 @@ theorem taskObjs_le {t : Task} (hc : len t.caps ≤ maxCaps) (hm : len t.maps �
   omega
 
 /-- **The state fits in a fixed number of heap objects.** When the machine layer calls the
-kernel as it does, the state never takes more than `stateMax` (447,556) heap objects,
+kernel as it does, the state never takes more than `stateMax` (447,559) heap objects,
 whatever system calls the tasks make. -/
 theorem stateSize_le {s : KState} (h : Driven s) : stateSize s ≤ stateMax := by
-  obtain ⟨hn, ht, hp, hd, hz, hb⟩ := state_bounded h
+  obtain ⟨hn, ht, hp, hd, hz, hb, hv⟩ := state_bounded h
   have h1 := listObjs_le (f := taskObjs) (k := taskMax) (l := s.tasks) (fun t ht' => by
     obtain ⟨a, b, c, d, e⟩ := ht t ht'; exact taskObjs_le a b d c e)
   have h2 := listObjs_le (f := fun _ => 0) (k := 0) (l := s.pending) (fun _ _ => Nat.le_refl _)
   have h3 := listObjs_le (f := fun _ => 0) (k := 0) (l := s.usbDma) (fun _ _ => Nat.le_refl _)
   have h4 := listObjs_le (f := fun _ => 0) (k := 0) (l := s.usbSize) (fun _ _ => Nat.le_refl _)
   have h5 := listObjs_le (f := fun _ => 0) (k := 0) (l := s.busy) (fun _ _ => Nat.le_refl _)
+  have h6 := listObjs_le (f := fun _ => 0) (k := 0) (l := s.served) (fun _ _ => Nat.le_refl _)
   have hl : len irqLines = 2 := rfl
+  simp only [numEndpoints] at hv
   simp only [numTasks, taskMax] at hn h1
   rw [hn] at h1
   unfold stateSize stateMax

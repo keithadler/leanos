@@ -16,7 +16,8 @@ leanos splits the kernel in two:
 These hold for every state the kernel can reach: `init`, then any sequence of system calls
 (including starting and restarting programs) with any arguments, timer ticks, faults,
 interrupts, result loads, and boot checks with any measurement. They are in
-`LeanOS/Proofs.lean`, and the bounds on the state in `LeanOS/Bounds.lean`.
+`LeanOS/Proofs.lean`, the bounds on the state in `LeanOS/Bounds.lean`, and fair receive in
+`LeanOS/Fair.lean`.
 
 Tasks can hand each other memory, so the central guarantee is about where memory can go.
 The boot manifest (`initCaps` in `Kernel.lean`) fixes which task can send with the grant
@@ -52,8 +53,28 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `uart_confined`, `uart_irq_only_input` | Only the input driver can ever hold the UART's registers or its interrupt. |
 | `start_revokes` | When `start` has the machine layer load slot `k`, the slot holds the manifest's fresh, unverified task, and no other task holds a capability to or a mapping of any of the slot's frames, is waiting to send a message granting one, or holds a reply slot for the old run. |
 | `task_bounded` | Every task holds at most 64 capabilities, at most 8192 mappings (no two for the same virtual page), at most 8 reply slots and at most 7 result registers. |
-| `state_bounded`, `stateSize_le` | When the machine layer calls the kernel as it does (`Driven`: a boot check hands over the eight words of a SHA-256, as `exVerify` does, and only the lines in `irqLines` fire), the state also has exactly 18 tasks, each measured with at most eight words, at most one pending entry per interrupt line, eight DMA addresses and eight transfer sizes for the USB channels, and three other cores: in all, at most 447,556 heap objects. What that means in bytes is below, under `rt/runtime.c`. |
+| `state_bounded`, `stateSize_le` | When the machine layer calls the kernel as it does (`Driven`: a boot check hands over the eight words of a SHA-256, as `exVerify` does, and only the lines in `irqLines` fire), the state also has exactly 18 tasks, each measured with at most eight words, at most one pending entry per interrupt line, eight DMA addresses and eight transfer sizes for the USB channels, three other cores, and one last-served task for each of the three endpoints: in all, at most 447,559 heap objects. What that means in bytes is below, under `rt/runtime.c`. |
 | `launch_fixed`, `only_display_launches` | Launch capabilities never move: only the display server starts the manifest's apps, and only Terminal starts the open slots. Nothing can restart the display server, the input driver, the file server or the tests. |
+
+Fair receive, in `LeanOS/Fair.lean`. Several tasks can be blocked sending to one endpoint
+(the display server's, the file server's or the network service's) while its server is
+busy. Each endpoint remembers the task whose message it took last, and a receive looks for
+a waiting sender from the task after it on, wrapping around after the last task. A step
+"takes task k's message on e" when it is the running task's `recv` or `recvt` through a
+capability to endpoint e with the receive right, that search finds k, and the message is
+delivered (`Takes`).
+
+| Theorem | Statement |
+|---|---|
+| `recv_in_turn` | When a receive on endpoint e takes task k's message: k was blocked sending to e; none of the tasks the search looked at before k (from the one after the task e served last, up to k, wrapping around) was; e now remembers k, and every other endpoint what it remembered before; and k is no longer blocked sending. |
+| `recv_misses_nobody` | A receive finds no message to take (so it waits, or times out) only if no task is blocked sending to its endpoint. |
+| `served_only_by_recv` | Every step of the kernel either leaves what each endpoint remembers unchanged, or takes a waiting message as above. |
+| `recv_wait_ahead`, `recv_bounded_wait` | Bounded waiting. Take any run of steps from a reachable state during which task j stays blocked sending to endpoint e, in every state of the run. Then the run takes at most as many messages on e as there are tasks between the one e served last and j (`recv_wait_ahead`), so fewer than 18 (`recv_bounded_wait`): once a server has taken 18 messages on its endpoint, every task that was waiting to send to it when the first was taken has been served, or has stopped waiting some other way. |
+
+These are about the order in which a server's waiting senders are served. They do not say
+that a server ever calls `recv`, which is its own code, or that a sender is ever scheduled.
+A send that finds its receiver already waiting is delivered at once and moves nothing: a
+server waits only when nobody is waiting to send to it, so it passes nobody over.
 
 Revocation rests on one more invariant: every run of frames a task holds stays inside one
 slot's memory (`RunOK`), so taking back the runs that start in a slot takes back exactly
@@ -75,13 +96,14 @@ MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 102 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 108 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a level-3 table that keeps the
 wrong mapping of a page or maps page 0 where nothing is mapped, a `start` that forgets to take back
 mappings, capabilities, waiting grants or reply slots, a `map` that keeps the old mappings of the pages
-it maps, a `derive`, a grant or a call past its limit, and so on) and checks that the proofs reject every one.
+it maps, a `derive`, a grant or a call past its limit, a receive that searches from task 0 again, from the
+task it served last, or one task short, or forgets whom it served, and so on) and checks that the proofs reject every one.
 
 `make test` checks that each theorem rests only on Lean's standard axioms (`propext`,
 `Classical.choice`, `Quot.sound`) and never on `sorry`.
@@ -119,7 +141,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - The kernel heap has a fixed size: from the end of the kernel image and its stacks
   (`__heap_start`, `arch/kernel.ld`; 0x331000 in this build) to the frame pool at 64 MiB
   (`FRAME_BASE`, `arch/arch.h`), 63,762,432 bytes (60.8 MiB). `stateSize_le` proves that
-  the kernel's state, between two kernel entries, is at most 447,556 heap objects, whatever
+  the kernel's state, between two kernel entries, is at most 447,559 heap objects, whatever
   the tasks do. What that is in bytes rests on the runtime's object layout, which is
   trusted, not proved:
   - A number below 2^63 is stored in the pointer itself (`lean_box`), not on the heap, and
@@ -133,11 +155,11 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
     `Msg` 80, and the one `KState` 112 (as the generated C allocates them:
     `lean_alloc_ctor(0, 6, 0)` for a task, and so on).
 
-  So the state takes at most 447,555 × 80 + 112 = 35,804,512 bytes (34.1 MiB). Counting
+  So the state takes at most 447,558 × 80 + 112 = 35,804,752 bytes (34.1 MiB). Counting
   each kind at its own size, the bounds of `state_bounded` give less: a task at most
   1,325,600 bytes with its list cell (1,310,720 of them for 8192 mappings of 160 bytes
   each: the cell, the `Mapping` and its `Rights`), 18 tasks 23,860,800, and the whole state
-  23,861,920 bytes (22.8 MiB), 37% of the heap. For scale: in `test/stack.sh`, with one
+  23,862,064 bytes (22.8 MiB), 37% of the heap. For scale: in `test/stack.sh`, with one
   task holding all 8192 mappings, the heap's peak is 1,276,960 bytes. In `test/chaos.sh`,
   with six programs from the card each holding 64 capabilities and 8192 mappings at once,
   then one slot restarted 30 times beside five of them, it is 5,787,136 bytes. The machine
@@ -344,7 +366,8 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
     function in the image must be reached from the three entries, and the assembly may call
     only them. Called functions keep x19-x28, as the AArch64 calling convention says.
   - The recursion bounds. Each is a proved bound on a list in the state (`state_bounded`:
-    18 tasks, at most two pending lines, eight USB shadows; `task_bounded`: at most 8 reply
+    18 tasks, at most two pending lines, eight USB shadows, three last-served entries;
+    `task_bounded`: at most 8 reply
     slots), but that each walk runs over such a list, or over one no longer, is read from
     `Kernel.lean`, not proved. One cycle is in the call graph only: `kpanic` draws the panic
     screen, which asks `leanos_fb_width` and `leanos_fb_height` for its size, and they could
@@ -391,7 +414,9 @@ QEMU's model of them, because leanos has only run under QEMU.
 - The kernel's own view of memory (EL1 permissions) is not yet modelled; only user
   mode's is.
 - No protection against timing or cache side channels.
-- Only one scheduling property is proved (a live task is always picked). Fairness is not.
+- Only one scheduling property is proved (a live task is always picked). The scheduler's
+  fairness is not. What is proved about fairness is the order in which a server takes the
+  messages waiting for it (`recv_bounded_wait`), not that the server or the sender gets to run.
 - The framebuffer is the only device memory given to a user task, and it cannot start
   DMA. Devices that can (USB, SD) will need an IOMMU-free answer on the Pi, which has
   none: their drivers will have to stay trusted or be confined by other means.

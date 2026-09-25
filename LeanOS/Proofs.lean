@@ -252,6 +252,9 @@ theorem inv_setTask {s : KState} (hs : Inv s) {j : Nat} {t : Task} (ht : TaskOK 
       subst hu; exact ht
     · simp [hij] at hu; exact hs.tasks i u hu
 
+/-- Which task an endpoint served last plays no part in the invariant. -/
+theorem inv_serve {s : KState} (hs : Inv s) {e j : Nat} : Inv (serve s e j) := ⟨hs.len, hs.tasks⟩
+
 theorem inv_schedule {s : KState} (hs : Inv s) : Inv (schedule s) := by
   unfold schedule
   split
@@ -432,27 +435,31 @@ theorem findReceiver_spec {e : Nat} : ∀ {ts : List Task} {k j : Nat},
       have : j - k = (j - (k + 1)) + 1 := by omega
       rw [this]; simpa [nth?] using hu
 
-theorem findSender_spec {e : Nat} : ∀ {ts : List Task} {k j : Nat} {m : Msg},
-    findSender e ts k = some (j, m) →
-      k ≤ j ∧ ∃ u, nth? ts (j - k) = some u ∧ u.status = .sending e m
-  | [], _, _, _, h => by simp [findSender] at h
-  | t :: ts, k, j, m, h => by
+theorem sendingAt_spec {e : Nat} {ts : List Task} {j : Nat} {m : Msg} (h : sendingAt e ts j = some m) :
+    ∃ u, nth? ts j = some u ∧ u.status = .sending e m := by
+  unfold sendingAt at h
+  split at h
+  · rename_i u hu
+    refine ⟨u, hu, ?_⟩
+    unfold sendingMsg at h
+    split at h
+    · rename_i e' m' hst
+      split at h
+      · rename_i hee; simp at hee h; subst hee; subst h; exact hst
+      · simp at h
+    · simp at h
+  · simp at h
+
+theorem findSender_spec {e : Nat} : ∀ {ts : List Task} {i fuel j : Nat} {m : Msg},
+    findSender e ts i fuel = some (j, m) → ∃ u, nth? ts j = some u ∧ u.status = .sending e m
+  | _, _, 0, _, _, h => by simp [findSender] at h
+  | ts, i, fuel + 1, j, m, h => by
     simp only [findSender] at h
     split at h
     · rename_i m' hm
       simp at h; obtain ⟨rfl, rfl⟩ := h
-      refine ⟨Nat.le_refl _, t, by simp [nth?], ?_⟩
-      unfold sendingMsg at hm
-      split at hm
-      · rename_i e' m'' hst
-        split at hm
-        · rename_i hee; simp at hee hm; subst hee; subst hm; exact hst
-        · simp at hm
-      · simp at hm
-    · obtain ⟨hk, u, hu, hst⟩ := findSender_spec h
-      refine ⟨by omega, u, ?_, hst⟩
-      have : j - k = (j - (k + 1)) + 1 := by omega
-      rw [this]; simpa [nth?] using hu
+      exact sendingAt_spec hm
+    · exact findSender_spec h
 
 /-- What a delivery can change: the receiver's capabilities grow by at most the granted one,
 its mappings stay the same, and it becomes ready. -/
@@ -658,8 +665,7 @@ theorem inv_sysRecv {s : KState} {t : Task} {ci : Nat} {block : Bool} {deadline 
       · rename_i hr
         split
         · rename_i j m hj
-          obtain ⟨-, u0, hu0, hst⟩ := findSender_spec hj
-          simp only [Nat.sub_zero] at hu0
+          obtain ⟨u0, hu0, hst⟩ := findSender_spec hj
           split
           · rename_i u hu
             rw [hu] at hu0; simp at hu0; subst hu0
@@ -678,6 +684,8 @@ theorem inv_sysRecv {s : KState} {t : Task} {ci : Nat} {block : Bool} {deadline 
                     (fun _ => huok.measured (by rw [hst]; trivial)) _)
                 · exact inv_setTask hs (huok.setStatus .ready trivial
                     (fun _ => huok.measured (by rw [hst]; trivial)) _)
+              -- `try`: a receive that forgot whom it served must break `recv_in_turn`, not this
+              try apply inv_serve
               apply inv_setTask h1
               apply deliver_ok ht hmt _ hd
               intro g hg

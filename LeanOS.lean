@@ -4,3 +4,4 @@ import LeanOS.Arm
 import LeanOS.Tables
 import LeanOS.Journal
 import LeanOS.Bounds
+import LeanOS.Fair
