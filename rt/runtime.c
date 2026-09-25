@@ -95,7 +95,12 @@ void lean_inc_heartbeat(void) {}
 
 /* ---------- reference counting ----------
  * Called when a count drops to zero. Children whose counts also reach zero go on an
- * explicit stack, so freeing a long list never recurses deeply. */
+ * explicit stack, so freeing a long list never recurses deeply. They go on it last field
+ * first, so the first field comes off first: of a list cell, the element (and everything in
+ * it) is freed before the rest of the list is looked at, and a list of any length needs only
+ * a few entries. Pushed the other way round, every element of a list waited on the stack
+ * until its end: a task holding 8192 mappings, stopped, ran past the 4096 entries and
+ * stopped the machine. */
 
 #define FREE_STACK 4096
 static lean_object *free_stack[FREE_STACK];
@@ -122,15 +127,15 @@ void lean_dec_ref_cold(lean_object *o) {
         uint8_t tag = lean_ptr_tag(x);
         if (tag <= LeanMaxCtorTag) {
             unsigned n = lean_ctor_num_objs(x);
-            for (unsigned i = 0; i < n; i++) push_dead(lean_ctor_get(x, i), &top);
+            for (unsigned i = n; i-- > 0;) push_dead(lean_ctor_get(x, i), &top);
             lean_free_small_object(x);
         } else if (tag == LeanClosure) {
             unsigned n = lean_closure_num_fixed(x);
-            for (unsigned i = 0; i < n; i++) push_dead(lean_closure_get(x, i), &top);
+            for (unsigned i = n; i-- > 0;) push_dead(lean_closure_get(x, i), &top);
             lean_free_small_object(x);
         } else if (tag == LeanArray) {
             size_t n = lean_array_size(x);
-            for (size_t i = 0; i < n; i++) push_dead(lean_array_get_core(x, i), &top);
+            for (size_t i = n; i-- > 0;) push_dead(lean_array_get_core(x, i), &top);
             lean_free_object(x);
         } else if (tag == LeanScalarArray || tag == LeanString) {
             lean_free_object(x);

@@ -111,6 +111,11 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - One core at a time: the machine layer's kernel lock keeps every other core out while
   one runs compiled Lean code or the runtime, which are not safe to run on two cores at
   once (reference counts and the allocator are not atomic).
+- Freeing: an object whose count reaches zero frees its children through a fixed stack of
+  4096 entries, never by recursion. Children go on it last field first, so of a list cell
+  the element is freed before the rest of the list, and a list of any length needs only a
+  few entries (`test/stack.sh` frees a task's 8192 mappings at once). A structure that
+  still ran past the stack would stop the machine, not corrupt it.
 - The kernel heap has a fixed size: from the end of the kernel image and its stacks
   (`__heap_start`, `arch/kernel.ld`; 0x331000 in this build) to the frame pool at 64 MiB
   (`FRAME_BASE`, `arch/arch.h`), 63,762,432 bytes (60.8 MiB). `stateSize_le` proves that

@@ -5,6 +5,8 @@
 # taking back that slot's frames walks them again. The Lean kernel's walks are loops
 # (the `@[csimp]` theorems in LeanOS/Kernel.lean), so the stack must stay far below its
 # size however long the lists get. The peak is what the kernel reports when it switches off.
+# First deep runs once and is stopped, which drops its 8192 mappings at once: freeing them
+# must need no more of the runtime's free stack than a short list does. Then it runs again.
 set -u
 cd "$(dirname "$0")/.."
 fail() { echo "FAIL: $*"; exit 1; }
@@ -21,19 +23,22 @@ click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [c.encode() for c in s]
 steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *keys("run deep\r"), wait_for("deep: "),
+         *keys("kill 10\r"), wait_for("terminal: kill"),
+         *keys("run deep\r"), wait_for("deep: ", 2),
          *keys("run hello\r"), wait_for("hello: opened"),
          *click(40, 15), *click(60, 80), wait_for("leanos: switched off")]
 sys.exit(boot(240, steps=steps, sd=card))
 PY
 )
 status=$?
-echo "$out" | grep -E "^(deep|hello|terminal: run|leanos: (idle|switched off))" | sed 's/^/  | /'
+echo "$out" | grep -E "^(deep|hello|terminal: (run|kill)|leanos: (idle|switched off))" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish (status $status)"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
-echo "$out" | grep -qx "deep: all 8192 pages mapped, 0 calls refused" || fail "deep did not map its whole window"
+[ "$(echo "$out" | grep -cx "deep: all 8192 pages mapped, 0 calls refused")" = 2 ] || fail "deep did not map its whole window, twice"
+echo "$out" | grep -qx "terminal: kill 10 -> stopped" || fail "deep was not stopped"
 echo "$out" | grep -q "^hello: opened a window" || fail "hello did not start after deep"
 peak=$(echo "$out" | sed -n 's/^leanos: switched off (.* stack \([0-9]*\) bytes peak.*/\1/p')
 [ -n "$peak" ] || fail "no stack peak reported"
 # The stack is 64 KiB (arch/kmain.c, STACK_SIZE); the walks must leave most of it unused.
 [ "$peak" -le 32768 ] || fail "the kernel stack reached $peak bytes with 8192 mappings"
-echo "ok: 8192 mappings walked end to end, kernel stack peak $peak bytes"
+echo "ok: 8192 mappings freed at once and walked end to end, kernel stack peak $peak bytes"
