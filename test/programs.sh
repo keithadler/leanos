@@ -15,7 +15,7 @@ UP, DOWN, RIGHT, LEFT = b"\x1b[A", b"\x1b[B", b"\x1b[C", b"\x1b[D"
 term = click(150, 400)                  # Terminal's window, where no program window covers it
 steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *keys("tour\r"), wait_for("tour: opened"),
-         *[b"\r" for _ in range(10)], wait_for("tour: The difference"),
+         *[b"\r" for _ in range(11)], wait_for("tour: The difference"),
          *click(*DOCK["Calculator"]), wait_for("calc: opened"),
          *keys("2+3*4\r"), *keys("(7-2)*3\r"), *keys("1/0\r"), wait_for("calc: 1/0"),
          *term, *keys("run snake\r"), wait_for("snake: opened"), UP, wait_for("snake: game over"),
@@ -32,12 +32,12 @@ PY
 status=$?
 echo "$out" | grep -E "^(tour|calc|snake|life|tiles|apps|clock|terminal: (run|ps|tour)|display: (.* already open|open .* from the dock))" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish (status $status)"
-for page in "Your files" "Other programs' memory" "The disk" "Your keystrokes" "No all-powerful account"; do
+for page in "Your files" "Other programs' memory" "The disk" "Your keystrokes" "What you copy" "No all-powerful account"; do
   echo "$out" | grep -E "^tour: $page: " | grep -q " -> refused" || fail "the tour's attack was not refused: $page"
 done
 echo "$out" | grep -qx "tour: Writing, then running code: Ask for memory both writable and executable -> refused, got rw-: never both" || fail "write+execute"
 echo "$out" | grep -qE "^tour: Tampered programs: Check every program the manifest names -> [0-9]+ match, 0 refused$" || fail "tamper check"
-[ "$(echo "$out" | grep -c "^tour: ")" -ge 11 ] || fail "the tour did not show every page"
+[ "$(echo "$out" | grep -c "^tour: ")" -ge 12 ] || fail "the tour did not show every page"
 for line in "calc: 2+3*4 = 14" "calc: (7-2)*3 = 15" "calc: 1/0 cannot divide by 0"; do
   echo "$out" | grep -qxF "$line" || fail "missing: $line"
 done

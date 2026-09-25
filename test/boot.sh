@@ -46,7 +46,7 @@ check_order alice \
 
 check_order fs \
   "fs: ready, 22 files on the SD card" \
-  "fs: checked: 22 files in 1 folder, 6676 KiB free of 6968, journal 128 KiB"
+  "fs: checked: 22 files in 1 folder, 6672 KiB free of 6968, journal 128 KiB"
 
 check_order mallory \
   "mallory: I am task 2" \
@@ -60,6 +60,8 @@ check_order mallory \
   "mallory: read block 0 of the SD card through capability 20, which I do not have -> refused, no such capability" \
   "mallory: read block 0 of the SD card through my endpoint capability -> refused, not allowed" \
   "mallory: ask the display for a window without pixels -> ok" \
+  "mallory: ask the display for what was copied -> refused, it has no such request" \
+  "mallory: put text on the clipboard without being asked -> refused" \
   "mallory: writing to the screen's physical address 0x3c100000 directly" \
   "leanos: mallory stopped: data access not allowed at 0x3c100000"
 
@@ -82,13 +84,16 @@ expected_head=$(printf '%s\n' "display: boot checks shown: 6 verified, 0 refused
 for line in \
   "display: start Apps -> ok" \
   "display: alice opened a 300x200 window from a read-only capability to 59 pages" \
-  "display: mallory sent a request it cannot make; ignored"; do
+  "display: mallory sent a copy nobody asked for; refused"; do
   [ "$(echo "$display" | grep -cxF "$line")" = 1 ] || fail "display line missing or repeated: $line"
 done
+# mallory's window without pixels, and her request for the clipboard, which does not exist
+[ "$(echo "$display" | grep -cxF "display: mallory sent a request it cannot make; ignored")" = 2 ] \
+  || fail "the display did not refuse mallory's two requests it does not have"
 expected_tail=$(printf '%s\n' "display: key 'H' to alice" "display: key 'i' to alice" "display: key '!' to alice" \
   "display: moved alice's window to (276, 208)")
 [ "$(echo "$display" | tail -4)" = "$expected_tail" ] || fail "keys or drag not handled"
-[ "$(echo "$display" | wc -l | tr -d ' ')" = 10 ] || fail "display printed unexpected lines"
+[ "$(echo "$display" | wc -l | tr -d ' ')" = 12 ] || fail "display printed unexpected lines"
 # Startup items: the display starts Apps, which finds no startup.txt on this card and leaves.
 echo "$out" | grep -q "^apps: opened a window" && fail "Apps opened a window with no startup.txt"
 for who in alice display mallory carol input fs; do

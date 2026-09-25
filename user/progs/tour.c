@@ -16,7 +16,7 @@
 #define PAD 24
 #define COL_W ((TW - 3 * PAD) / 2)
 
-enum { TRY_NONE, TRY_FILES, TRY_MEMORY, TRY_DISK, TRY_KEYS, TRY_WX, TRY_TAMPER, TRY_POWER };
+enum { TRY_NONE, TRY_FILES, TRY_MEMORY, TRY_DISK, TRY_KEYS, TRY_CLIP, TRY_WX, TRY_TAMPER, TRY_POWER };
 
 struct page {
     const char *title;
@@ -51,6 +51,11 @@ static const struct page pages[] = {
      "hands each key only to the window in front.",
      "On X11, still used by many desktops, any program can read every key typed in any "
      "window. Wayland stops that; X11 does not."},
+    {"What you copy", TRY_CLIP,
+     "The display server keeps what you copy and gives it only to the window you paste into. "
+     "No request reads it, and it takes a copy only from the window you pressed Ctrl+C in.",
+     "On X11 any program can read the clipboard, or replace it, at any time, with no key "
+     "pressed. Wayland gives it only to the window in front."},
     {"Writing, then running code", TRY_WX,
      "No page is ever both writable and executable (theorem no_write_execute): code an "
      "attacker writes can never be run.",
@@ -137,6 +142,14 @@ static void attempt(struct tour *t) {
     case TRY_KEYS:         /* every key arrives at the display server's endpoint */
         result(t, "Listen where every keystroke arrives", sys1(SYS_RECV, 4).status);
         break;
+    case TRY_CLIP: {       /* ask for what was copied (no request does), then slip text in */
+        struct res g = sys(SYS_CALL, 4, OP_COPY + 1, 0, 0, 0);
+        struct res c = sys(SYS_CALL, 4, OP_COPY, 0x656b6166 /* "fake" */, 0, 0);
+        int refused = g.status == OK && g.x[1] != 0 && c.status == OK && c.x[1] != 0;
+        result(t, "Read the clipboard, and write it unasked", refused ? BAD_ARG : OK);
+        if (refused) copy(t->said, "no such request; not asked", sizeof t->said);
+        break;
+    }
     case TRY_WX: {
         struct res d = sys(SYS_DERIVE, 1, R | W | X, 0, 1, 0);
         u64 bits = d.status == OK ? sys1(SYS_CAPINFO, d.x[1]).x[1] : 0;

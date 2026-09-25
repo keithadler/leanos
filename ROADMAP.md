@@ -253,6 +253,24 @@ dock's programs; at boot Apps reads it back and hands it to the display, which t
 once. The time itself stays UTC, set only by the USB driver. `test/timezone.sh` checks what
 the menu bar and Clock show against the time each read, across midnight, and after a restart.
 
+Done too: copy and paste, with one rule: text moves between programs only by the user's
+hand. The display server keeps the clipboard, up to 4 KiB of text. Ctrl+C, or Copy in the
+new Edit menu in the menu bar, asks the window in front for its text, as an event like a
+key, and the display takes the answer only from that window's badge, once, and only within
+2 seconds; a copy at any other time, from anyone, is refused. Ctrl+V, or Paste, hands the
+text to the window in front, and to no other, as a run of events in its queue, 16 bytes
+each. There is no request that reads the clipboard. Notes and `edit` copy their text and
+paste where the caret is; Terminal copies the line being typed, or what the last command
+printed, and pastes onto the command line, where nothing runs until Return. The USB
+keyboard now sends Control keys as the serial line does, and the browser console sends
+Ctrl+C and Ctrl+V. No kernel change and no new capability: the text travels in message
+words over the endpoint every window already has, and nobody lends anybody memory for it.
+The rule is the display server's C, trusted, not proved (TRUST.md). `test/clipboard.sh`
+copies from Notes into Terminal and checks Terminal got exactly that text, then that
+mallory's request for the clipboard and her unasked copy are refused, and so are the tour's,
+once with nothing asked of it and once 2.5 seconds after the user pressed Ctrl+C in its
+window.
+
 Done too: touchscreens and tablets. The USB driver reads a HID device's report
 descriptor when it does not speak the boot protocol, finds the absolute X and Y and the
 button or tip switch, and scales them to the screen; a 7-inch 1024x600 HDMI touchscreen

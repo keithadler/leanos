@@ -24,6 +24,14 @@
    Settings changes the zone it asks Apps, which can, to save it (as it asks Apps to start a
    pinned program); at boot Apps reads it back and gives it here, once.
 
+   The clipboard is the display's too, and text moves between programs only by the user's
+   hand (user/app.h). Ctrl+C (byte 3), or Edit, Copy in the menu bar, asks the window in
+   front for its text (EV_COPY), and the display takes a copy (COPY, w0 = 10, 16 bytes in w1
+   w2 to a call) only from that window's badge, only until the copy ends, and only within
+   COPY_MS of asking; a copy at any other time, from anyone, is refused. Ctrl+V (byte 22), or
+   Edit, Paste, hands what was copied to the window in front, and only to it, as a run of
+   EV_PASTE events in its queue. No request reads the clipboard. Neither key reaches an app.
+
    It keeps a copy of its own capability list's layout (which app granted each capability,
    and for which window), so it can drop a window's capability when the window goes, drop
    at once any grant it did not ask for, and know which capabilities the kernel takes back
@@ -55,8 +63,11 @@
 #define RADIUS 12
 
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
-       OP_ZONE = 9 };
-enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6 };
+       OP_ZONE = 9, OP_COPY = 10 };
+enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7, EV_PASTE = 8 };
+enum { KEY_COPY = 3, KEY_PASTE = 22 };   /* Ctrl+C, Ctrl+V */
+#define CLIP_MAX 4096     /* as user/app.h */
+#define COPY_MS 2000
 enum { BADGE_USB = 17, BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
        BADGE_SECURITY = 7, BADGE_FILES = 9 };
 enum { SET_BACKGROUND = 1, SET_ZONE = 2 };
@@ -105,6 +116,10 @@ struct win {
     u64 slot;                   /* reply slot + 1 while the client waits, else 0 */
     unsigned queue[QUEUE][3];    /* events waiting for the client (kind, a, b), oldest at qhead */
     int qhead, qlen;
+    /* a paste on its way: what was copied when the user pasted here, handed out 16 bytes to
+       an event when an EV_PASTE in the queue comes up */
+    int paste_len, paste_at;
+    char paste[CLIP_MAX];
 };
 
 /* Everything the server remembers lives in its data pages: user programs have no writable
@@ -145,7 +160,14 @@ struct state {
     /* how long drawing takes, for the log: the first full redraw (when the first window
        opens), the first click on a window, and the frames of each drag */
     int full_reported, click_reported;
-    int menu;                   /* the leanos menu is open */
+    int menu;                   /* the menu that is open: 0 none, 1 leanos, 2 Edit */
+    int menu_x;                 /* where the Edit menu opened */
+    /* the clipboard, and the copy the display asked for: which window (+ 1, or 0), its
+       badge, when, and the text so far */
+    int clip_len, copy_win, copy_len;
+    u64 copy_badge, copy_at;
+    unsigned char copy_refused[32];   /* refused copies, per badge, so a flood logs a few */
+    char clip[CLIP_MAX], copy_buf[CLIP_MAX];
     u64 drag_frames, drag_us;
     int drag_pending, pend_x, pend_y;   /* a drag move not drawn yet, and where the window was */
 };
@@ -331,6 +353,17 @@ static void draw_window(struct state *st, int k) {
     blit_rounded(s, x, y + TITLE_H, &w->content, x, y, ow, oh, RADIUS);
 }
 
+/* The Edit menu's name in the menu bar, after the name of the window in front (-1: no window). */
+static int edit_x(struct state *st) {
+    int k = focused(st);
+    return k < 0 ? -1 : 104 + font_width(&st->ui, st->win[k].title) + 22;
+}
+
+static int on_edit(struct state *st, int x) {
+    int e = edit_x(st);
+    return e >= 0 && x >= e - 10 && x < e + font_width(&st->ui, "Edit") + 10;
+}
+
 static void top_bar(struct state *st) {
     struct surface *s = &st->screen;
     fill_alpha(s, 0, 0, W, BAR_H, rgb(10, 12, 20), 120);
@@ -338,7 +371,12 @@ static void top_bar(struct state *st) {
     logo(s, 10, 6, 18);
     font_text(s, &st->ui_bold, 36, 20, "leanos", rgb(245, 246, 250));
     int k = focused(st);
-    if (k >= 0) font_text(s, &st->ui, 104, 20, st->win[k].title, rgb(200, 204, 214));
+    if (k >= 0) {
+        font_text(s, &st->ui, 104, 20, st->win[k].title, rgb(200, 204, 214));
+        int e = edit_x(st), ew = font_width(&st->ui, "Edit");
+        if (st->menu == 2) round_rect(s, e - 8, 4, ew + 16, BAR_H - 8, 6, rgb(255, 255, 255), 40);
+        font_text(s, &st->ui, e, 20, "Edit", rgb(236, 238, 244));
+    }
     const char *right = "access control proved in Lean";
     int rx = W - 12;
     if (st->bar_time[0]) {
@@ -538,25 +576,36 @@ static void background(struct state *st) {
     }
 }
 
-/* The leanos menu, under the logo: Restart and Shut down. */
+/* The menus: the leanos menu, under the logo (Restart, Shut down), and the Edit menu, under
+   its name (Copy, Paste: the same as Ctrl+C and Ctrl+V). */
 #define MENU_X 6
 #define MENU_Y (BAR_H + 4)
 #define MENU_W 190
 #define MENU_ITEM 28
 #define MENU_H (2 * MENU_ITEM + 12)
-static const char *const menu_items[2] = {"Restart", "Shut down"};
+static const char *const menu_items[2][2] = {{"Restart", "Shut down"}, {"Copy", "Paste"}};
+static const char *const edit_keys[2] = {"Ctrl+C", "Ctrl+V"};
+
+static int menu_left(struct state *st, int m) { return m == 2 ? st->menu_x : MENU_X; }
 
 static void menu(struct state *st) {
     struct surface *s = &st->screen;
-    shadow(s, MENU_X, MENU_Y, MENU_W, MENU_H, 10, 0);
-    round_rect(s, MENU_X, MENU_Y, MENU_W, MENU_H, 10, rgb(248, 248, 250), 255);
-    for (int i = 0; i < 2; i++)
-        font_text(s, &st->ui, MENU_X + 16, MENU_Y + 6 + i * MENU_ITEM + 19, menu_items[i], rgb(30, 30, 36));
+    int x = menu_left(st, st->menu);
+    shadow(s, x, MENU_Y, MENU_W, MENU_H, 10, 0);
+    round_rect(s, x, MENU_Y, MENU_W, MENU_H, 10, rgb(248, 248, 250), 255);
+    for (int i = 0; i < 2; i++) {
+        int y = MENU_Y + 6 + i * MENU_ITEM + 19;
+        font_text(s, &st->ui, x + 16, y, menu_items[st->menu - 1][i], rgb(30, 30, 36));
+        if (st->menu == 2)
+            font_text(s, &st->small, x + MENU_W - 16 - font_width(&st->small, edit_keys[i]), y, edit_keys[i],
+                      rgb(140, 144, 156));
+    }
 }
 
-/* Which menu item (0, 1) is at (x, y), or -1. */
-static int menu_at(int x, int y) {
-    if (x < MENU_X || x >= MENU_X + MENU_W || y < MENU_Y + 6 || y >= MENU_Y + 6 + 2 * MENU_ITEM) return -1;
+/* Which item (0, 1) of the open menu is at (x, y), or -1. */
+static int menu_at(struct state *st, int x, int y) {
+    int x0 = menu_left(st, st->menu);
+    if (x < x0 || x >= x0 + MENU_W || y < MENU_Y + 6 || y >= MENU_Y + 6 + 2 * MENU_ITEM) return -1;
     return (y - MENU_Y - 6) / MENU_ITEM;
 }
 
@@ -592,7 +641,9 @@ static void composite_from(struct state *st, int x0, int y0, int x1, int y1, int
             draw_window(st, st->z[i]);
     }
     if (s->cy1 > DOCK_Y - 40) dock(st);
-    if (st->menu && s->cx0 < MENU_X + MENU_W + 12 && s->cy0 < MENU_Y + MENU_H + 12) menu(st);
+    if (st->menu && s->cx0 < menu_left(st, st->menu) + MENU_W + 12 && s->cx1 > menu_left(st, st->menu) - 12 &&
+        s->cy0 < MENU_Y + MENU_H + 12)
+        menu(st);
     pointer(s, st->px, st->py);
     clip_all(s);
 }
@@ -675,16 +726,40 @@ static int dock_at(struct state *st, int x, int y) {
     return 0;
 }
 
+/* The next event for window k's client, taken from its queue: 0 if there is none. An
+   EV_PASTE in the queue stands for the whole paste, and stays at the front until the last
+   of it (fewer than 16 bytes) is handed out. */
+__attribute__((noinline)) static int next_event(struct win *w, u64 e[3]) {
+    if (!w->qlen) return 0;
+    unsigned *q = w->queue[w->qhead];
+    e[0] = q[0];
+    e[1] = q[1];
+    e[2] = q[2];
+    if (q[0] == EV_PASTE) {
+        int n = 0;
+        e[1] = e[2] = 0;
+        for (; n < 16 && w->paste_at < w->paste_len; n++)
+            e[1 + n / 8] |= (u64)(unsigned char)w->paste[w->paste_at++] << (8 * (n % 8));
+        if (n == 16) return 1;
+        w->paste_len = w->paste_at = 0;
+    }
+    w->qhead = (w->qhead + 1) % QUEUE;
+    w->qlen--;
+    return 1;
+}
+
 /* Give window k's client an event: now, if it is waiting, or when it next asks. */
 static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
-    if (w->slot) {
-        sys(SYS_REPLY, w->slot - 1, kind, a, b, 0);
-        w->slot = 0;
-    } else if (w->qlen < QUEUE) {
+    if (w->qlen < QUEUE) {
         int at = (w->qhead + w->qlen++) % QUEUE;
         w->queue[at][0] = (unsigned)kind;   /* keys and screen positions fit in 32 bits */
         w->queue[at][1] = (unsigned)a;
         w->queue[at][2] = (unsigned)b;
+    }
+    u64 e[3];
+    if (w->slot && next_event(w, e)) {
+        sys(SYS_REPLY, w->slot - 1, e[0], e[1], e[2], 0);
+        w->slot = 0;
     }
 }
 
@@ -726,6 +801,8 @@ static void release(struct state *st, int k) {
     w->slot = 0;
     w->used = 0;
     w->closing = 0;
+    w->paste_len = w->paste_at = 0;
+    if (st->copy_win == k + 1) st->copy_win = 0;
 }
 
 /* The close button: the window goes now, and its client hears EV_CLOSE. */
@@ -879,8 +956,110 @@ static void drag_frame(struct state *st) {
     st->drag_frames++;
 }
 
+/* ---- copy and paste: only by the user's hand ---- */
+
+__attribute__((noinline)) static void copy_bytes(char *to, const char *from, int n) {
+    for (int i = 0; i < n; i++) to[i] = from[i];
+}
+
+/* "display: " a b c, on a line of its own, or after what the line already has (kept out of
+   line: it is said from many places). */
+__attribute__((noinline)) static void say3(struct line *l, const char *a, const char *b, const char *c) {
+    if (!l->n) put_s(l, "display: ");
+    put_s(l, a);
+    put_s(l, b);
+    put_s(l, c);
+    say(l);
+}
+
+/* The user asked to copy (Ctrl+C, or Edit, Copy): ask the window in front for its text. From
+   now until the copy ends, or COPY_MS pass, that window's badge, and no other, may send it.
+   Asked again while its answer may still be arriving, the display waits for that one: a new
+   start in the middle would keep only the answer's tail. */
+static void copy_ask(struct state *st, struct line *l) {
+    int k = focused(st);
+    if (k < 0) return;
+    struct win *w = &st->win[k];
+    if (st->copy_win == k + 1 && millis() - st->copy_at <= COPY_MS) {
+        say3(l, "copy: still waiting for ", name_of(w->badge), "");
+        return;
+    }
+    st->copy_win = k + 1;
+    st->copy_badge = w->badge;
+    st->copy_at = millis();
+    st->copy_len = 0;
+    deliver_event(w, EV_COPY, 0, 0);
+    say3(l, "copy: asked ", name_of(w->badge), " for its text");
+}
+
+/* The user asked to paste (Ctrl+V, or Edit, Paste): what was copied goes to the window in
+   front, and to no other, after the events already waiting for it. */
+static void paste_to(struct state *st, struct line *l) {
+    int k = focused(st);
+    if (k < 0) return;
+    struct win *w = &st->win[k];
+    if (!st->clip_len) {
+        say3(l, "paste: nothing has been copied", "", "");
+    } else if (w->paste_len || w->qlen == QUEUE) {
+        say3(l, "paste: the last paste is still on its way to ", name_of(w->badge), "");
+    } else {
+        copy_bytes(w->paste, st->clip, st->clip_len);
+        w->paste_len = st->clip_len;
+        w->paste_at = 0;
+        deliver_event(w, EV_PASTE, 0, 0);
+        put_s(l, "display: paste: ");
+        put_dec(l, (u64)st->clip_len);
+        say3(l, " bytes to ", name_of(w->badge), "");
+    }
+}
+
+/* COPY: the text the display asked for, 16 bytes at a time; fewer than 16 ends it. Taken
+   only from the badge of the window that was asked, while the copy it asked for is open.
+   The text is kept only when it ends: until then, the clipboard is what it was. */
+__attribute__((noinline)) static void on_copy(struct state *st, struct line *l, struct res *r) {
+    u64 badge = r->x[1], slot = r->x[6];
+    int k = st->copy_win - 1;
+    int late = k >= 0 && millis() - st->copy_at > COPY_MS;
+    if (k < 0 || late || badge != st->copy_badge || !st->win[k].used || st->win[k].closing ||
+        st->win[k].badge != badge) {
+        if (late) st->copy_win = 0;
+        if (slot) sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
+        if (st->copy_refused[badge & 31] < 3) {
+            st->copy_refused[badge & 31]++;
+            say3(l, name_of(badge), late && badge == st->copy_badge ? " answered a copy too late; refused"
+                                                                     : " sent a copy nobody asked for; refused", "");
+        }
+        return;
+    }
+    int n = 0;
+    for (; n < 16; n++) {
+        unsigned char c = (unsigned char)(r->x[3 + n / 8] >> (8 * (n % 8)));
+        if (!c) break;
+        if (c == '\r') c = '\n';
+        if (c == '\t') c = ' ';
+        if ((c == '\n' || (c >= 32 && c < 127)) && st->copy_len < CLIP_MAX) st->copy_buf[st->copy_len++] = (char)c;
+    }
+    if (slot) sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
+    if (n == 16 && st->copy_len < CLIP_MAX) return;     /* more to come */
+    st->copy_win = 0;
+    if (!st->copy_len) {
+        say3(l, "copy: ", name_of(badge), " had nothing to copy");
+    } else {
+        copy_bytes(st->clip, st->copy_buf, st->copy_len);
+        st->clip_len = st->copy_len;
+        put_s(l, "display: copied ");
+        put_dec(l, (u64)st->clip_len);
+        say3(l, " bytes from ", name_of(badge), "");
+    }
+}
+
 static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     if (kind == EV_KEY || kind == EV_DOWN) st->spread = 0;   /* from here on, windows cascade */
+    if (kind == EV_KEY && (a == KEY_COPY || a == KEY_PASTE)) {
+        if (a == KEY_COPY) copy_ask(st, l);
+        else paste_to(st, l);
+        return;
+    }
     if (kind == EV_KEY) {
         int k = focused(st);
         if (k < 0) return;
@@ -899,11 +1078,18 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     int ox = st->px, oy = st->py;
     st->px = a < W ? (int)a : W - 1;
     st->py = b < H ? (int)b : H - 1;
-    if (kind == EV_DOWN && (st->menu || (st->py < BAR_H && st->px < 100))) {
-        int item = st->menu ? menu_at(st->px, st->py) : -1;
-        st->menu = !st->menu && item < 0;
-        composite(st, 0, 0, MENU_X + MENU_W + 12, MENU_Y + MENU_H + 12);
-        if (item >= 0) {
+    if (kind == EV_DOWN && (st->menu || (st->py < BAR_H && (st->px < 100 || on_edit(st, st->px))))) {
+        /* a click with a menu open closes it (choosing what is under it); on the logo or
+           on Edit, with none open, opens that one */
+        int was = st->menu, item = was ? menu_at(st, st->px, st->py) : -1;
+        st->menu = was ? 0 : st->px < 100 ? 1 : 2;
+        if (st->menu == 2) st->menu_x = edit_x(st) - 10;
+        composite(st, 0, 0, W, MENU_Y + MENU_H + 12);
+        if (st->menu == 2) say3(l, "the Edit menu, for ", name_of(st->win[focused(st)].badge), "");
+        if (was == 2 && item >= 0) {
+            if (item == 0) copy_ask(st, l);
+            else paste_to(st, l);
+        } else if (was == 1 && item >= 0) {
             int restart = item == 0;          /* the items: Restart, Shut down */
             put_s(l, restart ? "display: restarting, as the user asked"
                              : "display: switching off, as the user asked");
@@ -1046,6 +1232,8 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     wn->prog[0] = 0;
     st->cap_win[cap - 1] = k + 1;
     wn->qhead = wn->qlen = 0;
+    wn->paste_len = wn->paste_at = 0;
+    if (st->copy_win == k + 1) st->copy_win = 0;
     st->z[st->nz++] = k;
     u64 t0 = micros();
     redraw_all(st);
@@ -1084,11 +1272,9 @@ static void on_wait(struct state *st, struct res *r, int poll) {
             return;
         }
         if (dirty && !w->closing) composite_window(st, k);
-        if (w->qlen) {
-            unsigned *e = w->queue[w->qhead];
+        u64 e[3];
+        if (next_event(w, e)) {
             sys(SYS_REPLY, slot - 1, e[0], e[1], e[2], 0);
-            w->qhead = (w->qhead + 1) % QUEUE;
-            w->qlen--;
         } else if (poll) {
             sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
         } else {
@@ -1261,6 +1447,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->theme = 0;
     st->full_reported = st->click_reported = 0;
     st->menu = 0;
+    st->clip_len = st->copy_win = st->copy_len = 0;
+    for (int i = 0; i < 32; i++) st->copy_refused[i] = 0;
     st->drag_frames = st->drag_us = 0;
     st->bar_time[0] = 0;
     st->bar_minute = 0;
@@ -1339,6 +1527,8 @@ __attribute__((section(".text.start"))) void _start(void) {
             on_pending(st, &r);
         } else if (slot && op == OP_ZONE) {
             on_zone(st, &r);
+        } else if (op == OP_COPY && !grant) {
+            on_copy(st, &l, &r);
         } else {
             /* A request the display does not understand, from anyone: it answers no, and
                says so the first few times, so a program that floods it cannot flood the log. */

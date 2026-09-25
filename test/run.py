@@ -77,10 +77,12 @@ def mouse(kind, x, y):
     return f"\x1bm{kind}{x:03d}{y:03d}".encode()
 
 
-def usb_key(qcode, shift=False):
-    """Steps that press and release a key on the USB keyboard (a QEMU qcode: "a", "ret", ...)."""
+def usb_key(qcode, shift=False, ctrl=False):
+    """Steps that press and release a key on the USB keyboard (a QEMU qcode: "a", "ret", ...),
+    with Shift or Control held if asked."""
+    mods = (["shift"] if shift else []) + (["ctrl"] if ctrl else [])
     down = lambda d: ("qmp", "input-send-event", {"events":
-                      ([{"type": "key", "data": {"down": d, "key": {"type": "qcode", "data": "shift"}}}] if shift else []) +
+                      [{"type": "key", "data": {"down": d, "key": {"type": "qcode", "data": m}}} for m in mods] +
                       [{"type": "key", "data": {"down": d, "key": {"type": "qcode", "data": qcode}}}]})
     return [down(True), down(False)]
 
@@ -112,6 +114,16 @@ DOCK = {name: (215 + 66 * i, 548) for i, name in enumerate(
 def wait_for(prefix, times=1):
     """A step that types nothing: it waits until `times` serial lines start with `prefix`."""
     return ("wait", prefix, times)
+
+
+def pause(seconds):
+    """A step that types nothing for that long (for what must happen late)."""
+    return ("sleep", seconds)
+
+
+def snap(name):
+    """A step that captures the screen, without stopping, to NAME.ppm and NAME.png."""
+    return ("snap", name)
 
 
 TEST_CARD = os.path.join(SCRATCH, "sd-test.img")
@@ -220,6 +232,14 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                             if isinstance(reply, dict) and "error" in reply:
                                 print("run.py: QMP", chunk[1], "failed:", reply["error"], flush=True)
                             time.sleep(0.05)
+                            continue
+                        if isinstance(chunk, tuple) and chunk[0] == "sleep":
+                            time.sleep(chunk[1])
+                            continue
+                        if isinstance(chunk, tuple) and chunk[0] == "snap":
+                            ppm = os.path.join(SCRATCH, chunk[1] + ".ppm")
+                            qmp.cmd("screendump", filename=ppm)
+                            ppm_to_png(ppm, os.path.join(SCRATCH, chunk[1] + ".png"))
                             continue
                         if isinstance(chunk, tuple):
                             with cond:

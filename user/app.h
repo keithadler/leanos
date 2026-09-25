@@ -10,8 +10,9 @@
 #include "assets.h"
 
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
-       OP_ZONE = 9 };
-enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6 };
+       OP_ZONE = 9, OP_COPY = 10 };
+enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7,
+       EV_PASTE = 8 };
 /* The arrow keys, as EV_KEY codes (the input driver turns ESC [ A..D into these). */
 enum { KEY_UP = 128, KEY_DOWN = 129, KEY_RIGHT = 130, KEY_LEFT = 131 };
 enum { SET_BACKGROUND = 1, SET_ZONE = 2 };
@@ -86,6 +87,53 @@ static inline long app_zone(void) {
     struct res r = sys(SYS_CALL, ENDPOINT, OP_ZONE, 0, 0, 0);
     long m = r.status == OK && r.x[1] == 0 && r.x[2] <= 26 * 60 ? (long)r.x[2] - 12 * 60 : 0;
     return m % 15 ? 0 : m;
+}
+
+/* Copy and paste. The display server keeps what was copied: up to CLIP_MAX bytes of text,
+   printable ASCII and line breaks. Text moves between programs only by the user's hand:
+
+   - EV_COPY: the user pressed Ctrl+C (or chose Edit, Copy) with this window in front. Answer
+     with app_copy() at once. The display takes a copy only from the window it asked, once,
+     within COPY_MS of asking; OP_COPY at any other time is refused.
+   - EV_PASTE: the user pressed Ctrl+V (or Edit, Paste) with this window in front. The text
+     comes as a run of EV_PASTE events, up to 16 bytes each in a and b (paste_text() takes
+     them out); one with fewer than 16 bytes is the last.
+
+   There is no request that reads what was copied: a program sees it only when the user
+   pastes into its window. */
+#define CLIP_MAX 4096
+#define COPY_MS 2000
+
+/* Answer EV_COPY: send the display `n` bytes of text, 16 to a call (bytes 1 to 127 only; the
+   display keeps printable ASCII and line breaks). A call with fewer than 16 bytes, or the
+   one that reaches CLIP_MAX, ends the copy. OK if the display took it. */
+static inline u64 app_copy(const char *text, u64 n) {
+    u64 i = 0, sent = 0;
+    for (;;) {
+        u64 w[2] = {0, 0};
+        int k = 0;
+        while (k < 16 && i < n && sent < CLIP_MAX) {
+            unsigned char c = (unsigned char)text[i++];
+            if (c == 0 || c > 127) continue;
+            w[k / 8] |= (u64)c << (8 * (k % 8));
+            k++;
+            sent++;
+        }
+        struct res r = sys(SYS_CALL, ENDPOINT, OP_COPY, w[0], w[1], 0);
+        if (r.status != OK || r.x[1] != 0) return BAD_ARG;
+        if (k < 16 || sent == CLIP_MAX) return OK;
+    }
+}
+
+/* The text an EV_PASTE event carries, into out: how many bytes (fewer than 16: the last). */
+static inline int paste_text(struct event e, char out[16]) {
+    int n = 0;
+    for (int k = 0; k < 16; k++) {
+        char c = (char)(((k < 8 ? e.a : e.b) >> (8 * (k % 8))) & 0x7f);
+        if (!c) break;
+        out[n++] = c;
+    }
+    return n;
 }
 
 /* A slot's name, as the manifest orders them. */

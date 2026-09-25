@@ -11,6 +11,28 @@ The dock
 The leanos menu
   Click the logo at the top left: Restart, or Shut down.
 
+Copy and paste
+  Ctrl+C    copy from the window in front (or Edit, Copy: Edit is in the menu bar,
+            after the window's name)
+  Ctrl+V    paste into the window in front (or Edit, Paste)
+
+  What each program copies, and where a paste goes:
+  Notes     the whole note; a paste goes at the end
+  edit      the whole file (its first 4 KiB); a paste goes in at the cursor
+  Terminal  the command line you are typing, or, when it is empty, what the last
+            command printed; a paste goes onto the command line, line breaks as
+            spaces, so it never runs anything until you press Return
+  Other programs do not answer a copy, and the clipboard stays as it was.
+
+  Text moves between programs only by your hand. The display server keeps what you
+  copy (up to 4 KiB of plain text, until leanos restarts). It asks the window in front
+  for its text only when you press Ctrl+C, and takes the answer only from that window,
+  within 2 seconds; it hands the text only to the window in front, when you press
+  Ctrl+V. No program can read the clipboard, or put text on it, by asking.
+
+  In the browser console, Ctrl+C and Ctrl+V are leanos's (Cmd+V on a Mac types the
+  host's clipboard as keys). Under make run, your terminal's Ctrl+C stops QEMU itself.
+
 Terminal
   ls, cat FILE, write FILE TEXT, rm FILE    files on the card
   mkdir FOLDER, cd FOLDER, cd .., pwd       folders

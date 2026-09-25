@@ -206,6 +206,21 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   boot from Apps, which reads back the one it saved on the card), a quarter hour between
   -12:00 and +14:00. That rule is the display server's C (`on_set` in `user/display.c`),
   trusted, not proved.
+- The clipboard, and its rule that text moves between programs only by the user's hand, is
+  the display server's C (`copy_ask`, `on_copy` and `paste_to` in `user/display.c`),
+  trusted, not proved. What it guarantees: it takes a copy only after Ctrl+C (or Edit,
+  Copy) comes from the input driver or the USB driver, only from the badge of the window
+  that was in front then (the kernel sets badges: `endpoints_fixed`), only until that copy
+  ends, and only within 2 seconds of asking; it hands what was copied only to the window in
+  front when Ctrl+V (or Edit, Paste) comes, after the events already waiting for it; no
+  request returns it; and no memory is lent for any of it, so the proofs about what each
+  task holds are unchanged. What it does not guarantee: what text a program answers with
+  (the window asked may copy anything it likes), what a program does with a paste (it sees
+  all of it, and can keep it or send it on over any channel it has), or that the keys came
+  from a person (the input and USB drivers are trusted to report what was typed, and on
+  QEMU the host's serial bridge is too). The display sees every copy and paste, as it
+  already sees every key and every window's pixels. The clipboard lives only in its memory
+  and is gone when leanos restarts.
 - The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
   then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.

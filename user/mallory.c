@@ -37,6 +37,17 @@ __attribute__((section(".text.start"))) void _start(void) {
            sys(SYS_BLOCKREAD, ENDPOINT, 0, DATA, 0, 0));
     report("ask the display for a window without pixels", sys(SYS_SEND, ENDPOINT, 640, 480, 0, 0));
 
+    /* The clipboard: no request reads it (11 is the next number after COPY, 10), and the
+       display takes a copy only from the window it asked when the user pressed Ctrl+C. */
+    struct res g = sys(SYS_CALL, ENDPOINT, 11, 0, 0, 0);
+    put_s(&l, "mallory: ask the display for what was copied");
+    put_s(&l, g.status == OK && g.x[1] != 0 ? " -> refused, it has no such request\n" : " -> ANSWERED\n");
+    flush(&l);
+    struct res c = sys(SYS_CALL, ENDPOINT, 10, 0x2079726f6c6c616dUL /* "mallory " */, 0x6572656820736177UL /* "was here" */, 0);
+    put_s(&l, "mallory: put text on the clipboard without being asked");
+    put_s(&l, c.status == OK && c.x[1] != 0 ? " -> refused\n" : " -> TAKEN\n");
+    flush(&l);
+
     put_s(&l, "mallory: writing to the screen's physical address 0x3c100000 directly\n");
     flush(&l);
     volatile u64 *p = (u64 *)0x3c100000UL;

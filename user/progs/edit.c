@@ -5,7 +5,10 @@
    Type to insert, Backspace deletes, Enter starts a line, the arrow keys move. It saves by
    itself a moment after you stop typing, the whole file in one request, which the file
    server writes as one journaled change: after a power cut the file is the last save or
-   the one before, never half of each. A file holds up to 16 KiB (one request). */
+   the one before, never half of each. A file holds up to 16 KiB (one request).
+
+   Copy (Ctrl+C) takes the whole text, or its first 4 KiB (what the clipboard holds); a paste
+   (Ctrl+V) goes in at the cursor, and is saved like typing. */
 #include "../ui.h"
 #include "../fs.h"
 
@@ -28,6 +31,7 @@ struct edit {
     int dirty, full;
     u64 changed;             /* when the text last changed (ms) */
     u64 saves;
+    long pasted;             /* bytes of the paste now arriving */
     char status[96];
 };
 
@@ -138,6 +142,29 @@ static void key(struct edit *e, u64 k) {
     set_status(e, "editing", 0);
 }
 
+/* A piece of a paste, at the cursor; after the last piece, say what arrived. */
+static int paste_in(struct edit *e, struct line *l, struct event ev) {
+    char piece[16];
+    int k = paste_text(ev, piece);
+    for (int i = 0; i < k; i++) {
+        char c = piece[i] == '\r' ? '\n' : piece[i];
+        if (c != '\n' && (c < 32 || c > 126)) continue;
+        if (e->len >= TEXT_MAX) { set_status(e, "full: 16 KiB", 0); break; }
+        insert(e, c);
+        e->pasted++;
+    }
+    e->dirty = 1;
+    e->changed = millis();
+    if (k == 16) return 0;
+    set_status(e, "pasted", 0);
+    put_s(l, "edit: pasted ");
+    put_dec(l, (u64)e->pasted);
+    put_s(l, " bytes");
+    say(l);
+    e->pasted = 0;
+    return 1;
+}
+
 /* The file it was given: the first file among its grants that is not in its own folder,
    else untitled.txt in its folder. */
 static void choose(struct edit *e) {
@@ -173,6 +200,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     e->len = e->cur = e->top = 0;
     e->dirty = e->full = 0;
     e->saves = 0;
+    e->pasted = 0;
     choose(e);
     long n = fs_read_all(&e->fs, e->path, e->text, TEXT_MAX);
     if (n >= 0) {
@@ -209,6 +237,25 @@ __attribute__((section(".text.start"))) void _start(void) {
             key(e, ev.a);
             draw(e);
             dirty = 1;
+            continue;
+        }
+        if (ev.kind == EV_COPY) {
+            u64 st = app_copy(e->text, (u64)e->len);
+            put_s(&l, "edit: copied ");
+            put_dec(&l, (u64)(e->len < CLIP_MAX ? e->len : CLIP_MAX));
+            put_s(&l, " bytes");
+            put_s(&l, outcome(st));
+            say(&l);
+            set_status(e, st == OK ? "copied" : "not copied", 0);
+            draw(e);
+            dirty = 1;
+            continue;
+        }
+        if (ev.kind == EV_PASTE) {
+            if (paste_in(e, &l, ev)) {       /* drawn once, when the last piece is in */
+                draw(e);
+                dirty = 1;
+            }
             continue;
         }
         if (ev.kind == EV_NONE) {

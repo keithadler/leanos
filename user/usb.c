@@ -386,15 +386,17 @@ static int key_of(int usage, int shift) {
     return 0;
 }
 
+/* A key with Control held is sent as the serial line sends it: Ctrl+A to Ctrl+Z are bytes 1
+   to 26 (Ctrl+C and Ctrl+V are copy and paste, user/display.c). */
 static void keyboard(struct usb *u, const unsigned char *r, int n) {
     if (n < 8) return;
-    int shift = (r[0] & 0x22) != 0;
+    int shift = (r[0] & 0x22) != 0, ctrl = (r[0] & 0x11) != 0;
     for (int i = 2; i < 8; i++) {
         int k = r[i], seen = 0;
         if (k < 4) continue;
         for (int j = 2; j < 8; j++) if (u->prev[j] == k) seen = 1;
         if (seen) continue;
-        int c = key_of(k, shift);
+        int c = ctrl ? (k <= 0x1d ? k - 3 : 0) : key_of(k, shift);
         if (c == '\b') c = 127;
         if (c) event(EV_KEY, (u64)c, 0);
     }

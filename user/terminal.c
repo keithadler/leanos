@@ -1,7 +1,12 @@
 /* Terminal. A line of text in, an answer out. Every answer comes from asking the kernel
    (which task this is, what capabilities it holds, what the boot checks found) or the file
    server (ls, cat, write, rm). It holds no more authority than any app: its own frames, and
-   send + grant to the display server and the file server. */
+   send + grant to the display server and the file server.
+
+   Copy (Ctrl+C) takes the command line being typed, or, when it is empty, what the last
+   command printed (as far as the scrollback still shows it). A paste (Ctrl+V) goes onto the
+   command line, line breaks as spaces: pasted text never runs a command until you press
+   Return. */
 #include "app.h"
 #include "fs.h"
 #include "elfload.h"
@@ -27,7 +32,9 @@ enum { F_MONO = 1 };
 struct term {
     char text[ROWS][COLS + 1];  /* scrollback, oldest first; the prompt line is drawn below */
     unsigned char kind[ROWS];   /* 0 output, 1 a command that was typed */
+    unsigned char cont[ROWS];   /* 1: the row goes on from the one before (a long line, wrapped) */
     int n;
+    int paste_from, dropped;    /* where a paste began on the command line (-1: none), and what did not fit */
     char cmd[CMD_MAX + 1];
     int len;
     struct font mono;
@@ -39,18 +46,20 @@ struct term {
 
 static const unsigned BG = 0x171a21, FG = 0xdde2ec, DIM = 0x8a93a6, GREEN = 0x7fd1a0;
 
-static void push(struct term *t, const char *s, u64 n, int kind) {
-    while (1) {
+__attribute__((noinline)) static void push(struct term *t, const char *s, u64 n, int kind) {
+    for (int more = 0;; more = 1) {
         u64 take = n > COLS ? COLS : n;
         if (t->n == ROWS) {
             for (int i = 1; i < ROWS; i++) {
                 for (int j = 0; j <= COLS; j++) t->text[i - 1][j] = t->text[i][j];
                 t->kind[i - 1] = t->kind[i];
+                t->cont[i - 1] = t->cont[i];
             }
             t->n--;
         }
         for (u64 j = 0; j < take; j++) t->text[t->n][j] = s[j];
         t->text[t->n][take] = 0;
+        t->cont[t->n] = (unsigned char)more;
         t->kind[t->n++] = (unsigned char)kind;
         if (n <= COLS) return;
         s += take;
@@ -753,6 +762,62 @@ static void run(struct term *t, struct line *l) {
     }
 }
 
+/* Ctrl+C: the command line, if something is typed on it, else what the last command printed. */
+static void copy_out(struct term *t, struct line *l) {
+    char buf[ROWS * (COLS + 1)];
+    u64 n = 0;
+    const char *what = "the command line";
+    if (t->len) {
+        for (int i = 0; i < t->len; i++) buf[n++] = t->cmd[i];
+    } else {
+        int from = t->n;
+        while (from > 0 && !t->kind[from - 1]) from--;
+        for (int i = from; i < t->n; i++) {
+            if (i > from && !t->cont[i]) buf[n++] = '\n';
+            for (int j = 0; t->text[i][j]; j++) buf[n++] = t->text[i][j];
+        }
+        what = "the last command's output";
+    }
+    u64 st = app_copy(buf, n);
+    put_s(l, "terminal: copied ");
+    put_s(l, what);
+    put_s(l, ", ");
+    put_dec(l, n);
+    put_s(l, " bytes");
+    put_s(l, outcome(st));
+    put_s(l, "\n");
+    flush(l);
+}
+
+/* Ctrl+V: a piece of the paste onto the command line; when it ends, say what arrived. */
+static int paste_in(struct term *t, struct line *l, struct event e) {
+    char piece[16];
+    int k = paste_text(e, piece);
+    if (t->paste_from < 0) { t->paste_from = t->len; t->dropped = 0; }
+    for (int i = 0; i < k; i++) {
+        char c = piece[i] == '\n' || piece[i] == '\r' || piece[i] == '\t' ? ' ' : piece[i];
+        if (c < 32 || c > 126) continue;
+        if (t->len < CMD_MAX) t->cmd[t->len++] = c;
+        else t->dropped++;
+    }
+    if (k == 16) return 0;
+    t->cmd[t->len] = 0;
+    put_s(l, "terminal: pasted ");
+    put_dec(l, (u64)(t->len - t->paste_from));
+    put_s(l, " bytes: ");
+    put_s(l, t->cmd + t->paste_from);
+    put_s(l, "\n");
+    flush(l);
+    if (t->dropped) {
+        put_s(l, "terminal: ");
+        put_dec(l, (u64)t->dropped);
+        put_s(l, " more bytes did not fit on the command line\n");
+        flush(l);
+    }
+    t->paste_from = -1;
+    return 1;
+}
+
 __attribute__((section(".text.start"))) void _start(void) {
     struct term *t = (struct term *)DATA;
     struct line l = {.n = 0};
@@ -763,6 +828,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     net_init(&t->net, SPARE_PAGE);
     t->cwd[0] = 0;
     t->n = t->len = 0;
+    t->paste_from = -1;
     say(t, "leanos terminal. Type help, or tour.");
     draw(t);
     u64 opened = app_open(TW, TH, "Terminal");
@@ -780,6 +846,17 @@ __attribute__((section(".text.start"))) void _start(void) {
             put_s(&l, "terminal: window closed, exiting\n");
             flush(&l);
             exit_task();
+        }
+        if (e.kind == EV_COPY) {
+            copy_out(t, &l);
+            continue;
+        }
+        if (e.kind == EV_PASTE) {
+            if (paste_in(t, &l, e)) {        /* drawn once, when the last piece is in */
+                draw(t);
+                dirty = 1;
+            }
+            continue;
         }
         if (e.kind != EV_KEY) continue;
         char ch = (char)e.a;

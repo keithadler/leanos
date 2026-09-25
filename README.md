@@ -48,6 +48,11 @@ This is the start. The next steps, in order:
   time zone chosen in Settings, and a dock. Built-in apps: Notes, Files, Terminal, Settings,
   Security, Apps and Clock. What opens at startup is a list on the SD card (`startup.txt`:
   Apps and the tour, to begin with).
+- **Copy and paste, by hand only**: Ctrl+C and Ctrl+V (or the Edit menu in the menu bar)
+  between Notes, Terminal and `edit`. The display server keeps the clipboard. It asks the
+  window in front for its text only when you press Ctrl+C, takes the answer only from that
+  window, and hands the text only to the window in front when you press Ctrl+V. No program
+  can read the clipboard, or put text on it, by asking.
 - **Programs from the SD card**: `web` (a text web browser), `edit` (a text editor),
   `calc`, `snake`, `life`, `tiles` (2048), `tour`, `fuzz` and `hello`. Up to six run at once,
   each confined to its own memory, a window, its own folder, the files you hand it, and the
@@ -142,7 +147,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # proofs, axioms, boot transcript, pixels on screen, apps, USB, network, power cuts, the fuzzer, the kernel stack
+make test     # proofs, axioms, boot transcript, pixels on screen, apps, USB, network, power cuts, the fuzzer, the kernel stack, copy and paste
 ```
 
 ```bash
@@ -154,6 +159,8 @@ Things to try once it is up:
 - Open **Terminal** and type `help`, then `tour`, `caps`, `ps`, `date` or `ping 10.0.2.2`.
 - Click the **globe** in the dock and go to `info.cern.ch`.
 - `run edit notes.txt` in Terminal edits that one file, and nothing else.
+- Type in Notes, press Ctrl+C, click Terminal and press Ctrl+V: the text is on its command
+  line, and nothing runs until you press Return.
 - `run web` (without `-net`) and watch the network refuse it.
 
 ## Run it on a Raspberry Pi 4

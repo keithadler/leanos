@@ -2,20 +2,16 @@
    read-only capability to exactly those pages, and then asks it, over and over, for her
    next event. Keys she is given go into the note, and the note is saved to the file server
    as notes.txt after every change, so it is back when Notes starts again. She also keeps a
-   secret in her data pages and checks that nobody changes it. */
-#include "lib.h"
-#include "gfx.h"
-#include "assets.h"
+   secret in her data pages and checks that nobody changes it.
+
+   Copy (Ctrl+C) takes the whole note; a paste (Ctrl+V) goes at its end, where the caret is. */
+#include "app.h"
 #include "fs.h"
 
 #define WIN_W 300
 #define WIN_H 200
 #define WIN_PAGES ((WIN_W * WIN_H * 4 + 4095) / 4096)
-#define SPARE 3
-#define SPARE_PAGE 64     /* the spare run: assets first, then the window's pixels */
-#define WIN_OFFSET 16     /* pages into the spare run */
-enum { OP_OPEN = 1, OP_WAIT = 2 };
-enum { EV_KEY = 1, EV_CLOSE = 5 };
+#define WIN_OFFSET 16     /* pages into the spare run (SPARE_PAGE): assets first, then the window's pixels */
 enum { F_HEAD = 5, F_TEXT = 6, F_SMALL = 3 };
 
 struct notes {
@@ -95,6 +91,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     flush(&l);
 
     u64 dirty = 0;
+    int pasted = 0;
     for (;;) {
         struct res e = sys(SYS_CALL, ENDPOINT, OP_WAIT, dirty, 0, 0);
         dirty = 0;
@@ -107,12 +104,40 @@ __attribute__((section(".text.start"))) void _start(void) {
             flush(&l);
             exit_task();
         }
-        if (e.status != OK || e.x[1] != EV_KEY) continue;
-        char c = (char)e.x[2];
-        if ((c == 8 || c == 127) && n->len > 0) n->len--;
-        else if (c == '\r' || c == '\n') { if (n->len < 399) n->text[n->len++] = '\n'; }
-        else if (c >= 32 && c < 127 && n->len < 399) n->text[n->len++] = c;
-        else continue;
+        if (e.status == OK && e.x[1] == EV_COPY) {
+            u64 st = app_copy(n->text, (u64)n->len);
+            put_s(&l, "alice: copied ");
+            put_dec(&l, (u64)n->len);
+            put_s(&l, " bytes");
+            put_s(&l, outcome(st));
+            put_s(&l, "\n");
+            flush(&l);
+            continue;
+        }
+        if (e.status == OK && e.x[1] == EV_PASTE) {
+            /* a run of events: the text goes in as it comes, and is saved when the last is in */
+            struct event ev = {EV_PASTE, e.x[2], e.x[3]};
+            char piece[16];
+            int k = paste_text(ev, piece);
+            for (int i = 0; i < k; i++) {
+                char c = piece[i] == '\r' ? '\n' : piece[i];
+                if (n->len < 399 && (c == '\n' || (c >= 32 && c < 127))) { n->text[n->len++] = c; pasted++; }
+            }
+            if (k == 16) continue;
+            put_s(&l, "alice: pasted ");
+            put_dec(&l, (u64)pasted);
+            put_s(&l, " bytes\n");
+            flush(&l);
+            pasted = 0;
+        } else if (e.status != OK || e.x[1] != EV_KEY) {
+            continue;
+        } else {
+            char c = (char)e.x[2];
+            if ((c == 8 || c == 127) && n->len > 0) n->len--;
+            else if (c == '\r' || c == '\n') { if (n->len < 399) n->text[n->len++] = '\n'; }
+            else if (c >= 32 && c < 127 && n->len < 399) n->text[n->len++] = c;
+            else continue;
+        }
         draw(&win, n);
         dirty = 1;
         if (fs_write(&n->fs, "notes.txt", n->text, (u64)n->len) != FS_OK) {
