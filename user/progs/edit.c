@@ -217,7 +217,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     put_s(&l, " bytes)");
     say(&l);
     draw(e);
-    u64 opened = app_open(EW, EH, "Edit");
+    u64 opened = app_open(EW, EH, "Editor");
     put_s(&l, "edit: opened a window");
     put_s(&l, outcome(opened));
     say(&l);
