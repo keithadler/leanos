@@ -809,16 +809,41 @@ theorem cases17 {j : Nat} (h : j < numTasks) :
       j = 12 ∨ j = 13 ∨ j = 14 ∨ j = 15 ∨ j = 16 ∨ j = 17 := by
   simp [numTasks] at h; omega
 
+-- Capabilities can be compared, so facts about single capabilities of the manifest can be
+-- decided.
+deriving instance DecidableEq for Rights, Obj, Cap
+
+/-- Every capability the boot manifest gives any task passes the check `p`. Deciding this
+is one evaluation of the manifest, far cheaper than a case for every task and capability. -/
+def manifestAll (p : Nat → Cap → Bool) : Bool :=
+  (List.range numTasks).all fun j => (initCaps j).all (p j)
+
+/-- What `manifestAll` says about one capability of one task. -/
+theorem manifestAll_spec {p : Nat → Cap → Bool} (h : manifestAll p = true) {j : Nat} {c : Cap}
+    (hj : j < numTasks) (hc : c ∈ initCaps j) : p j c = true := by
+  unfold manifestAll at h
+  simp only [List.all_eq_true, List.mem_range] at h
+  exact h j hj c hc
+
 /-- At boot, every frame a task holds is its own (`owner`), read-execute or read-write. -/
 theorem initCaps_frame {j f : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps j)
     (hf : Covers c f) : owner f = j ∧ f < devBase + devPages ∧ ¬ WX c.rights := by
   obtain ⟨b, n, ho, h1, h2⟩ := hf
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hc <;>
-    rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;> obtain ⟨rfl, rfl⟩ := ho <;>
-    by_cases hfp : f < 5120 <;> by_cases hfd : f < 5720 <;>
-    simp [WX, Rights.rx, Rights.rw, owner, poolFrames, framesPerTask, maxTasks, fbPages,
-      displayTask, inputTask, devBase, devPages, hfp, hfd] at h1 h2 ⊢ <;> omega
+  have := manifestAll_spec (p := fun j c => match c.obj with
+    | .frames b n => !(c.rights.w && c.rights.x) &&
+        ((Nat.ble (b + n) poolFrames && b / framesPerTask == j && (b + n - 1) / framesPerTask == j) ||
+          ((Nat.ble poolFrames b && Nat.ble (b + n) devBase && j == displayTask) ||
+            (Nat.ble devBase b && Nat.ble (b + n) (devBase + devPages) && j == inputTask)))
+    | _ => true) (by decide) hj hc
+  simp only [ho, Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true', Nat.ble_eq, beq_iff_eq] at this
+  obtain ⟨hwx, hr⟩ := this
+  refine ⟨?_, ?_, fun ⟨hw, hx⟩ => by simp [hw, hx] at hwx⟩
+  · unfold owner
+    split <;> (try split) <;>
+      simp only [poolFrames, framesPerTask, maxTasks, devBase, fbPages, devPages, displayTask,
+        inputTask] at * <;> omega
+  · simp only [poolFrames, framesPerTask, maxTasks, devBase, fbPages, devPages] at hr ⊢
+    omega
 
 /-- A run inside one slot's frames, or wholly outside the pool, never spans two slots. -/
 theorem runOK_of {c : Cap} {b n : Nat} (ho : c.obj = .frames b n)
@@ -833,10 +858,10 @@ theorem initCaps_run {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCap
   intro f f' hf hf'
   have ⟨b, n, ho, _, _⟩ := hf
   apply runOK_of ho _ f f' hf hf'
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hc <;>
-    rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp at ho <;>
-    obtain ⟨rfl, rfl⟩ := ho <;> simp [poolFrames, framesPerTask, maxTasks, devBase, fbPages]
+  have := manifestAll_spec (p := fun _ c => match c.obj with
+    | .frames b n => (Nat.ble (b + n) poolFrames && b / 256 == (b + n - 1) / 256) || Nat.ble poolFrames b
+    | _ => true) (by decide) hj hc
+  simpa [ho] using this
 
 theorem initCap_ok {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps j) : CapOK j c where
   frames f hf := by
@@ -852,16 +877,17 @@ theorem initCap_ok {j : Nat} {c : Cap} (hj : j < numTasks) (hc : c ∈ initCaps 
   wall hw := ⟨c, hc, hw⟩
   run := initCaps_run hj hc
 
+/-- Every task holds its own frames at boot. -/
+theorem frameCaps_initCaps {j : Nat} {c : Cap} (h : c ∈ frameCaps j) : c ∈ initCaps j := by
+  unfold initCaps; split <;> simp only [mem_snoc, h, true_or]
+
 theorem mkTask_ok {fb : Bool} {j : Nat} (hj : j < numTasks) : TaskOK fb j (mkTask j) := by
   refine ⟨?_, ?_, fun c hc => initCap_ok hj hc, trivial, ?_, fun h => by simp [mkTask, Alive] at h⟩
   · intro m hm
     simp only [mkTask, initMaps] at hm
-    have hcode : runCap (256 * j) 16 Rights.rx ∈ initCaps j := by
-      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
-    have hdata : runCap (256 * j + 16) 8 Rights.rw ∈ initCaps j := by
-      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
-    have hstack : runCap (256 * j + 24) 4 Rights.rw ∈ initCaps j := by
-      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [initCaps, frameCaps, snoc]
+    have hcode : runCap (256 * j) 16 Rights.rx ∈ initCaps j := frameCaps_initCaps (by simp [frameCaps])
+    have hdata : runCap (256 * j + 16) 8 Rights.rw ∈ initCaps j := frameCaps_initCaps (by simp [frameCaps])
+    have hstack : runCap (256 * j + 24) 4 Rights.rw ∈ initCaps j := frameCaps_initCaps (by simp [frameCaps])
     rcases mem_app.1 hm with hm | hm
     · obtain ⟨k, hk, -, hf, hr⟩ := mem_runMaps hm
       exact ⟨_, hcode, ⟨_, _, rfl, by omega, by omega⟩, hr.symm⟩
@@ -1116,10 +1142,20 @@ theorem inv_usbFields {s : KState} (hs : Inv s) (d z : List Nat) :
     Inv { s with usbDma := d, usbSize := z } :=
   ⟨hs.len, hs.tasks⟩
 
+/-- To show something of an `if`, show it of both branches. Much cheaper than `split` on a
+tree of `if`s whose conditions are long. -/
+theorem of_ite {α : Sort _} {P : α → Prop} {c : Prop} [Decidable c] {a b : α} (ha : P a) (hb : P b) :
+    P (if c then a else b) := by
+  split <;> assumption
+
 theorem inv_sysUsb {s : KState} {t : Task} {ci op reg v : Nat} (hs : Inv s)
     (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysUsb s t ci op reg v).state := by
   unfold sysUsb usbReply
-  repeat' (first | split | dsimp only)
+  split
+  · exact inv_ret hs ht _
+  split
+  all_goals try exact inv_ret hs ht _
+  repeat' (first | apply of_ite (P := fun r : Reply => Inv r.state) | dsimp only)
   all_goals first
     | exact inv_ret hs ht _
     | exact inv_setTask hs (ht.result _)
@@ -1479,25 +1515,32 @@ def NetClient (A : Nat) : Prop := A = 5 ∨ A = 16 ∨ A = 10 ∨ A = 11 ∨ A =
 the open slots (10 to 15), which the file server lets reach only what they were given. -/
 def FsClient (A : Nat) : Prop := A = 0 ∨ A = 5 ∨ A = 9 ∨ A = 16 ∨ A = 10 ∨ A = 11 ∨ A = 12 ∨ A = 13 ∨ A = 14 ∨ A = 15
 
+/-- `App`, `NetClient` and `FsClient` can be decided, so checks over the manifest can use
+them. -/
+instance (A : Nat) : Decidable (App A) := by unfold App; infer_instance
+instance (A : Nat) : Decidable (NetClient A) := by unfold NetClient; infer_instance
+instance (A : Nat) : Decidable (FsClient A) := by unfold FsClient; infer_instance
+
 /-- Who may receive on an endpoint at boot: the display server on endpoint 0, the file
 server on endpoint 1, nobody else. (One pass over the manifest, not one per sender.) -/
 theorem recv_owner {B e : Nat} {d : Cap} (hB : B < numTasks) (hd : d ∈ initCaps B)
     (hdo : d.obj = .endpoint e) (hr : d.rights.r = true) :
     (e = 0 ∧ B = 1) ∨ (e = 1 ∧ B = 8) ∨ (e = 2 ∧ B = 17) := by
-  rcases cases17 hB with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hd <;>
-    rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp at hdo hr <;> subst hdo <;> simp
+  have := manifestAll_spec (p := fun j c => match c.obj with
+    | .endpoint e => !c.rights.r || ((e == 0 && j == 1) || ((e == 1 && j == 8) || (e == 2 && j == 17)))
+    | _ => true) (by decide) hB hd
+  simpa [hdo, hr] using this
 
 /-- Who may send and grant through an endpoint at boot: the apps through endpoint 0, the
 file server's clients through endpoint 1. -/
 theorem grant_sender {A e : Nat} {c : Cap} (hA : A < numTasks) (hc : c ∈ initCaps A)
     (hco : c.obj = .endpoint e) (hw : c.rights.w = true) (hx : c.rights.x = true) :
     (e = 0 ∧ App A) ∨ (e = 1 ∧ FsClient A) ∨ (e = 2 ∧ NetClient A) := by
-  rcases cases17 hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hc <;>
-    rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp at hco hw hx <;> subst hco <;> simp [App, FsClient, NetClient]
+  have := manifestAll_spec (p := fun j c => match c.obj with
+    | .endpoint e => !(c.rights.w && c.rights.x) ||
+        ((e == 0 && decide (App j)) || ((e == 1 && decide (FsClient j)) || (e == 2 && decide (NetClient j))))
+    | _ => true) (by decide) hA hc
+  simpa [hco, hw, hx] using this
 
 /-- The only grant edges in the manifest: from each app to the display server (1), and
 from the file server's clients to the file server (8). -/
@@ -1507,76 +1550,73 @@ theorem edge_iff {A B : Nat} :
   · rintro ⟨hA, hB, e, ⟨c, hc, hco, hw, hx⟩, ⟨d, hd, hdo, hr⟩⟩
     rcases recv_owner hB hd hdo hr with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;>
       rcases grant_sender hA hc hco hw hx with ⟨he, h⟩ | ⟨he, h⟩ | ⟨he, h⟩ <;> simp_all
-  · have hd0 : epCap 0 true false false 0 ∈ initCaps 1 := by
-      simp [initCaps, frameCaps, snoc, runCap, launchCap]
-    have hd1 : epCap 1 true false false 0 ∈ initCaps 8 := by
-      simp [initCaps, frameCaps, snoc, runCap]
-    have hd2 : epCap 2 true false false 0 ∈ initCaps 17 := by
-      simp [initCaps, frameCaps, snoc, runCap]
+  · have hd0 : epCap 0 true false false 0 ∈ initCaps 1 := by decide
+    have hd1 : epCap 1 true false false 0 ∈ initCaps 8 := by decide
+    have hd2 : epCap 2 true false false 0 ∈ initCaps 17 := by decide
     rintro (⟨hA, rfl⟩ | ⟨hA, rfl⟩ | ⟨hA, rfl⟩)
     · rcases hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 1,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 5,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 6,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 7,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 9,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 10,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 11,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 12,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 13,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 14,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 15,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 0, ⟨epCap 0 false true true 16,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd0, rfl, rfl⟩⟩
     · rcases hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 1,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 5,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 9,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 16,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 10,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 11,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 12,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 13,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 14,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 1, ⟨epCap 1 false true true 15,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd1, rfl, rfl⟩⟩
     · rcases hA with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
       · exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 5,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 16,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 10,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 11,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 12,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 13,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 14,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
       · exact ⟨by decide, by decide, 2, ⟨epCap 2 false true true 15,
-          by simp [initCaps, frameCaps, snoc, runCap], rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
+          by decide, rfl, rfl, rfl⟩, ⟨_, hd2, rfl, rfl⟩⟩
 
 /-- Memory moves at most one step: from an app to the display server, or from a client to
 the file server. Neither server can pass anything on. -/
@@ -1826,11 +1866,10 @@ theorem only_display_launches {s : KState} (h : Reachable s) {j : Nat} {t : Task
     (ht : nth? s.tasks j = some t) {c : Cap} (hc : c ∈ t.caps) {k : Nat} (hk : c.obj = .launch k) :
     (j = displayTask ∧ App k ∧ openSlot k = false) ∨ ((j = 5 ∨ j = 16) ∧ openSlot k = true) := by
   obtain ⟨c0, hc0, ho⟩ := launch_fixed h ht hc hk
-  have hj := (reachable_inv h).lt ht
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hc0 <;>
-    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp at ho <;> subst ho <;> simp [App, displayTask, openSlot] <;> decide
+  have := manifestAll_spec (p := fun j c => match c.obj with
+    | .launch k => (j == displayTask && (decide (App k) && !openSlot k)) || ((j == 5 || j == 16) && openSlot k)
+    | _ => true) (by decide) ((reachable_inv h).lt ht) hc0
+  simpa [ho] using this
 
 /-! ## Interrupts and devices -/
 
@@ -1872,10 +1911,10 @@ theorem uart_irq_only_input {s : KState} (h : Reachable s) {j : Nat} {t : Task}
     (ht : nth? s.tasks j = some t) {c : Cap} (hc : c ∈ t.caps) (hn : c.obj = .irq uartIrq) :
     j = inputTask := by
   obtain ⟨c0, hc0, ho⟩ := irqs_fixed h ht hc hn
-  have hj := (reachable_inv h).lt ht
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hc0 <;>
-    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp [usbIrq, uartIrq] at ho <;> rfl
+  have := manifestAll_spec (p := fun j c => match c.obj with
+    | .irq n => n != uartIrq || j == inputTask
+    | _ => true) (by decide) ((reachable_inv h).lt ht) hc0
+  simpa [ho] using this
 
 /-- **The UART belongs to the input driver.** No other task can ever hold a capability to
 the UART's registers. -/
@@ -1912,6 +1951,197 @@ theorem allReadable_spec : ∀ {ms : List Mapping} {first count p : Nat},
     · subst hp; exact h.1
     · exact allReadable_spec h.2 (by omega) (by omega)
 
+/-! ## What each system call asks of the machine layer
+
+Most system calls ask the machine layer for nothing beyond loading result registers, and
+none but `setwall` touches either clock. These facts, proved once per call, are what the
+theorems below about single fields of a reply (`outLen_pos`, `io_pos`, `power_pos`,
+`loadLen_pos`, `board_pos`, `usb_pos`, `syscall_now`, `syscall_wall`) rest on. -/
+
+/-- The reply asks the machine layer for nothing (no printing, block I/O, program load,
+power change, board request or USB access) and leaves both clocks as they were in `s`. -/
+abbrev Calm (s : KState) (r : Reply) : Prop :=
+  r.outLen = 0 ∧ r.io = 0 ∧ r.loadLen = 0 ∧ r.power = 0 ∧ r.board = 0 ∧ r.usbOp = 0 ∧
+    r.state.now = s.now ∧ r.state.wall = s.wall
+
+/-- The scheduler moves neither clock. -/
+theorem schedule_keeps_clocks (s : KState) : (schedule s).now = s.now ∧ (schedule s).wall = s.wall := by
+  unfold schedule; split <;> exact ⟨rfl, rfl⟩
+
+/-- Stopping the current task moves neither clock. -/
+theorem killCurrent_keeps_clocks (s : KState) :
+    (killCurrent s).now = s.now ∧ (killCurrent s).wall = s.wall := by
+  unfold killCurrent; split <;> exact schedule_keeps_clocks _
+
+/-- Closes `Calm` for a reply whose state is the old one, changed only in its tasks, its
+pending interrupts or its USB registers, possibly then rescheduled. -/
+local macro "calm_leaf" : tactic => `(tactic| first
+  | exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  | exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, (schedule_keeps_clocks _).1, (schedule_keeps_clocks _).2⟩)
+
+@[simp] theorem ret_calm (s : KState) (t : Task) (r : List Nat) : Calm s (ret s t r) := by calm_leaf
+
+@[simp] theorem sysMap_calm (s : KState) (t : Task) (ci vpn : Nat) : Calm s (sysMap s t ci vpn) := by
+  unfold sysMap; repeat' split
+  all_goals calm_leaf
+
+@[simp] theorem sysUnmap_calm (s : KState) (t : Task) (vpn count : Nat) :
+    Calm s (sysUnmap s t vpn count) := by
+  unfold sysUnmap; calm_leaf
+
+@[simp] theorem sysDerive_calm (s : KState) (t : Task) (ci bits offset count : Nat) :
+    Calm s (sysDerive s t ci bits offset count) := by
+  unfold sysDerive; repeat' split
+  all_goals calm_leaf
+
+@[simp] theorem sysCapInfo_calm (s : KState) (t : Task) (ci : Nat) : Calm s (sysCapInfo s t ci) := by
+  unfold sysCapInfo; repeat' split
+  all_goals calm_leaf
+
+@[simp] theorem sysSend_calm (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) :
+    Calm s (sysSend s t ci w0 w1 w2 gi call) := by
+  unfold sysSend; repeat' (first | split | dsimp only)
+  all_goals calm_leaf
+
+@[simp] theorem sysRecv_calm (s : KState) (t : Task) (ci : Nat) (block : Bool) (deadline : Nat) :
+    Calm s (sysRecv s t ci block deadline) := by
+  unfold sysRecv; repeat' (first | split | dsimp only)
+  all_goals calm_leaf
+
+@[simp] theorem sysReply_calm (s : KState) (t : Task) (slot w0 w1 w2 : Nat) :
+    Calm s (sysReply s t slot w0 w1 w2) := by
+  unfold sysReply; repeat' (first | split | dsimp only)
+  all_goals calm_leaf
+
+@[simp] theorem sysIrqWait_calm (s : KState) (t : Task) (ci : Nat) : Calm s (sysIrqWait s t ci) := by
+  unfold sysIrqWait; repeat' split
+  all_goals calm_leaf
+
+@[simp] theorem sysIrqAck_calm (s : KState) (t : Task) (ci : Nat) : Calm s (sysIrqAck s t ci) := by
+  unfold sysIrqAck; repeat' split
+  all_goals calm_leaf
+
+@[simp] theorem sysBootInfo_calm (s : KState) (t : Task) (i : Nat) : Calm s (sysBootInfo s t i) := by
+  unfold sysBootInfo; split
+  all_goals calm_leaf
+
+@[simp] theorem sysDrop_calm (s : KState) (t : Task) (ci : Nat) : Calm s (sysDrop s t ci) := by
+  unfold sysDrop; split
+  all_goals calm_leaf
+
+@[simp] theorem sysSleep_calm (s : KState) (t : Task) (ms : Nat) : Calm s (sysSleep s t ms) := by
+  unfold sysSleep; dsimp only; split
+  all_goals calm_leaf
+
+@[simp] theorem sysTime_calm (s : KState) (t : Task) : Calm s (sysTime s t) := by
+  unfold sysTime; calm_leaf
+
+@[simp] theorem sysStop_calm (s : KState) (t : Task) (ci : Nat) : Calm s (sysStop s t ci) := by
+  unfold sysStop; repeat' split
+  all_goals calm_leaf
+
+/-- `write` asks only to print. -/
+@[simp] theorem sysWrite_asks (s : KState) (t : Task) (va n : Nat) :
+    (sysWrite s t va n).io = 0 ∧ (sysWrite s t va n).loadLen = 0 ∧ (sysWrite s t va n).power = 0 ∧
+      (sysWrite s t va n).board = 0 ∧ (sysWrite s t va n).usbOp = 0 ∧
+      (sysWrite s t va n).state.now = s.now ∧ (sysWrite s t va n).state.wall = s.wall := by
+  generalize hr : sysWrite s t va n = r
+  unfold sysWrite at hr; repeat' split at hr
+  all_goals (subst hr; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩)
+
+/-- `blockread` and `blockwrite` ask only for block I/O. -/
+@[simp] theorem sysBlock_asks (s : KState) (t : Task) (ci idx va : Nat) (w : Bool) :
+    (sysBlock s t ci idx va w).outLen = 0 ∧ (sysBlock s t ci idx va w).loadLen = 0 ∧
+      (sysBlock s t ci idx va w).power = 0 ∧ (sysBlock s t ci idx va w).board = 0 ∧
+      (sysBlock s t ci idx va w).usbOp = 0 ∧ (sysBlock s t ci idx va w).state.now = s.now ∧
+      (sysBlock s t ci idx va w).state.wall = s.wall := by
+  generalize hr : sysBlock s t ci idx va w = r
+  unfold sysBlock at hr; repeat' split at hr
+  all_goals (subst hr; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩)
+
+/-- `start` and `exec` ask only to load a program. -/
+@[simp] theorem sysStart_asks (s : KState) (t : Task) (ci src len : Nat) :
+    (sysStart s t ci src len).outLen = 0 ∧ (sysStart s t ci src len).io = 0 ∧
+      (sysStart s t ci src len).power = 0 ∧ (sysStart s t ci src len).board = 0 ∧
+      (sysStart s t ci src len).usbOp = 0 ∧ (sysStart s t ci src len).state.now = s.now ∧
+      (sysStart s t ci src len).state.wall = s.wall := by
+  generalize hr : sysStart s t ci src len = r
+  unfold sysStart at hr; repeat' (first | split at hr | dsimp only at hr)
+  all_goals (subst hr; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩)
+
+/-- `power` asks only to switch off or restart. -/
+@[simp] theorem sysPower_asks (s : KState) (t : Task) (ci a : Nat) :
+    (sysPower s t ci a).outLen = 0 ∧ (sysPower s t ci a).io = 0 ∧ (sysPower s t ci a).loadLen = 0 ∧
+      (sysPower s t ci a).board = 0 ∧ (sysPower s t ci a).usbOp = 0 ∧
+      (sysPower s t ci a).state.now = s.now ∧ (sysPower s t ci a).state.wall = s.wall := by
+  generalize hr : sysPower s t ci a = r
+  unfold sysPower at hr; repeat' split at hr
+  all_goals (subst hr; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩)
+
+/-- `board` asks only for a board request. -/
+@[simp] theorem sysBoard_asks (s : KState) (t : Task) (ci w v : Nat) :
+    (sysBoard s t ci w v).outLen = 0 ∧ (sysBoard s t ci w v).io = 0 ∧
+      (sysBoard s t ci w v).loadLen = 0 ∧ (sysBoard s t ci w v).power = 0 ∧
+      (sysBoard s t ci w v).usbOp = 0 ∧ (sysBoard s t ci w v).state.now = s.now ∧
+      (sysBoard s t ci w v).state.wall = s.wall := by
+  generalize hr : sysBoard s t ci w v = r
+  unfold sysBoard at hr; repeat' (first | split at hr | dsimp only at hr)
+  all_goals (subst hr; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩)
+
+/-- `usb` asks only for the USB controller. -/
+@[simp] theorem sysUsb_asks (s : KState) (t : Task) (ci op reg v : Nat) :
+    (sysUsb s t ci op reg v).outLen = 0 ∧ (sysUsb s t ci op reg v).io = 0 ∧
+      (sysUsb s t ci op reg v).loadLen = 0 ∧ (sysUsb s t ci op reg v).power = 0 ∧
+      (sysUsb s t ci op reg v).board = 0 ∧ (sysUsb s t ci op reg v).state.now = s.now ∧
+      (sysUsb s t ci op reg v).state.wall = s.wall := by
+  generalize hr : sysUsb s t ci op reg v = r
+  unfold sysUsb usbReply at hr
+  split at hr
+  · subst hr; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  · split at hr <;> subst hr
+    -- the checks on the USB capability's arguments are a tree of `if`s, far cheaper to push
+    -- each field through than to split
+    all_goals first
+      | exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+      | simp only [apply_ite Reply.outLen, apply_ite Reply.io, apply_ite Reply.loadLen,
+          apply_ite Reply.power, apply_ite Reply.board, apply_ite Reply.state, apply_ite KState.now,
+          apply_ite KState.wall, ret_calm, setTask, ite_self, and_self]
+
+/-- `setwall` asks the machine layer for nothing, and changes only the time of day. -/
+@[simp] theorem sysSetWall_asks (s : KState) (t : Task) (ci secs : Nat) :
+    (sysSetWall s t ci secs).outLen = 0 ∧ (sysSetWall s t ci secs).io = 0 ∧
+      (sysSetWall s t ci secs).loadLen = 0 ∧ (sysSetWall s t ci secs).power = 0 ∧
+      (sysSetWall s t ci secs).board = 0 ∧ (sysSetWall s t ci secs).usbOp = 0 ∧
+      (sysSetWall s t ci secs).state.now = s.now := by
+  generalize hr : sysSetWall s t ci secs = r
+  unfold sysSetWall at hr; repeat' split at hr
+  all_goals (subst hr; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩)
+
+/-- A running task's system call asks the machine layer for nothing and keeps both clocks,
+or it is one of the calls that ask for something: `write`, `blockread` or `blockwrite`,
+`start` or `exec`, `power`, `board`, `usb`, or `setwall` (call 27). -/
+theorem runCall_cases (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) :
+    Calm s (runCall s t num a0 a1 a2 a3 a4) ∨
+      runCall s t num a0 a1 a2 a3 a4 = sysWrite s t a0 a1 ∨
+      (∃ w, runCall s t num a0 a1 a2 a3 a4 = sysBlock s t a0 a1 a2 w) ∨
+      (∃ ci src len, runCall s t num a0 a1 a2 a3 a4 = sysStart s t ci src len) ∨
+      (∃ ci a, runCall s t num a0 a1 a2 a3 a4 = sysPower s t ci a) ∨
+      (∃ ci w v, runCall s t num a0 a1 a2 a3 a4 = sysBoard s t ci w v) ∨
+      (∃ ci op reg v, runCall s t num a0 a1 a2 a3 a4 = sysUsb s t ci op reg v) ∨
+      (num = 27 ∧ ∃ ci secs, runCall s t num a0 a1 a2 a3 a4 = sysSetWall s t ci secs) := by
+  generalize hr : runCall s t num a0 a1 a2 a3 a4 = r
+  unfold runCall at hr
+  split at hr <;> subst hr
+  all_goals first
+    | (left; simp [Calm, setTask, schedule_keeps_clocks, killCurrent_keeps_clocks]; done)
+    | exact Or.inr (Or.inl rfl)
+    | exact Or.inr (Or.inr (Or.inl ⟨_, rfl⟩))
+    | exact Or.inr (Or.inr (Or.inr (Or.inl ⟨_, _, _, rfl⟩)))
+    | exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inl ⟨_, _, rfl⟩))))
+    | exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inl ⟨_, _, _, rfl⟩)))))
+    | exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inl ⟨_, _, _, _, rfl⟩))))))
+    | exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr ⟨rfl, _, _, rfl⟩))))))
+
 @[simp] theorem ret_outLen (s : KState) (t : Task) (r : List Nat) : (ret s t r).outLen = 0 := rfl
 
 /-- The only system call that asks the machine layer to print is `write`. -/
@@ -1926,68 +2156,9 @@ theorem outLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
     split at *
     rotate_left
     · simp at h
-    unfold runCall at *
-    split at *
-    · rfl
-    all_goals exfalso
-    all_goals first
-      | (simp at h; done)
-      | (unfold sysMap at h; repeat' split at h
-         all_goals simp at h
-         done)
-      | (unfold sysUnmap at h; simp at h; done)
-      | (unfold sysDerive at h; repeat' split at h
-         all_goals simp at h
-         done)
-      | (unfold sysCapInfo at h; repeat' split at h
-         all_goals simp at h
-         done)
-      | (unfold sysSend at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
-      | (unfold sysRecv at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
-      | (unfold sysReply at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
-      | (unfold sysIrqWait at h; repeat' split at h
-         all_goals simp at h
-         done)
-      | (unfold sysIrqAck at h; repeat' split at h
-         all_goals simp at h
-         done)
-      | (unfold sysBootInfo at h; repeat' split at h
-         all_goals simp at h
-         done)
-      | (unfold sysStart at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
-      | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
-      | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
-      | (unfold sysTime at h; simp at h; done)
-      | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
-      | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
-      | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
-      | (unfold sysSetWall at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
-      | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
-      | (unfold sysPower at h; repeat' (first | split at h | dsimp only at h)
-         all_goals simp at h
-         done)
+    rcases runCall_cases s t num a0 a1 a2 a3 a4 with
+      hr | hr | ⟨_, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, _, _, hr⟩ | ⟨-, _, _, hr⟩ <;>
+      first | exact hr | simp [hr] at h
 
 /-- When a system call asks the machine layer to print user memory, every byte of it is in
 the user window, in a page the calling task has mapped with read rights. -/
@@ -2030,11 +2201,10 @@ theorem disk_only_file_server {s : KState} (h : Reachable s) {j : Nat} {t : Task
     (ht : nth? s.tasks j = some t) {c : Cap} (hc : c ∈ t.caps) {b n : Nat} (hb : c.obj = .blocks b n) :
     j = fileServer ∧ b = 0 ∧ n = diskBlocks := by
   obtain ⟨c0, hc0, ho, -⟩ := blocks_fixed h ht hc hb
-  have hj := (reachable_inv h).lt ht
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hc0 <;>
-    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp at ho <;> simp [fileServer, ho]
+  have := manifestAll_spec (p := fun j c => match c.obj with
+    | .blocks b n => j == fileServer && (b == 0 && n == diskBlocks)
+    | _ => true) (by decide) ((reachable_inv h).lt ht) hc0
+  simpa [ho] using this
 
 theorem writableAt_spec : ∀ {ms : List Mapping} {p : Nat},
     writableAt ms p = true → ∃ m ∈ ms, m.vpn = p ∧ m.rights.w = true
@@ -2061,69 +2231,9 @@ theorem io_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
     split at *
     rotate_left
     · simp at h
-    unfold runCall at *
-    split at *
-    all_goals first
-      | exact ⟨_, rfl⟩
-      | exfalso
-        first
-        | (simp at h; done)
-        | (unfold sysWrite at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysMap at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysUnmap at h; simp at h; done)
-        | (unfold sysDerive at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysCapInfo at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysSend at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysRecv at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysReply at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysIrqWait at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysIrqAck at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysBootInfo at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysStart at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysTime at h; simp at h; done)
-        | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSetWall at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysPower at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
+    rcases runCall_cases s t num a0 a1 a2 a3 a4 with
+      hr | hr | ⟨_, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, _, _, hr⟩ | ⟨-, _, _, hr⟩ <;>
+      first | exact ⟨_, hr⟩ | simp [hr] at h
 
 /-- What a `blockread` or `blockwrite` that asks for I/O checked. -/
 theorem sysBlock_io {s : KState} {t : Task} {ci idx va : Nat} {w : Bool}
@@ -2236,69 +2346,9 @@ theorem power_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
     split at *
     rotate_left
     · simp at h
-    unfold runCall at *
-    split at *
-    all_goals first
-      | exact ⟨_, _, rfl⟩
-      | exfalso
-        first
-        | (simp at h; done)
-        | (unfold sysUnmap at h; simp at h; done)
-        | (unfold sysWrite at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysMap at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysDerive at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysCapInfo at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSend at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysRecv at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysReply at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysIrqWait at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysIrqAck at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysBootInfo at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysStart at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysTime at h; simp at h; done)
-        | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSetWall at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
+    rcases runCall_cases s t num a0 a1 a2 a3 a4 with
+      hr | hr | ⟨_, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, _, _, hr⟩ | ⟨-, _, _, hr⟩ <;>
+      first | exact ⟨_, _, hr⟩ | simp [hr] at h
 
 /-- **Only the display server can switch the machine off or restart it.** When a system
 call asks the machine layer to do either, the caller is the display server: the power
@@ -2315,13 +2365,10 @@ theorem only_display_powers {s : KState} (hr : Reachable s) {num a0 a1 a2 a3 a4 
     · rename_i hpow
       obtain ⟨c0, hc0, ho⟩ := ((reachable_inv hr).tasks _ t ht).caps c (nth?_mem hc) |>.power hpow
       have hj := (reachable_inv hr).lt ht
-      revert hc0 ho
-      generalize s.cur = j at hj ⊢
-      intro hc0 ho
-      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-        simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hc0 <;>
-        rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-        simp at ho <;> rfl
+      have := manifestAll_spec (p := fun j c => match c.obj with
+        | .power => j == displayTask
+        | _ => true) (by decide) hj hc0
+      simpa [ho] using this
     · simp at hp
 
 /-! ## Programs from the SD card -/
@@ -2381,69 +2428,9 @@ theorem loadLen_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
     split at *
     rotate_left
     · simp at h
-    unfold runCall at *
-    split at *
-    all_goals first
-      | exact ⟨_, _, _, rfl⟩
-      | exfalso
-        first
-        | (simp at h; done)
-        | (unfold sysWrite at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysMap at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysUnmap at h; simp at h; done)
-        | (unfold sysDerive at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysCapInfo at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysSend at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysRecv at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysReply at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysIrqWait at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysIrqAck at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysBootInfo at h; repeat' split at h
-           all_goals simp at h
-           done)
-        | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysTime at h; simp at h; done)
-        | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSetWall at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysPower at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
+    rcases runCall_cases s t num a0 a1 a2 a3 a4 with
+      hr | hr | ⟨_, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, _, _, hr⟩ | ⟨-, _, _, hr⟩ <;>
+      first | exact ⟨_, _, _, hr⟩ | simp [hr] at h
 
 /-- **A program from the SD card is read only from memory its loader may read.** When a
 call asks the machine layer to load a program image into a slot, the slot is an open slot,
@@ -2603,52 +2590,11 @@ theorem syscall_now (s : KState) (num a0 a1 a2 a3 a4 : Nat) :
   unfold syscall
   split
   · rfl
-  · split
-    · unfold runCall
-      split
-      all_goals first
-        | rfl
-        | simp
-        | (unfold sysWrite; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysMap; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysUnmap; simp)
-        | (unfold sysDerive; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysCapInfo; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysSend; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysRecv; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysReply; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysIrqWait; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysIrqAck; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysBootInfo; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysStart; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysDrop; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysBlock; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysSleep; repeat' (first | split | dsimp only)
-           all_goals simp)
-        | (unfold sysPower; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysTime; simp [ret_now])
-        | (unfold sysUsb usbReply; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysStop; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysSetWall; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
-        | (unfold sysBoard; repeat' (first | split | dsimp only)
-           all_goals simp [ret_now])
+  · rename_i t _
+    split
+    · rcases runCall_cases s t num a0 a1 a2 a3 a4 with
+        hr | hr | ⟨_, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, _, _, hr⟩ | ⟨-, _, _, hr⟩ <;>
+        simp [hr]
     · rfl
 
 @[simp] theorem ret_wall (s : KState) (t : Task) (r : List Nat) : (ret s t r).state.wall = s.wall := rfl
@@ -2664,51 +2610,11 @@ theorem syscall_wall (s : KState) (num a0 a1 a2 a3 a4 : Nat) (hn : num ≠ 27) :
   unfold syscall
   split
   · rfl
-  · split
-    · unfold runCall
-      split
-      all_goals first
-        | rfl
-        | simp
-        | (unfold sysWrite; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysMap; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysUnmap; simp)
-        | (unfold sysDerive; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysCapInfo; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysSend; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysRecv; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysReply; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysIrqWait; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysIrqAck; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysBootInfo; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysStart; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysDrop; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysBlock; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysSleep; repeat' (first | split | dsimp only)
-           all_goals simp)
-        | (unfold sysPower; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysTime; simp [ret_wall])
-        | (unfold sysUsb usbReply; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (unfold sysStop; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
-        | (exact absurd rfl hn)
-        | (unfold sysBoard; repeat' (first | split | dsimp only)
-           all_goals simp [ret_wall])
+  · rename_i t _
+    split
+    · rcases runCall_cases s t num a0 a1 a2 a3 a4 with
+        hr | hr | ⟨_, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, _, _, hr⟩ | ⟨hr, -⟩ <;>
+        first | exact absurd hr hn | simp [hr]
     · rfl
 
 /-- **Only the USB driver says what time it is.** A system call that changes the time of
@@ -2723,7 +2629,7 @@ theorem only_usb_driver_sets_time {s : KState} (hr : Reachable s) {num a0 a1 a2 
     · simp at h
     · rename_i t ht
       split at h
-      · simp only [runCall] at h
+      · change (sysSetWall s t a0 a1).state.wall ≠ s.wall at h
         unfold sysSetWall at h
         split at h
         · simp at h
@@ -2732,13 +2638,10 @@ theorem only_usb_driver_sets_time {s : KState} (hr : Reachable s) {num a0 a1 a2 
           · rename_i hw
             obtain ⟨c0, hc0, ho⟩ := ((reachable_inv hr).tasks _ t ht).caps c (nth?_mem hc) |>.wall hw
             have hj := (reachable_inv hr).lt ht
-            revert hc0 ho
-            generalize s.cur = j at hj ⊢
-            intro hc0 ho
-            rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-              simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hc0 <;>
-              rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-              simp at ho <;> rfl
+            have := manifestAll_spec (p := fun j c => match c.obj with
+              | .wallClock => j == usbTask
+              | _ => true) (by decide) hj hc0
+            simpa [ho] using this
           · simp at h
       · simp at h
   · exact absurd (syscall_wall s num a0 a1 a2 a3 a4 hn) h
@@ -2814,69 +2717,9 @@ theorem board_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
     split at *
     rotate_left
     · simp at h
-    unfold runCall at *
-    split at *
-    all_goals first
-      | exact ⟨_, _, _, rfl⟩
-      | exfalso
-        first
-        | (simp at h; done)
-        | (unfold sysUnmap at h; simp at h; done)
-        | (unfold sysWrite at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysMap at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysDerive at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysCapInfo at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSend at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysRecv at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysReply at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysIrqWait at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysIrqAck at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysBootInfo at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysStart at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysTime at h; simp at h; done)
-        | (unfold sysPower at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysUsb usbReply at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSetWall at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
+    rcases runCall_cases s t num a0 a1 a2 a3 a4 with
+      hr | hr | ⟨_, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, _, _, hr⟩ | ⟨-, _, _, hr⟩ <;>
+      first | exact ⟨_, _, _, hr⟩ | simp [hr] at h
 
 
 /-- `boardRequest` asks for nothing, or for something on the list. -/
@@ -2964,13 +2807,10 @@ theorem only_settings_touches_board {s : KState} (hr : Reachable s) {num a0 a1 a
     · rename_i hb
       obtain ⟨c0, hc0, ho⟩ := ((reachable_inv hr).tasks _ t ht).caps c (nth?_mem hc) |>.board hb
       have hj := (reachable_inv hr).lt ht
-      revert hc0 ho
-      generalize s.cur = j at hj ⊢
-      intro hc0 ho
-      rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-        simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hc0 <;>
-        rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-        simp at ho <;> rfl
+      have := manifestAll_spec (p := fun j c => match c.obj with
+        | .board => j == settingsTask
+        | _ => true) (by decide) hj hc0
+      simpa [ho] using this
     · simp at hp
 
 /-! ## The USB host controller
@@ -2993,69 +2833,9 @@ theorem usb_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
     split at *
     rotate_left
     · simp at h
-    unfold runCall at *
-    split at *
-    all_goals first
-      | exact ⟨_, _, _, _, rfl⟩
-      | exfalso
-        first
-        | (simp at h; done)
-        | (unfold sysUnmap at h; simp at h; done)
-        | (unfold sysWrite at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysMap at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysDerive at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysCapInfo at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSend at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysRecv at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysReply at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysIrqWait at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysIrqAck at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysBootInfo at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysDrop at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysBlock at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysStart at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysTime at h; simp at h; done)
-        | (unfold sysPower at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysBoard at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysStop at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSetWall at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
-        | (unfold sysSleep at h; repeat' (first | split at h | dsimp only at h)
-           all_goals simp at h
-           done)
+    rcases runCall_cases s t num a0 a1 a2 a3 a4 with
+      hr | hr | ⟨_, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, hr⟩ | ⟨_, _, _, hr⟩ | ⟨_, _, _, _, hr⟩ | ⟨-, _, _, hr⟩ <;>
+      first | exact ⟨_, _, _, _, hr⟩ | simp [hr] at h
 
 
 
@@ -3136,13 +2916,10 @@ theorem only_usb_driver_drives_usb {s : KState} (hr : Reachable s) {num a0 a1 a2
   obtain ⟨c, hc, hu, -⟩ := sysUsb_spec hp
   obtain ⟨c0, hc0, ho⟩ := ((reachable_inv hr).tasks _ t ht).caps c (nth?_mem hc) |>.usb hu
   have hj := (reachable_inv hr).lt ht
-  revert hc0 ho
-  generalize s.cur = j at hj ⊢
-  intro hc0 ho
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hc0 <;>
-    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp at ho <;> rfl
+  have := manifestAll_spec (p := fun j c => match c.obj with
+    | .usbHost => j == usbTask
+    | _ => true) (by decide) hj hc0
+  simpa [ho] using this
 
 theorem dmaOk_spec {j : Nat} : ∀ {cs : List Cap} {a n : Nat} {w : Bool}, dmaOk j cs a n w = true →
     ∃ c ∈ cs, ∃ b k, c.obj = .frames b k ∧ framesPerTask * j ≤ b ∧ b + k ≤ framesPerTask * (j + 1) ∧
@@ -3266,14 +3043,10 @@ theorem file_server_knows_the_sender {s : KState} (h : Reachable s) {j : Nat} {t
   have hw0 : c0.rights.w = true := by
     have := hle.2.1; simp_all
   rw [← hb]
-  have hj := (reachable_inv h).lt ht
-  revert hc0 ho hw0
-  generalize c0 = c0
-  intro hc0 ho hw0
-  rcases cases17 hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp [initCaps, frameCaps, snoc, runCap, epCap, irqCap, launchCap, blocksCap, powerCap, boardCap, usbCap, wallCap] at hc0 <;>
-    rcases hc0 with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
-    simp_all [fsBadge]
+  have := manifestAll_spec (p := fun j c => match c.obj with
+    | .endpoint e => e != 1 || !c.rights.w || c.badge == fsBadge j
+    | _ => true) (by decide) ((reachable_inv h).lt ht) hc0
+  simpa [ho, hw0] using this
 
 /-! ## Stopping a program -/
 
