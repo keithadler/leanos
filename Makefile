@@ -1,6 +1,7 @@
 # leanos: a kernel whose decisions are written and proved in Lean 4, for the Raspberry Pi 4.
 #
-#   make          build build/leanos.elf (and check every proof)
+#   make          build build/leanos.elf (and check every proof), and print how much of its
+#                 64 KiB code run each user program takes (tools/codesize.py)
 #   make run      boot it in QEMU, headless (serial on the terminal; watch the screen in
 #                 the browser console, tools/serve.py)
 #   make test     boot it, start the apps, and check the transcripts and the screens (JOBS=N at once)
@@ -41,7 +42,7 @@ ARCH_O := build/boot.o build/kmain.o build/sd.o build/sha256.o build/runtime.o b
 .PHONY: all run test mutants proofs clean pi-image stackcheck
 ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files launcher open)
 
-all: $(ASSET_BLOBS) build/kernel8.img build/sd-template.img build/sd-desktop.img proofs
+all: $(ASSET_BLOBS) build/kernel8.img build/sd-template.img build/sd-desktop.img build/codesize.txt proofs
 
 # The asset blobs are real outputs, not intermediates: a missing one must be rebuilt.
 .PRECIOUS: build/assets/%.bin
@@ -172,6 +173,11 @@ build/progs/%.elf: user/progs/%.c user/lib.h user/gfx.h user/assets.h user/app.h
 	$(CC) $(UCFLAGS) -Ibuild/user -c $< -o build/progs/$*.o
 	$(LD) -T user/user.ld --gc-sections -z max-page-size=16 -z common-page-size=16 build/progs/$*.o -o $@
 	$(LLVM)/llvm-strip $@
+
+# Each program's code against its 64 KiB code run (tools/codesize.py): printed whenever a
+# program changes, and an error if one is over (the linker checks it too, user/user.ld).
+build/codesize.txt: tools/codesize.py $(USER_BINS) $(DISK_ELFS)
+	@python3 tools/codesize.py $@ $(USER_BINS:.bin=.elf) $(DISK_ELFS)
 
 # A card with welcome.txt and the programs, the way the tests boot (tools/mksd.py).
 DISK_DOCS := guide.txt

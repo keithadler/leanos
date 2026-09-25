@@ -61,6 +61,21 @@
 #include "assets.h"
 #include "zone.h"
 
+/* Its code must fit the 16-page code run (user/user.ld), and at -O2 the compiler inlines and
+   unrolls freely. So the code that runs once per message or less (setup, the requests, the
+   menus, the log) is compiled for size: COLD. The drawing, which runs per pixel, is not; and
+   drag_frame, called from the main loop, is kept out of it so it is never compiled for size
+   with it. `make` prints each program's size and what is left of its run. */
+#define COLD __attribute__((cold, minsize))
+
+/* Text widths and rounded rectangles are asked for in many places, the drawing's too: one
+   copy of each, not one inlined in every caller (what costs is the pixels, not the call). */
+__attribute__((noinline)) static int text_w(const struct font *f, const char *str) { return font_width(f, str); }
+__attribute__((noinline)) static void rounded(struct surface *s, int x, int y, int w, int h, int r, unsigned c,
+                                              unsigned alpha) {
+    round_rect(s, x, y, w, h, r, c, alpha);
+}
+
 #define FRAMEBUFFER 5
 #define FB_PAGE 1024
 #define WIN_PAGE 2048   /* window k's pixels are mapped at WIN_PAGE + WIN_MAX_PAGES k */
@@ -197,9 +212,9 @@ struct state {
 };
 _Static_assert(sizeof(struct state) <= 8 * 4096, "the server's state must fit in its 8 data pages");
 
-static void say(struct line *l) { put_s(l, "\n"); flush(l); }
+COLD static void say(struct line *l) { put_s(l, "\n"); flush(l); }
 
-static const char *name_of(u64 badge) {
+COLD static const char *name_of(u64 badge) {
     return badge == BADGE_ALICE ? "alice" : badge == BADGE_MALLORY ? "mallory"
          : badge == BADGE_TERMINAL ? "Terminal" : badge == BADGE_SETTINGS ? "Settings"
          : badge == BADGE_SECURITY ? "Security" : badge == BADGE_FILES ? "Files"
@@ -215,7 +230,7 @@ static int slot_of(u64 badge) {
 }
 
 /* 0 not started, 1 running, 2 stopped, as the kernel sees slot k now. */
-static u64 run_state(int k) { return k < 0 ? 0 : sys1(SYS_BOOTINFO, (u64)k).x[4]; }
+COLD static u64 run_state(int k) { return k < 0 ? 0 : sys1(SYS_BOOTINFO, (u64)k).x[4]; }
 
 /* The leanos mark: a rounded tile, indigo to teal, with a white lambda. */
 static void logo(struct surface *s, int x, int y, int size) {
@@ -234,30 +249,30 @@ static void logo(struct surface *s, int x, int y, int size) {
 #define PBAR_Y 432
 
 /* Ease in and out: 0..1000 to 0..1000, slow at both ends. */
-static int ease(int t) {
+COLD static int ease(int t) {
     if (t <= 0) return 0;
     if (t >= 1000) return 1000;
     return t * t / 1000 * (3000 - 2 * t) / 1000;
 }
 
-static unsigned splash_bg(int y) { return mix(rgb(12, 16, 30), rgb(22, 34, 60), (unsigned)(y * 255 / (H - 1))); }
+COLD static unsigned splash_bg(int y) { return mix(rgb(12, 16, 30), rgb(22, 34, 60), (unsigned)(y * 255 / (H - 1))); }
 
-static void splash_bar(struct state *st, int done /* 0..1000 */) {
+COLD static void splash_bar(struct state *st, int done /* 0..1000 */) {
     struct surface *s = &st->screen;
     int x = W / 2 - PBAR_W / 2;
     clip_to(s, x - 12, PBAR_Y - 12, PBAR_W + 24, PBAR_H + 24);
     for (int j = s->cy0; j < s->cy1; j++) fill(s, s->cx0, j, s->cx1 - s->cx0, 1, splash_bg(j));
-    round_rect(s, x, PBAR_Y, PBAR_W, PBAR_H, PBAR_H / 2, rgb(42, 52, 82), 255);
+    rounded(s, x, PBAR_Y, PBAR_W, PBAR_H, PBAR_H / 2, rgb(42, 52, 82), 255);
     int filled = PBAR_W * done / 1000;
     if (filled >= PBAR_H) {
         for (int i = 0; i < filled; i++) {
             unsigned c = mix(rgb(88, 110, 240), rgb(80, 224, 204), (unsigned)(i * 255 / PBAR_W));
-            if (i < PBAR_H / 2 || i >= filled - PBAR_H / 2) round_rect(s, x + i, PBAR_Y, 1, PBAR_H, 0, c, 210);
+            if (i < PBAR_H / 2 || i >= filled - PBAR_H / 2) rounded(s, x + i, PBAR_Y, 1, PBAR_H, 0, c, 210);
             else fill(s, x + i, PBAR_Y, 1, PBAR_H, c);
         }
         /* a soft glint riding the leading edge */
         for (int k = 5; k >= 1; k--)
-            round_rect(s, x + filled - 3 - k, PBAR_Y - k + 3, 2 * k + 3, 2 * k, k, rgb(200, 255, 245), 24);
+            rounded(s, x + filled - 3 - k, PBAR_Y - k + 3, 2 * k + 3, 2 * k, k, rgb(200, 255, 245), 24);
     }
     clip_all(s);
 }
@@ -269,13 +284,13 @@ static const char *const prog_names[NPROG] = {"Notes", "Display server", "Test: 
                                                "Input driver", "File server"};
 static const int prog_slot[NPROG] = {0, 1, 2, 3, 4, 8};
 
-static void hex8(char *out, u64 v) {
+COLD static void hex8(char *out, u64 v) {
     for (int i = 0; i < 8; i++) out[i] = "0123456789abcdef"[(v >> (28 - 4 * i)) & 15];
     out[8] = 0;
 }
 
-static void check_mark(struct surface *s, int x, int y, int ok) {
-    round_rect(s, x, y, 14, 14, 7, ok ? rgb(46, 180, 110) : rgb(220, 70, 70), 255);
+COLD static void check_mark(struct surface *s, int x, int y, int ok) {
+    rounded(s, x, y, 14, 14, 7, ok ? rgb(46, 180, 110) : rgb(220, 70, 70), 255);
     if (ok) {
         thick_line(s, (x + 3) * 16 + 8, (y + 7) * 16, (x + 6) * 16, (y + 10) * 16, 2, rgb(255, 255, 255));
         thick_line(s, (x + 6) * 16, (y + 10) * 16, (x + 11) * 16, (y + 4) * 16, 2, rgb(255, 255, 255));
@@ -288,7 +303,7 @@ static void check_mark(struct surface *s, int x, int y, int ok) {
 #define CHECK_Y 462
 #define CHECK_LINE 16
 
-static void boot_check_line(struct state *st, int k, u64 verdict_code, u64 word) {
+COLD static void boot_check_line(struct state *st, int k, u64 verdict_code, u64 word) {
     struct surface *s = &st->screen;
     int x = W / 2 - 130, y = CHECK_Y + k * CHECK_LINE;
     check_mark(s, x, y, verdict_code == 1);
@@ -296,21 +311,21 @@ static void boot_check_line(struct state *st, int k, u64 verdict_code, u64 word)
     char h[9];
     hex8(h, word);
     const char *verdict = verdict_code == 1 ? h : "refused";
-    font_text(s, &st->small, x + 260 - font_width(&st->small, verdict), y + 11, verdict,
+    font_text(s, &st->small, x + 260 - text_w(&st->small, verdict), y + 11, verdict,
               verdict_code == 1 ? rgb(120, 132, 160) : rgb(236, 110, 110));
 }
 
-static void splash(struct state *st) {
+COLD static void splash(struct state *st) {
     struct surface *s = &st->screen;
     clip_all(s);
     for (int y = 0; y < H; y++) fill(s, 0, y, W, 1, splash_bg(y));
     logo(s, W / 2 - 66, 150, 132);
     const char *name = "leanos";
-    font_text(s, &st->huge, W / 2 - font_width(&st->huge, name) / 2, 356, name, rgb(244, 246, 252));
+    font_text(s, &st->huge, W / 2 - text_w(&st->huge, name) / 2, 356, name, rgb(244, 246, 252));
     const char *tag = "access control proved in Lean";
-    font_text(s, &st->ui, W / 2 - font_width(&st->ui, tag) / 2, 396, tag, rgb(140, 152, 182));
+    font_text(s, &st->ui, W / 2 - text_w(&st->ui, tag) / 2, 396, tag, rgb(140, 152, 182));
     const char *who = "\xc2\xa9 2026 Keith Adler";
-    font_text(s, &st->small, W / 2 - font_width(&st->small, who) / 2, H - 20, who, rgb(104, 114, 142));
+    font_text(s, &st->small, W / 2 - text_w(&st->small, who) / 2, H - 20, who, rgb(104, 114, 142));
     /* The kernel has already measured every program against the boot manifest; the bar
        walks through its verdicts, one program per step, eased. */
     u64 code[NPROG], word[NPROG];
@@ -346,7 +361,7 @@ static void traffic_lights(struct surface *s, int x, int y, int focus) {
     unsigned c[3] = {rgb(255, 95, 87), rgb(254, 188, 46), rgb(40, 200, 64)};
     for (int i = 0; i < 3; i++) {
         unsigned col = focus ? c[i] : rgb(206, 206, 210);
-        round_rect(s, x + i * 20, y, 12, 12, 6, col, 255);
+        rounded(s, x + i * 20, y, 12, 12, 6, col, 255);
     }
 }
 
@@ -369,7 +384,7 @@ static void draw_window(struct state *st, int k) {
     round_gradient(s, x, y, ow, TITLE_H + RADIUS, RADIUS, rgb(248, 248, 250), rgb(234, 234, 238));
     fill(s, x, y + TITLE_H - 1, ow, 1, rgb(214, 214, 220));
     traffic_lights(s, x + 12, y + 9, focus);
-    int tw = font_width(&st->ui_bold, w->title);
+    int tw = text_w(&st->ui_bold, w->title);
     const struct picture *ic = win_icon(st, k);
     int tx = x + ow / 2 - tw / 2 + (ic ? 11 : 0);
     if (ic) icon_scaled(s, tx - 24, y + 5, 20, ic);
@@ -380,12 +395,12 @@ static void draw_window(struct state *st, int k) {
 /* The Edit menu's name in the menu bar, after the name of the window in front (-1: no window). */
 static int edit_x(struct state *st) {
     int k = focused(st);
-    return k < 0 ? -1 : 104 + font_width(&st->ui, st->win[k].title) + 22;
+    return k < 0 ? -1 : 104 + text_w(&st->ui, st->win[k].title) + 22;
 }
 
-static int on_edit(struct state *st, int x) {
+COLD static int on_edit(struct state *st, int x) {
     int e = edit_x(st);
-    return e >= 0 && x >= e - 10 && x < e + font_width(&st->ui, "Edit") + 10;
+    return e >= 0 && x >= e - 10 && x < e + text_w(&st->ui, "Edit") + 10;
 }
 
 static void top_bar(struct state *st) {
@@ -397,25 +412,25 @@ static void top_bar(struct state *st) {
     int k = focused(st);
     if (k >= 0) {
         font_text(s, &st->ui, 104, 20, st->win[k].title, rgb(200, 204, 214));
-        int e = edit_x(st), ew = font_width(&st->ui, "Edit");
-        if (st->menu == 2) round_rect(s, e - 8, 4, ew + 16, BAR_H - 8, 6, rgb(255, 255, 255), 40);
+        int e = edit_x(st), ew = text_w(&st->ui, "Edit");
+        if (st->menu == 2) rounded(s, e - 8, 4, ew + 16, BAR_H - 8, 6, rgb(255, 255, 255), 40);
         font_text(s, &st->ui, e, 20, "Edit", rgb(236, 238, 244));
     }
     const char *right = "access control proved in Lean";
     int rx = W - 12;
     if (st->bar_time[0]) {
-        rx -= font_width(&st->ui_bold, st->bar_time);
+        rx -= text_w(&st->ui_bold, st->bar_time);
         font_text(s, &st->ui_bold, rx, 20, st->bar_time, rgb(245, 246, 250));
         rx -= 18;
     }
-    font_text(s, &st->small, rx - font_width(&st->small, right), 19, right, rgb(190, 196, 210));
+    font_text(s, &st->small, rx - text_w(&st->small, right), 19, right, rgb(190, 196, 210));
 }
 
 static void composite(struct state *st, int x, int y, int w, int h);
 
 /* The menu bar's clock: the kernel's time of day in the time zone, to the minute. Every
    zone is a whole number of minutes from UTC, so its minutes turn over with UTC's. */
-static void bar_show(struct state *st, u64 wall, int again) {
+COLD static void bar_show(struct state *st, u64 wall, int again) {
     u64 minute = wall / 60;
     if (minute != st->bar_minute || again) {
         st->bar_minute = minute;
@@ -441,7 +456,7 @@ static void bar_show(struct state *st, u64 wall, int again) {
 }
 
 /* The zone, said: and what the menu bar shows with it, beside UTC, for the log. */
-static void say_zone(struct state *st, struct line *l, const char *why) {
+COLD static void say_zone(struct state *st, struct line *l, const char *why) {
     put_s(l, "display: time zone ");
     put_zone(l, st->zone);
     put_s(l, why);
@@ -458,7 +473,7 @@ static void say_zone(struct state *st, struct line *l, const char *why) {
 
 /* Returns the milliseconds until the next minute (or a few seconds, while the time is not
    known). The first time it is known, the log says what the menu bar shows. */
-static u64 bar_clock(struct state *st) {
+COLD static u64 bar_clock(struct state *st) {
     u64 wall = sys0(SYS_TIME).x[6];
     if (!wall) return 5000;
     if (!st->bar_time[0]) {
@@ -477,7 +492,7 @@ static int same_name(const char *a, const char *b) {
 }
 
 /* The open window of the program from card file `name`, or -1. */
-static int window_of(struct state *st, const char *name) {
+COLD static int window_of(struct state *st, const char *name) {
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
         if (w->used && !w->closing && w->prog[0] && same_name(w->prog, name)) return k;
@@ -518,7 +533,7 @@ static void dock(struct state *st) {
     struct surface *s = &st->screen;
     int which[MAX_WIN], n = dock_extras(st, which);
     int width = DOCK_W + (n ? 14 + (n - 1) * extra_step(n) + MINI + 4 : 0);
-    round_rect(s, DOCK_X, DOCK_Y, width, DOCK_H, 18, rgb(20, 22, 32), 110);
+    rounded(s, DOCK_X, DOCK_Y, width, DOCK_H, 18, rgb(20, 22, 32), 110);
     if (n) fill_alpha(s, DOCK_X + DOCK_W - DOCK_PAD + 6, DOCK_Y + 14, 1, DOCK_H - 28, rgb(255, 255, 255), 60);
     for (int i = 0; i < n; i++) {
         struct win *w = &st->win[which[i]];
@@ -526,17 +541,17 @@ static void dock(struct state *st) {
         const struct picture *ic = win_icon(st, which[i]);
         if (ic) icon_scaled(s, x, y, MINI, ic);
         else {
-            round_rect(s, x + 2, y + 2, MINI - 4, MINI - 4, 10, rgb(58, 110, 230), 255);
+            rounded(s, x + 2, y + 2, MINI - 4, MINI - 4, 10, rgb(58, 110, 230), 255);
             char ch[2] = {w->title[0], 0};
-            font_text(s, &st->ui_bold, x + MINI / 2 - font_width(&st->ui_bold, ch) / 2, y + MINI / 2 + 6, ch,
+            font_text(s, &st->ui_bold, x + MINI / 2 - text_w(&st->ui_bold, ch) / 2, y + MINI / 2 + 6, ch,
                       rgb(255, 255, 255));
         }
-        round_rect(s, x + MINI / 2 - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, rgb(230, 232, 240), 255);
+        rounded(s, x + MINI / 2 - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, rgb(230, 232, 240), 255);
     }
     for (int i = 0; i < DOCK_ALL; i++) {
         int lift = st->hover == i + 1 ? 4 : 0;
         icon(s, dock_icon_x(i), DOCK_Y + (DOCK_H - ICON) / 2 - 4 - lift, &st->icons[i]);
-        if (running(st, i)) round_rect(s, dock_icon_x(i) + ICON / 2 - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, rgb(230, 232, 240), 255);
+        if (running(st, i)) rounded(s, dock_icon_x(i) + ICON / 2 - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, rgb(230, 232, 240), 255);
     }
     if (st->hover) {
         int extra = st->hover > 100;
@@ -545,9 +560,9 @@ static void dock(struct state *st) {
         if (extra) {
             for (int i = 0; i < n; i++) if (which[i] == st->hover - 101) cx = extra_x_of(i, n) + MINI / 2;
         } else cx = dock_icon_x(st->hover - 1) + ICON / 2;
-        int lw = font_width(&st->ui, label) + 20;
+        int lw = text_w(&st->ui, label) + 20;
         int lx = cx - lw / 2, ly = DOCK_Y - 34;
-        round_rect(s, lx, ly, lw, 24, 8, rgb(24, 26, 36), 220);
+        rounded(s, lx, ly, lw, 24, 8, rgb(24, 26, 36), 220);
         font_text(s, &st->ui, lx + 10, ly + 17, label, rgb(240, 242, 248));
     }
 }
@@ -556,7 +571,7 @@ static void dock(struct state *st) {
    and a fine grid of dots over it. Built once; drawing a pixel is two multiply-adds (the
    same arithmetic as mix(), split so the glow's half is done once per column), and only
    the rows of the grid that have dots look at the dots. */
-static void make_background(struct state *st) {
+COLD static void make_background(struct state *st) {
     int t = st->theme;
     for (int y = 0; y < H; y++) st->bg_row[y] = mix(theme_top[t], theme_bottom[t], (unsigned)(y * 255 / (H - 1)));
     for (int x = 0; x < W; x++) {
@@ -616,18 +631,18 @@ static void menu(struct state *st) {
     struct surface *s = &st->screen;
     int x = menu_left(st, st->menu);
     shadow(s, x, MENU_Y, MENU_W, MENU_H, 10, 0);
-    round_rect(s, x, MENU_Y, MENU_W, MENU_H, 10, rgb(248, 248, 250), 255);
+    rounded(s, x, MENU_Y, MENU_W, MENU_H, 10, rgb(248, 248, 250), 255);
     for (int i = 0; i < 2; i++) {
         int y = MENU_Y + 6 + i * MENU_ITEM + 19;
         font_text(s, &st->ui, x + 16, y, menu_items[st->menu - 1][i], rgb(30, 30, 36));
         if (st->menu == 2)
-            font_text(s, &st->small, x + MENU_W - 16 - font_width(&st->small, edit_keys[i]), y, edit_keys[i],
+            font_text(s, &st->small, x + MENU_W - 16 - text_w(&st->small, edit_keys[i]), y, edit_keys[i],
                       rgb(140, 144, 156));
     }
 }
 
 /* Which item (0, 1) of the open menu is at (x, y), or -1. */
-static int menu_at(struct state *st, int x, int y) {
+COLD static int menu_at(struct state *st, int x, int y) {
     int x0 = menu_left(st, st->menu);
     if (x < x0 || x >= x0 + MENU_W || y < MENU_Y + 6 || y >= MENU_Y + 6 + 2 * MENU_ITEM) return -1;
     return (y - MENU_Y - 6) / MENU_ITEM;
@@ -711,7 +726,7 @@ static void composite_window(struct state *st, int k) {
     composite(st, w->x - 10, w->y - 10, outer_w(w) + 20, outer_h(w) + 24);
 }
 
-static void raise(struct state *st, int k) {
+COLD static void raise(struct state *st, int k) {
     int at = -1;
     for (int i = 0; i < st->nz; i++) if (st->z[i] == k) at = i;
     if (at < 0) return;
@@ -721,7 +736,7 @@ static void raise(struct state *st, int k) {
 
 /* Bring window k to the front and redraw only what changed: its area, and the area of the
    window that had the focus (its title bar dims). */
-static void bring_to_front(struct state *st, int k) {
+COLD static void bring_to_front(struct state *st, int k) {
     int old = focused(st);
     raise(st, k);
     if (old >= 0 && old != k) composite_window(st, old);
@@ -730,7 +745,7 @@ static void bring_to_front(struct state *st, int k) {
     composite(st, 0, 0, W, BAR_H + 1);
 }
 
-static int window_at(struct state *st, int x, int y) {
+COLD static int window_at(struct state *st, int x, int y) {
     for (int i = st->nz - 1; i >= 0; i--) {
         struct win *w = &st->win[st->z[i]];
         if (x >= w->x && x < w->x + outer_w(w) && y >= w->y && y < w->y + outer_h(w)) return st->z[i];
@@ -740,7 +755,7 @@ static int window_at(struct state *st, int x, int y) {
 
 /* What in the dock is at (x, y): a built-in app (1 + its index), a running program's
    window (101 + the window), or nothing (0). */
-static int dock_at(struct state *st, int x, int y) {
+COLD static int dock_at(struct state *st, int x, int y) {
     if (y < DOCK_Y || y >= DOCK_Y + DOCK_H) return 0;
     for (int i = 0; i < DOCK_ALL; i++)
         if (x >= dock_icon_x(i) && x < dock_icon_x(i) + ICON) return i + 1;
@@ -753,7 +768,7 @@ static int dock_at(struct state *st, int x, int y) {
 /* The next event for window k's client, taken from its queue: 0 if there is none. An
    EV_PASTE in the queue stands for the whole paste, and stays at the front until the last
    of it (fewer than 16 bytes) is handed out. */
-__attribute__((noinline)) static int next_event(struct win *w, u64 e[3]) {
+COLD __attribute__((noinline)) static int next_event(struct win *w, u64 e[3]) {
     if (!w->qlen) return 0;
     unsigned *q = w->queue[w->qhead];
     e[0] = q[0];
@@ -773,7 +788,7 @@ __attribute__((noinline)) static int next_event(struct win *w, u64 e[3]) {
 }
 
 /* Give window k's client an event: now, if it is waiting, or when it next asks. */
-static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
+COLD static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
     if (w->qlen < QUEUE) {
         int at = (w->qhead + w->qlen++) % QUEUE;
         w->queue[at][0] = (unsigned)kind;   /* keys and screen positions fit in 32 bits */
@@ -787,11 +802,11 @@ static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
     }
 }
 
-static void redraw_all(struct state *st) { composite(st, 0, 0, W, H); }
+COLD static void redraw_all(struct state *st) { composite(st, 0, 0, W, H); }
 
 /* The kernel removed capability i: everything after it moves down one place, the grant
    the message being handled carries too. */
-static void cap_forget(struct state *st, int i) {
+COLD static void cap_forget(struct state *st, int i) {
     if (i < st->grant_at) st->grant_at--;
     for (int j = i; j < st->ncaps - 1; j++) {
         st->cap_badge[j] = st->cap_badge[j + 1];
@@ -800,13 +815,13 @@ static void cap_forget(struct state *st, int i) {
     st->ncaps--;
 }
 
-static void cap_drop(struct state *st, int i) {
+COLD static void cap_drop(struct state *st, int i) {
     sys1(SYS_DROP, (u64)i);
     cap_forget(st, i);
 }
 
 /* Take window k off the screen and stop mapping its pixels. */
-static void hide(struct state *st, int k) {
+COLD static void hide(struct state *st, int k) {
     int at = -1;
     for (int i = 0; i < st->nz; i++) if (st->z[i] == k) at = i;
     if (at >= 0) {
@@ -818,7 +833,7 @@ static void hide(struct state *st, int k) {
 }
 
 /* Forget window k. A reply slot still held for it is answered, which frees it. */
-static void release(struct state *st, int k) {
+COLD static void release(struct state *st, int k) {
     struct win *w = &st->win[k];
     hide(st, k);
     for (int i = st->ncaps - 1; i >= 0; i--)
@@ -832,7 +847,7 @@ static void release(struct state *st, int k) {
 }
 
 /* The close button: the window goes now, and its client hears EV_CLOSE. */
-static void close_window(struct state *st, struct line *l, int k) {
+COLD static void close_window(struct state *st, struct line *l, int k) {
     struct win *w = &st->win[k];
     put_s(l, "display: closed ");
     put_s(l, name_of(w->badge));
@@ -847,7 +862,7 @@ static void close_window(struct state *st, struct line *l, int k) {
 }
 
 /* Windows whose client has stopped (it exited, or faulted) are closed. */
-static void forget_stopped(struct state *st, struct line *l) {
+COLD static void forget_stopped(struct state *st, struct line *l) {
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
         if (!w->used || run_state(slot_of(w->badge)) != 2) continue;
@@ -879,7 +894,7 @@ static void say3(struct line *l, const char *a, const char *b, const char *c);
 /* A call in reply slot k: the calls the display holds are all in slots of their own, so any
    record it still has of slot k is of a call the kernel has dropped (its caller's slot was
    started again). It is forgotten, not answered: an answer now would reach the new caller. */
-static void claim_slot(struct state *st, struct line *l, u64 slot) {
+COLD static void claim_slot(struct state *st, struct line *l, u64 slot) {
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
         if (w->slot != slot) continue;
@@ -889,7 +904,7 @@ static void claim_slot(struct state *st, struct line *l, u64 slot) {
 }
 
 /* How many capabilities the kernel says it holds: as many as it counts, or fewer. */
-static int caps_now(struct state *st) {
+COLD static int caps_now(struct state *st) {
     int n = st->ncaps;
     while (n > 0 && sys1(SYS_CAPINFO, (u64)n - 1).status != OK) n--;
     return n;
@@ -903,7 +918,7 @@ static int caps_now(struct state *st) {
    hash); if the display still cannot tell, it lets every capability but its own go, and
    every window closes. Returns how many capabilities it let go (the grant being handled,
    after them, moves down as many places). */
-static int lost_runs(struct state *st, struct line *l, int real) {
+COLD static int lost_runs(struct state *st, struct line *l, int real) {
     int miss = st->ncaps - real, pick = -1, fits = 0, changed = -1, nchanged = 0;
     for (int s = 0; s < 17; s++) {
         int n = 0;
@@ -946,7 +961,7 @@ static int lost_runs(struct state *st, struct line *l, int real) {
 }
 
 /* Dock item i: show the app's window, or start the app. */
-static void launch(struct state *st, struct line *l, int i) {
+COLD static void launch(struct state *st, struct line *l, int i) {
     int slot = dock_slot[i];
     if (slot < 0) {
         put_s(l, "display: ");
@@ -986,7 +1001,7 @@ static void launch(struct state *st, struct line *l, int i) {
    and holds the open slots' launch capabilities; the display holds neither. If Apps is
    showing its window, it gets the name as an event; if not, the display starts Apps, which
    asks for the name first thing (OP_PENDING), starts the program, and leaves quietly. */
-static void open_pinned(struct state *st, struct line *l, int p) {
+COLD static void open_pinned(struct state *st, struct line *l, int p) {
     int k = window_of(st, pin_files[p]);
     if (k >= 0) {
         bring_to_front(st, k);
@@ -1017,7 +1032,7 @@ static void open_pinned(struct state *st, struct line *l, int p) {
 
 /* PENDING: Apps asks, as it starts, whether the dock sent it a program to start. Only Apps
    gets an answer; the name goes in two message words. */
-static void on_pending(struct state *st, struct res *r) {
+COLD static void on_pending(struct state *st, struct res *r) {
     u64 w[2] = {0, 0};
     if (r->x[1] == 16) {
         st->zone_restore = same_name(st->pending, "@startup");
@@ -1029,7 +1044,7 @@ static void on_pending(struct state *st, struct res *r) {
 }
 
 /* x.y ms, from microseconds */
-static void put_ms(struct line *l, u64 us) {
+COLD static void put_ms(struct line *l, u64 us) {
     put_dec(l, us / 1000);
     put_s(l, ".");
     put_dec(l, us / 100 % 10);
@@ -1037,7 +1052,7 @@ static void put_ms(struct line *l, u64 us) {
 }
 
 /* Draw the dragged window where it now is. */
-static void drag_frame(struct state *st) {
+__attribute__((noinline)) static void drag_frame(struct state *st) {
     if (!st->drag_pending || !st->drag) {
         st->drag_pending = 0;
         return;
@@ -1067,13 +1082,13 @@ static void drag_frame(struct state *st) {
 
 /* ---- copy and paste: only by the user's hand ---- */
 
-__attribute__((noinline)) static void copy_bytes(char *to, const char *from, int n) {
+COLD __attribute__((noinline)) static void copy_bytes(char *to, const char *from, int n) {
     for (int i = 0; i < n; i++) to[i] = from[i];
 }
 
 /* "display: " a b c, on a line of its own, or after what the line already has (kept out of
    line: it is said from many places). */
-__attribute__((noinline)) static void say3(struct line *l, const char *a, const char *b, const char *c) {
+COLD __attribute__((noinline)) static void say3(struct line *l, const char *a, const char *b, const char *c) {
     if (!l->n) put_s(l, "display: ");
     put_s(l, a);
     put_s(l, b);
@@ -1085,7 +1100,7 @@ __attribute__((noinline)) static void say3(struct line *l, const char *a, const 
    now until the copy ends, or COPY_MS pass, that window's badge, and no other, may send it.
    Asked again while its answer may still be arriving, the display waits for that one: a new
    start in the middle would keep only the answer's tail. */
-static void copy_ask(struct state *st, struct line *l) {
+COLD static void copy_ask(struct state *st, struct line *l) {
     int k = focused(st);
     if (k < 0) return;
     struct win *w = &st->win[k];
@@ -1103,7 +1118,7 @@ static void copy_ask(struct state *st, struct line *l) {
 
 /* The user asked to paste (Ctrl+V, or Edit, Paste): what was copied goes to the window in
    front, and to no other, after the events already waiting for it. */
-static void paste_to(struct state *st, struct line *l) {
+COLD static void paste_to(struct state *st, struct line *l) {
     int k = focused(st);
     if (k < 0) return;
     struct win *w = &st->win[k];
@@ -1125,7 +1140,7 @@ static void paste_to(struct state *st, struct line *l) {
 /* COPY: the text the display asked for, 16 bytes at a time; fewer than 16 ends it. Taken
    only from the badge of the window that was asked, while the copy it asked for is open.
    The text is kept only when it ends: until then, the clipboard is what it was. */
-__attribute__((noinline)) static void on_copy(struct state *st, struct line *l, struct res *r) {
+COLD __attribute__((noinline)) static void on_copy(struct state *st, struct line *l, struct res *r) {
     u64 badge = r->x[1], slot = r->x[6];
     int k = st->copy_win - 1;
     int late = k >= 0 && millis() - st->copy_at > COPY_MS;
@@ -1162,7 +1177,7 @@ __attribute__((noinline)) static void on_copy(struct state *st, struct line *l, 
     }
 }
 
-static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
+COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     if (kind == EV_KEY || kind == EV_DOWN) st->spread = 0;   /* from here on, windows cascade */
     if (kind == EV_KEY && (a == KEY_COPY || a == KEY_PASTE)) {
         if (a == KEY_COPY) copy_ask(st, l);
@@ -1208,7 +1223,7 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
                 struct surface *sc = &st->screen;
                 fill(sc, 0, 0, W, H, rgb(12, 14, 22));
                 const char *msg = "leanos has shut down. You can switch off the Pi.";
-                font_text(sc, &st->medium, W / 2 - font_width(&st->medium, msg) / 2, H / 2, msg,
+                font_text(sc, &st->medium, W / 2 - text_w(&st->medium, msg) / 2, H / 2, msg,
                           rgb(210, 214, 228));
             }
             sys(SYS_POWER, POWER, restart ? POWER_RESTART : POWER_OFF, 0, 0, 0);
@@ -1290,7 +1305,7 @@ static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     composite(st, st->px, st->py, 12, 19);
 }
 
-static void on_open(struct state *st, struct line *l, struct res *r) {
+COLD static void on_open(struct state *st, struct line *l, struct res *r) {
     u64 badge = r->x[1], size = r->x[3], title = r->x[4], cap = r->x[5], slot = r->x[6];
     u64 w = size >> 16, h = size & 0xffff;
     int k = -1;
@@ -1368,7 +1383,7 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
 }
 
 /* How many waiting windows' calls it holds: each takes one of its 8 reply slots. */
-static int held(struct state *st) {
+COLD static int held(struct state *st) {
     int n = 0;
     for (int k = 0; k < MAX_WIN; k++) n += st->win[k].slot != 0;
     return n;
@@ -1376,7 +1391,7 @@ static int held(struct state *st) {
 
 /* Answer the window that has waited longest with no event, which frees its reply slot. Its
    client asks again a moment later (app_wait); until then its events wait in its queue. */
-static void park_oldest(struct state *st, struct line *l) {
+COLD static void park_oldest(struct state *st, struct line *l) {
     int o = -1;
     for (int k = 0; k < MAX_WIN; k++)
         if (st->win[k].slot && (o < 0 || st->win[k].held_at < st->win[o].held_at)) o = k;
@@ -1395,7 +1410,7 @@ static void park_oldest(struct state *st, struct line *l) {
    that keeps time itself and must not block). A parked window, asking again while HOLD_MAX
    waits are held, is answered at once too; any other wait is held, in place of the one held
    longest if HOLD_MAX already are. */
-static void on_wait(struct state *st, struct line *l, struct res *r, int poll) {
+COLD static void on_wait(struct state *st, struct line *l, struct res *r, int poll) {
     u64 badge = r->x[1], dirty = r->x[3], slot = r->x[6];
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
@@ -1428,7 +1443,7 @@ static void on_wait(struct state *st, struct line *l, struct res *r, int poll) {
 
 /* ICON: a program lends the icon its loader gave it (read-only, 4 pages: a marker, the size,
    then the icon asset). It is shown in the program's title bar and in the dock. */
-static void on_icon(struct state *st, struct res *r) {
+COLD static void on_icon(struct state *st, struct res *r) {
     u64 badge = r->x[1], cap = r->x[5], slot = r->x[6];
     u64 ok = 1;
     for (int k = 0; k < MAX_WIN && cap; k++) {
@@ -1466,7 +1481,7 @@ static void on_icon(struct state *st, struct res *r) {
    one is open. Answers 0 if it did, 1 if there is none (always, for no name: a launcher
    about to start a slot asks that, app_before_start). Anyone may ask: it only moves a
    window up, and the name is what the loader wrote into the image, not the program's say. */
-static void on_raise(struct state *st, struct line *l, struct res *r) {
+COLD static void on_raise(struct state *st, struct line *l, struct res *r) {
     char want[17];
     for (int i = 0; i < 16; i++) want[i] = (char)(r->x[3 + i / 8] >> (8 * (i % 8)));
     want[15] = want[16] = 0;
@@ -1489,7 +1504,7 @@ static void on_raise(struct state *st, struct line *l, struct res *r) {
     sys(SYS_REPLY, r->x[6] - 1, found, 0, 0, 0);
 }
 
-static void on_start(struct state *st, struct line *l, struct res *r) {
+COLD static void on_start(struct state *st, struct line *l, struct res *r) {
     u64 badge = r->x[1], which = r->x[3], slot = r->x[6];
     if (badge != 16 || which >= DOCK_N) {
         sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
@@ -1502,7 +1517,7 @@ static void on_start(struct state *st, struct line *l, struct res *r) {
 /* Ask Apps to save the time zone on the card: as an event if its window is open, else by
    starting it with "@zone" waiting (OP_PENDING). If Apps is busy starting, or another request
    is waiting for it, this is tried again once it is done. */
-static void save_zone(struct state *st, struct line *l) {
+COLD static void save_zone(struct state *st, struct line *l) {
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
         if (w->used && !w->closing && slot_of(w->badge) == 16) {
@@ -1518,13 +1533,13 @@ static void save_zone(struct state *st, struct line *l) {
 }
 
 /* ZONE: the time zone, for anyone who asks. */
-static void on_zone(struct state *st, struct res *r) {
+COLD static void on_zone(struct state *st, struct res *r) {
     sys(SYS_REPLY, r->x[6] - 1, 0, (u64)(st->zone + ZONE_BIAS), 0, 0);
 }
 
 /* SET: only Settings may change the desktop. Apps, started at boot, may give the time zone
    it read from the card, once, unless Settings has chosen one since. */
-static void on_set(struct state *st, struct line *l, struct res *r) {
+COLD static void on_set(struct state *st, struct line *l, struct res *r) {
     u64 badge = r->x[1], what = r->x[3], value = r->x[4], slot = r->x[6];
     if (what == SET_ZONE && value <= (u64)(ZONE_MAX + ZONE_BIAS) && zone_ok((long)value - ZONE_BIAS) &&
         (badge == BADGE_SETTINGS || (badge == 16 && st->zone_restore))) {
@@ -1557,7 +1572,7 @@ static void on_set(struct state *st, struct line *l, struct res *r) {
     sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
 }
 
-__attribute__((section(".text.start"))) void _start(void) {
+COLD __attribute__((section(".text.start"))) void _start(void) {
     struct line l = {.n = 0};
     struct state *st = (struct state *)DATA;
     if (sys2(SYS_MAP, FRAMEBUFFER, FB_PAGE).status != OK) {
