@@ -264,6 +264,26 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   key or click reached anyone again until a restart (`test/freeze.sh`). A program that asks
   again at once, not after a moment, spins with the display while it is parked: that costs
   time, not authority.
+- The display server's records of a program whose slot starts again. Starting a slot frees
+  every reply slot held for its last run, for the next caller to take, and takes back the
+  pixels that run lent the display (`start_revokes`). The display cannot ask which run a
+  program is: bootinfo says only not started, running or stopped, and the same program
+  measures the same. So it keeps its records true this way: before it answers any call it
+  forgets the windows of stopped programs, answering any call it held for them; Terminal
+  and Apps, which hold the open slots' launch capabilities, call it after they find a slot
+  stopped and just before they start it (`app_before_start` in `user/app.h`); and it starts
+  the built-in apps itself, after dropping their windows. Then no answer meant for a
+  window's last run reaches the next caller, and it never draws pixels it no longer has.
+  Should a start ever get past it all the same, what the kernel hands it shows it: a call
+  that arrives in a reply slot it thought it held means that record is of a dropped call,
+  and is forgotten unanswered (`claim_slot`); holding fewer capabilities than it counts
+  means a slot was started again, and it forgets that slot's windows without touching them
+  (`lost_runs`: the slot whose grants number what is missing, or whose program's hash
+  changed; if it cannot tell, it lets every granted capability go and closes every
+  window). Trusted C, not proved. Before it, a program that stopped by itself while
+  Terminal was loading another left its window behind: the next program started in its
+  slot had its wait held on the dead window, and the display stopped when it drew the old
+  pixels (`test/restart.sh`).
 - The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
   then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.

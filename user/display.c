@@ -17,6 +17,13 @@
    that has waited longest is let go the same way: before, the display retried that receive
    for ever, and no key or click reached anyone again.
 
+   A slot started again (Terminal's or Apps' exec, or its own start of an app) frees the
+   reply slots held for its last run and takes back the pixels that run lent. So before it
+   answers any call the display forgets the windows of stopped programs, and the launchers
+   call it just before they start a slot; if a start gets past that all the same, what the
+   kernel hands it next shows it, and it forgets that run's windows unanswered and undrawn
+   (see "runs the kernel replaced").
+
    The input driver sends it keys and mouse reports (badge 3). Keys go to the focused window;
    a click focuses and raises a window, and dragging its title bar moves it. The sender's
    badge, which the kernel sets, names every window, so no client can pass for another.
@@ -125,6 +132,7 @@ struct win {
     struct picture icon;        /* the icon a program from the card lent (OP_ICON), or none */
     char prog[16];              /* and the card file it came from, or "" */
     u64 slot;                   /* reply slot + 1 while the client waits, else 0 */
+    u64 hash;                   /* the first word of its slot's measured hash when it opened */
     u64 held_at;                /* when its wait was held (a count), to find the one held longest */
     int parked;                 /* let go with no event while HOLD_MAX were held: asks again soon */
     unsigned queue[QUEUE][3];    /* events waiting for the client (kind, a, b), oldest at qhead */
@@ -167,7 +175,8 @@ struct state {
     int theme;
     /* the capability list, as the kernel holds it: who granted each one (0: the server's
        own) and which window it shows (window + 1, or 0) */
-    int ncaps;
+    int ncaps, own_caps;        /* how many, and how many are its own (the first) */
+    int grant_at;               /* where the message being handled put its grant, or -1 */
     u64 cap_badge[64];
     int cap_win[64];
     /* how long drawing takes, for the log: the first full redraw (when the first window
@@ -780,8 +789,10 @@ static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
 
 static void redraw_all(struct state *st) { composite(st, 0, 0, W, H); }
 
-/* The kernel removed capability i: everything after it moves down one place. */
+/* The kernel removed capability i: everything after it moves down one place, the grant
+   the message being handled carries too. */
 static void cap_forget(struct state *st, int i) {
+    if (i < st->grant_at) st->grant_at--;
     for (int j = i; j < st->ncaps - 1; j++) {
         st->cap_badge[j] = st->cap_badge[j + 1];
         st->cap_win[j] = st->cap_win[j + 1];
@@ -849,6 +860,89 @@ static void forget_stopped(struct state *st, struct line *l) {
         release(st, k);
         redraw_all(st);
     }
+}
+
+static void say3(struct line *l, const char *a, const char *b, const char *c);
+
+/* ---- runs the kernel replaced ----
+
+   Starting a program slot again (Terminal's and Apps' exec, or the display's own start) frees
+   every reply slot any task holds for the slot's last run, and takes back every capability
+   into its memory, with the mappings (the kernel's `start`). The display learns of a run
+   only through bootinfo (not started, running, stopped) and the measured hash, which is the
+   same for the same program: there is no run number to ask for. So it keeps its records
+   true three ways. Before it answers any call it forgets the windows of stopped programs
+   (forget_stopped), and a launcher calls it after it finds a slot stopped and before it
+   starts it (app_before_start in user/app.h), so the display has let go of the last run
+   before the kernel does. Beyond that, what the kernel hands it shows what it missed: */
+
+/* A call in reply slot k: the calls the display holds are all in slots of their own, so any
+   record it still has of slot k is of a call the kernel has dropped (its caller's slot was
+   started again). It is forgotten, not answered: an answer now would reach the new caller. */
+static void claim_slot(struct state *st, struct line *l, u64 slot) {
+    for (int k = 0; k < MAX_WIN; k++) {
+        struct win *w = &st->win[k];
+        if (w->slot != slot) continue;
+        w->slot = 0;
+        say3(l, "the kernel dropped the call held for ", name_of(w->badge), "'s last run; forgot it");
+    }
+}
+
+/* How many capabilities the kernel says it holds: as many as it counts, or fewer. */
+static int caps_now(struct state *st) {
+    int n = st->ncaps;
+    while (n > 0 && sys1(SYS_CAPINFO, (u64)n - 1).status != OK) n--;
+    return n;
+}
+
+/* The kernel holds only `real` of its capabilities: a slot was started again while the
+   display thought its last run was still there, and it took back the capabilities that
+   run had granted (a window's pixels, its icon) and the mappings with them. The windows of
+   that slot are forgotten without being drawn, dropped or answered. The slot is the one
+   whose grants number what is missing; if several do, the one whose program changed (its
+   hash); if the display still cannot tell, it lets every capability but its own go, and
+   every window closes. Returns how many capabilities it let go (the grant being handled,
+   after them, moves down as many places). */
+static int lost_runs(struct state *st, struct line *l, int real) {
+    int miss = st->ncaps - real, pick = -1, fits = 0, changed = -1, nchanged = 0;
+    for (int s = 0; s < 17; s++) {
+        int n = 0;
+        for (int i = 0; i < st->ncaps; i++) n += st->cap_badge[i] && slot_of(st->cap_badge[i]) == s;
+        if (n != miss) continue;
+        fits++;
+        pick = s;
+        u64 h = sys1(SYS_BOOTINFO, (u64)s).x[2];
+        for (int k = 0; k < MAX_WIN; k++)
+            if (st->win[k].used && slot_of(st->win[k].badge) == s && st->win[k].hash != h) {
+                changed = s;
+                nchanged++;
+                break;
+            }
+    }
+    if (fits > 1) pick = nchanged == 1 ? changed : -1;
+    int dropped = 0;
+    if (pick >= 0) {
+        put_s(l, "display: slot ");
+        put_dec(l, (u64)pick);
+        say3(l, " was started again unseen; forgot its last run's windows", "", "");
+        for (int k = 0; k < MAX_WIN; k++) {
+            struct win *w = &st->win[k];
+            if (!w->used || slot_of(w->badge) != pick) continue;
+            hide(st, k);
+            w->slot = 0;
+            w->used = w->closing = w->paste_len = w->paste_at = 0;
+            if (st->copy_win == k + 1) st->copy_win = 0;
+        }
+        for (int i = st->ncaps - 1; i >= 0; i--)
+            if (st->cap_badge[i] && slot_of(st->cap_badge[i]) == pick) cap_forget(st, i);
+    } else {
+        say3(l, "a slot was started again unseen, and it cannot tell which: every window closes", "", "");
+        for (int i = real - 1; i >= st->own_caps; i--, dropped++) sys1(SYS_DROP, (u64)i);
+        st->ncaps = st->own_caps;
+        for (int k = 0; k < MAX_WIN; k++) if (st->win[k].used) release(st, k);
+    }
+    redraw_all(st);
+    return dropped;
 }
 
 /* Dock item i: show the app's window, or start the app. */
@@ -1242,6 +1336,7 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     if (wn->x + (int)w > W - 8) wn->x = W - 8 - (int)w;
     if (wn->y + (int)h + TITLE_H > DOCK_Y - 8) wn->y = DOCK_Y - 8 - (int)h - TITLE_H;
     wn->slot = 0;
+    wn->hash = sys1(SYS_BOOTINFO, (u64)slot_of(badge)).x[2];
     wn->parked = 0;
     wn->closing = 0;
     wn->icon.px = 0;
@@ -1368,7 +1463,8 @@ static void on_icon(struct state *st, struct res *r) {
 /* START: Apps asks for one of the built-in apps (w1 = its place in the dock), as if its
    dock icon were clicked. Only Apps may ask. */
 /* RAISE: bring forward the window of the program from card file w1 w2 (up to 15 bytes), if
-   one is open. Answers 0 if it did, 1 if there is none. Anyone may ask: it only moves a
+   one is open. Answers 0 if it did, 1 if there is none (always, for no name: a launcher
+   about to start a slot asks that, app_before_start). Anyone may ask: it only moves a
    window up, and the name is what the loader wrote into the image, not the program's say. */
 static void on_raise(struct state *st, struct line *l, struct res *r) {
     char want[17];
@@ -1478,7 +1574,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     sys2(SYS_MAP, rw.x[1], WIN_TABLE_PAGE);
     st->win = (struct win *)PAGE(WIN_TABLE_PAGE);
     _Static_assert(sizeof(struct win) * MAX_WIN <= 28 * 4096, "the window table must fit in 28 pages");
-    st->ncaps = (int)rw.x[1] + 1;
+    st->ncaps = st->own_caps = (int)rw.x[1] + 1;
+    st->grant_at = -1;
     for (int i = 0; i < st->ncaps; i++) { st->cap_badge[i] = 0; st->cap_win[i] = 0; }
     const unsigned char *assets = (const unsigned char *)PAGE(ASSET_PAGE);
     st->ui = font_of(assets, F_UI);
@@ -1549,15 +1646,28 @@ __attribute__((section(".text.start"))) void _start(void) {
             if (r.status != OK) continue;
         }
         u64 badge = r.x[1], op = r.x[2], slot = r.x[6], grant = r.x[5];
-        /* Anything but another drag move draws the one waiting first. */
-        if (st->drag_pending && !((badge == BADGE_INPUT || badge == BADGE_USB) && !slot && op == EV_MOVE))
-            drag_frame(st);
+        /* First, what the kernel may have taken back since the last message (see "runs the
+           kernel replaced"): a reply slot this call now has, capabilities fewer than it
+           counts (a granted one lands at the end of the list, so its place says how many
+           there were before it), and the windows of programs that stopped. The grant
+           moves down with every capability let go before it. */
+        if (slot) claim_slot(st, &l, slot);
+        int real = grant ? (int)grant - 1 : caps_now(st);
+        if (real < st->ncaps) {
+            int dropped = lost_runs(st, &l, real);
+            if (grant) grant -= (u64)dropped;
+        }
+        st->grant_at = (int)grant - 1;
         if (grant) {
-            /* a granted capability lands at the end of the list */
             st->ncaps = (int)grant;
             st->cap_badge[grant - 1] = badge;
             st->cap_win[grant - 1] = 0;
         }
+        forget_stopped(st, &l);
+        grant = r.x[5] = (u64)(st->grant_at + 1);
+        /* Anything but another drag move draws the one waiting first. */
+        if (st->drag_pending && !((badge == BADGE_INPUT || badge == BADGE_USB) && !slot && op == EV_MOVE))
+            drag_frame(st);
         if ((badge == BADGE_INPUT || badge == BADGE_USB) && !slot) {
             on_input(st, &l, op, r.x[3], r.x[4]);
         } else if (slot && op == OP_OPEN && r.x[5]) {
@@ -1593,7 +1703,7 @@ __attribute__((section(".text.start"))) void _start(void) {
             if (slot) sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
         }
         /* A grant that did not become a window is not kept. */
-        if (grant && st->cap_win[grant - 1] == 0) cap_drop(st, (int)grant - 1);
-        forget_stopped(st, &l);
+        if (st->grant_at >= 0 && st->cap_win[st->grant_at] == 0) cap_drop(st, st->grant_at);
+        st->grant_at = -1;
     }
 }

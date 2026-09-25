@@ -210,6 +210,7 @@ static void start(struct launcher *st, struct line *l, int i) {
             for (int i = 0; p->name[i] && i < FS_NAME_MAX; i++) { folder[5 + i] = p->name[i]; folder[6 + i] = 0; }
             fs_unshare(&st->fs, OPEN_FIRST + (u64)k);
             fs_share(&st->fs, folder, OPEN_FIRST + (u64)k, FS_R | FS_W, 1);
+            app_before_start();
             if (sys(SYS_EXEC, LAUNCH_OPEN + (u64)k, (u64)image, len, 0, 0).status != OK) continue;
             /* the network: only for the browser (what ran in this slot before loses it) */
             int wants = p->name[0] == 'w' && p->name[1] == 'e' && p->name[2] == 'b' && !p->name[3];

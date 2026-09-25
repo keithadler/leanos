@@ -65,6 +65,14 @@ static inline int app_raise(const char *name) {
     return r.status == OK && r.x[1] == 0;
 }
 
+/* A launcher (Terminal, Apps) calls this after it finds an open slot not running and just
+   before it starts a program there. The display forgets the windows of every stopped
+   program before it answers any call, so by the time the slot starts again the display
+   holds nothing of its last run: not its window (whose pixels the start takes back), not a
+   call it held for it (whose reply slot the start frees, for the next caller to take). An
+   OP_RAISE with no name asks nothing else. */
+static inline void app_before_start(void) { sys(SYS_CALL, ENDPOINT, OP_RAISE, 0, 0, 0); }
+
 /* The display holds at most 7 waiting windows' calls (the kernel gives it 8 reply slots, and
    it keeps one free). With more windows waiting, it answers the one that has waited longest
    with no event (EV_NONE), and answers again at once, with no event, while that window has

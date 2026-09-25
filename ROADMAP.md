@@ -145,6 +145,18 @@ every 100 ms), answered at once while the slots stay taken. `test/freeze.sh` ope
 with 8 windows waiting and then shows all 12 (11 waiting), checks keys and clicks still
 reach the apps, and that nothing spins; with the old display it freezes.
 
+Fixed: a slot started again while the display still knew its last run. Starting a slot
+frees the reply slots held for the last run and takes back the pixels it lent; the display
+forgot a stopped program's window only after the next message, so a program that stopped
+by itself while Terminal was loading another kept its window: the new program's wait was
+held on the dead window, and the display stopped when it drew the old pixels. Now the
+display forgets stopped programs' windows before it answers any call, and Terminal and Apps
+call it just before they start a slot. Should a start still get past it, a call arriving
+in a reply slot it thought it held, or fewer capabilities than it counts, shows the display
+what it missed, and it forgets that run unanswered and undrawn. `test/restart.sh` kills a
+waiting program and runs another in its slot, then has one stop by itself inside Terminal's
+load, and checks each program gets only its own keys and clicks.
+
 ## 8. A bounded kernel
 
 Prove how much kernel memory each operation can use, and preallocate per task, so no

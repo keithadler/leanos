@@ -705,6 +705,7 @@ static void cmd_run(struct term *t, struct line *l, const char *args) {
     for (int i = 0; i < OPEN_SLOTS; i++) {
         if (sys1(SYS_BOOTINFO, OPEN_FIRST + (u64)i).x[4] == 1) continue;   /* in use */
         give(t, l, OPEN_FIRST + (u64)i, name, files);
+        app_before_start();
         struct res r = sys(SYS_EXEC, LAUNCH_OPEN + (u64)i, (u64)image, len, 0, 0);
         if (r.status != OK) continue;
         /* the network: allowed for this program, or taken from whatever ran here before */
