@@ -4,7 +4,7 @@
     {
       "name": "leanos",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["/Users/keith/Downloads/leanos/tools/serve.py"],
+      "runtimeArgs": ["tools/serve.py"],
       "port": 8796
     }
   ]

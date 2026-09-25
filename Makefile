@@ -10,7 +10,8 @@
 TOOLCHAIN := $(shell cat lean-toolchain | sed 's|/|--|; s|:|---|')
 LEAN_HOME := $(HOME)/.elan/toolchains/$(TOOLCHAIN)
 LEAN      := $(LEAN_HOME)/bin/lean
-LLVM      := /opt/homebrew/opt/llvm/bin
+# LLVM's bin folder: Homebrew's on macOS, else the system's (override: make LLVM=/path/to/llvm/bin)
+LLVM      ?= $(firstword $(wildcard /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin /usr/lib/llvm-19/bin /usr/lib/llvm-18/bin) /usr/bin)
 CC        := $(LLVM)/clang
 LD        := ld.lld
 OBJCOPY   := $(LLVM)/llvm-objcopy

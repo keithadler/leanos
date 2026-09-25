@@ -406,7 +406,7 @@ static void set_note(struct web *w, const char *a, const char *b) {
 }
 
 static const char *net_why(u64 code) {
-    return code == NET_DENIED ? "not allowed to use the network: start it with run -net web"
+    return code == NET_DENIED ? "not allowed to use the network: start it from the dock, or with run -net web"
          : code == NET_NO_DEVICE ? "no network adapter" : code == NET_NO_ADDRESS ? "no address from the network"
          : code == NET_NO_HOST ? "no such host" : code == NET_NO_ANSWER ? "no answer"
          : code == NET_UNSUPPORTED ? "only http:// pages (no https yet)"
@@ -490,8 +490,9 @@ static void welcome(struct web *w) {
     reset_page(w);
     const char *t = "<h1>web</h1><p>A text browser for leanos. Type an address (http:// only) and press Enter."
                     "<p>Links are blue, with their number. Click one, or type its number and press Enter. "
-                    "The up and down arrows scroll.<p>It reaches the network only if you started it with "
-                    "<b>run -net web</b> in Terminal: the network service answers only a program you allowed.";
+                    "The up and down arrows scroll.<p>It reaches the network only if you allowed it: started "
+                    "from the dock, or with <b>run -net web</b> in Terminal. The network service answers "
+                    "only a program you allowed.";
     long n = 0;
     while (t[n]) n++;
     feed(w, t, n);

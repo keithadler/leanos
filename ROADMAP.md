@@ -11,7 +11,7 @@ and TRUST.md is updated.
 
 **Target.** Raspberry Pi 4 Model B: a Cortex-A72, the GIC-400 interrupt controller,
 PL011 UART, and the VideoCore mailbox for the framebuffer. It is tested on QEMU's
-`raspi4b` machine and on real boards. The Pi 5 comes later: its peripherals sit behind
+`raspi4b` machine; the first boot on a real board is next. The Pi 5 comes later: its peripherals sit behind
 the RP1 chip, which is much less documented, and no emulator models it.
 
 ## 1. Proved decisions — done
