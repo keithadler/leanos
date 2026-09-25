@@ -42,7 +42,11 @@ for i in range(12):
     for k in range(40):     # one at a time: a typed-ahead queue only holds so much
         steps += keys(f"fill f 200 {'abcdefghij'[k % 10]}\r") + [wait_for("terminal: fill f", k + 1)]
     lines = []
-    boot(cut, on_line=lines.append, steps=steps, until="never", sd=card, cut=True)
+    # timed from Terminal's window, not QEMU's start: on a quiet host Terminal opens about
+    # 3.5 s in, so the cut falls as it always did; on a busy one a slow boot does not use up
+    # the time the fills should have
+    boot(cut - 3.5, on_line=lines.append, steps=steps, until="never", sd=card, cut=True,
+         clock_from="terminal: opened")
     fills = sum(l.startswith("terminal: fill f -> ok") for l in lines)
     # the next boot: check the card, then look at f
     lines = []

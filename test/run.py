@@ -139,9 +139,12 @@ def fresh_card(path=TEST_CARD):
 
 
 def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=None, image=None,
-         settle=0.3, sd=None, usb=False, cut=False, net=False, touch=False):
+         settle=0.3, sd=None, usb=False, cut=False, net=False, touch=False, clock_from=None):
     """sd: the SD card image to boot with (a fresh copy of the programs card if None; ""
-    for no card). cut: at the timeout, kill QEMU at once (a power cut), not after a grace."""
+    for no card). cut: at the timeout, kill QEMU at once (a power cut), not after a grace.
+    clock_from: count the timeout from the first serial line starting with this, not from
+    QEMU's start (so a slow boot on a busy host does not eat into it); until that line
+    comes, the run may take up to a minute more."""
     if sd is None:
         sd = fresh_card()
     """steps: bytes to type once the system is idle, each followed by a short pause, or
@@ -162,13 +165,13 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
         + (["-device", "usb-tablet,id=tablet"] if touch else []),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     qmp = Qmp(sock)
-    deadline = time.monotonic() + timeout
+    deadline = [time.monotonic() + timeout + (60 if clock_from else 0)]
     # The loop below only looks at the clock when a line arrives; a machine that goes
     # silent would hang it. A watchdog ends QEMU at the deadline instead.
     import threading as _threading
     def watchdog():
         while proc.poll() is None:
-            if time.monotonic() > deadline + (0 if cut else 5):
+            if time.monotonic() > deadline[0] + (0 if cut else 5):
                 proc.kill()
                 return
             time.sleep(0.5)
@@ -192,6 +195,9 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
         for raw in proc.stdout:
             line = raw.decode(errors="replace").rstrip("\r\n")
             if line:
+                if clock_from and line.startswith(clock_from):
+                    deadline[0] = time.monotonic() + timeout
+                    clock_from = None
                 on_line(line)
                 with cond:
                     seen.append(line)
@@ -218,7 +224,7 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                         if isinstance(chunk, tuple):
                             with cond:
                                 cond.wait_for(lambda: sum(l.startswith(chunk[1]) for l in seen) >= chunk[2],
-                                              timeout=max(0, deadline - time.monotonic()))
+                                              timeout=max(0, deadline[0] - time.monotonic()))
                             time.sleep(0.05)
                             continue
                         try:
@@ -243,7 +249,7 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                 qmp.cmd("quit")
                 status = 0
                 break
-            if time.monotonic() > deadline:
+            if time.monotonic() > deadline[0]:
                 status = 124
                 break
     finally:
