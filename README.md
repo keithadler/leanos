@@ -15,15 +15,36 @@ Each of those is confined to exactly what it was given.
 
 ![The leanos desktop: Terminal, Clock and the Web browser showing info.cern.ch, with the date in the menu bar](docs/screen.png)
 
-> **Status: an experiment, not yet a daily driver.** Everything here runs and is tested on
+> **Status: a working prototype, and a start.** Everything here runs and is tested on
 > QEMU's emulated Raspberry Pi 4 (`raspi4b`). The SD card image for a real Pi 4 builds and
-> is checked, but it has **not yet booted on real hardware**. See
-> [Run it on a Raspberry Pi 4](#run-it-on-a-raspberry-pi-4) for what is likely to need work.
+> is checked, but it has **not yet booted on real hardware**.
+
+## Why, and what comes next
+
+Proved kernels exist: seL4, the best known, is written in C and proved in Isabelle/HOL, with a
+refinement proof tying the two together, and it remains far more thoroughly verified than
+leanos. leanos tries a different route: the kernel's decisions are written *in* Lean, the
+language the proofs are in, and that same code is compiled straight into the image a
+Raspberry Pi boots. The goal is a **real-world implementation** of that idea: not a model,
+but a system you can boot, click around in and try to break.
+
+This is the start. The next steps, in order:
+
+1. **Real hardware.** Boot the image on a physical Raspberry Pi 4 and fix what the emulator
+   does not model: the SD controller, the screen, timing, the USB-A ports (an xHCI driver
+   over PCIe) and the Pi's own Ethernet.
+2. **Newer Pis.** The Raspberry Pi 5, whose peripherals sit behind its RP1 chip, and later
+   boards. The Lean kernel carries over unchanged; the machine layer and drivers are the work.
+3. **Wider.** `https`, time zones, more programs, and the proofs pushed further down into the
+   machine layer.
+
+[ROADMAP.md](ROADMAP.md) has the details, and what each stage proved.
 
 ## What it does
 
 - **A desktop** at 1024×600: windows you can drag, a menu bar with the date and time, and a
-  dock. Built-in apps: Notes, Files, Terminal, Settings, Security, Apps and Clock.
+  dock. Built-in apps: Notes, Files, Terminal, Settings, Security, Apps and Clock. What opens
+  at startup is a list on the SD card (`startup.txt`: Apps and the tour, to begin with).
 - **Programs from the SD card**: `web` (a text web browser), `edit` (a text editor),
   `calc`, `snake`, `life`, `tiles` (2048), `tour`, `fuzz` and `hello`. Up to six run at once,
   each confined to its own memory, a window, its own folder, the files you hand it, and the
@@ -43,7 +64,7 @@ Each of those is confined to exactly what it was given.
   keystrokes; run code it wrote; switch the machine off). It shows the kernel's answer next
   to what a typical Linux desktop allows, and ends with what Linux does better.
 
-![The leanos boot screen](docs/logo.png)
+![The leanos boot screen, checking each program's SHA-256 against the boot manifest](docs/logo.png)
 
 ## What is proved
 
@@ -78,6 +99,9 @@ one. [TRUST.md](TRUST.md) says exactly what is proved and what is trusted: the L
 compiler, a small runtime shim, the machine layer, the MMU model, and the hardware.
 
 ## Quick start
+
+Step by step, for macOS and Linux, with a real Pi and troubleshooting:
+**[docs/SETUP.md](docs/SETUP.md)**. The short version:
 
 You need, on macOS or Linux:
 
@@ -204,12 +228,6 @@ the machine itself (power, board settings, the USB controller, the time). Everyt
 frames is fixed by the boot manifest and never moves.
 
 </details>
-
-## Roadmap
-
-[ROADMAP.md](ROADMAP.md) has the plan and what each stage proved. Next: the first boot on
-a real Pi 4, the USB-A ports (xHCI over PCIe), the Pi 4's own Ethernet, `https`, time zones,
-and later the Pi 5.
 
 ## License
 

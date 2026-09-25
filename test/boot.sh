@@ -77,6 +77,7 @@ expected_head=$(printf '%s\n' "display: boot checks shown: 6 verified, 0 refused
   "display: desktop drawn on the 1024x600 framebuffer")
 [ "$(echo "$display" | head -3)" = "$expected_head" ] || fail "display did not show the boot checks, logo and desktop"
 for line in \
+  "display: start Apps -> ok" \
   "display: alice opened a 300x200 window from a read-only capability to 59 pages" \
   "display: mallory sent a request it cannot make; ignored"; do
   [ "$(echo "$display" | grep -cxF "$line")" = 1 ] || fail "display line missing or repeated: $line"
@@ -84,7 +85,9 @@ done
 expected_tail=$(printf '%s\n' "display: key 'H' to alice" "display: key 'i' to alice" "display: key '!' to alice" \
   "display: moved alice's window to (276, 208)")
 [ "$(echo "$display" | tail -4)" = "$expected_tail" ] || fail "keys or drag not handled"
-[ "$(echo "$display" | wc -l | tr -d ' ')" = 9 ] || fail "display printed unexpected lines"
+[ "$(echo "$display" | wc -l | tr -d ' ')" = 10 ] || fail "display printed unexpected lines"
+# Startup items: the display starts Apps, which finds no startup.txt on this card and leaves.
+echo "$out" | grep -q "^apps: opened a window" && fail "Apps opened a window with no startup.txt"
 for who in alice display mallory carol input fs; do
   echo "$out" | grep -q "^leanos: $who verified, sha256 " || fail "$who was not verified at boot"
 done

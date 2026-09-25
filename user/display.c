@@ -111,6 +111,7 @@ struct state {
     char pending[16];           /* a pinned program to start when Apps next asks */
     char bar_time[24];          /* the menu bar's clock ("Wed Sep 23  14:05"), empty until known */
     u64 bar_minute;             /* the minute it shows */
+    int spread;                 /* until the first click or key: place windows apart, not cascaded */
     /* the background pattern: a color per row, a glow per column, and a 32 x 32 tile */
     unsigned bg_row[H];
     /* the glow, per column, ready to blend: the weight left for the row's color, and the
@@ -844,6 +845,7 @@ static void drag_frame(struct state *st) {
 }
 
 static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
+    if (kind == EV_KEY || kind == EV_DOWN) st->spread = 0;   /* from here on, windows cascade */
     if (kind == EV_KEY) {
         int k = focused(st);
         if (k < 0) return;
@@ -983,6 +985,24 @@ static void on_open(struct state *st, struct line *l, struct res *r) {
     wn->title[8] = 0;
     wn->x = 96 + 40 * k;
     wn->y = 76 + 36 * k;
+    /* Startup items (before anyone has clicked or typed): where the window covers least of
+       the ones already open, scanning top-left first. Notes keeps its own place. */
+    if (st->spread && badge != 1) {
+        long best = -1;
+        int ow = (int)w, oh = (int)h + TITLE_H;
+        for (int y = BAR_H + 14; y + oh <= DOCK_Y - 12; y += 12)
+            for (int x = 24; x + ow <= W - 24; x += 16) {
+                long cover = 0;
+                for (int i = 0; i < st->nz; i++) {
+                    const struct win *o = &st->win[st->z[i]];
+                    int x0 = x > o->x - 16 ? x : o->x - 16, y0 = y > o->y - 16 ? y : o->y - 16;
+                    int x1 = x + ow < o->x + outer_w(o) + 16 ? x + ow : o->x + outer_w(o) + 16;
+                    int y1 = y + oh < o->y + outer_h(o) + 16 ? y + oh : o->y + outer_h(o) + 16;
+                    if (x1 > x0 && y1 > y0) cover += (long)(x1 - x0) * (y1 - y0);
+                }
+                if (best < 0 || cover < best) { best = cover; wn->x = x; wn->y = y; }
+            }
+    }
     if (wn->x + (int)w > W - 8) wn->x = W - 8 - (int)w;
     if (wn->y + (int)h + TITLE_H > DOCK_Y - 8) wn->y = DOCK_Y - 8 - (int)h - TITLE_H;
     wn->slot = 0;
@@ -1192,6 +1212,11 @@ __attribute__((section(".text.start"))) void _start(void) {
     redraw_all(st);
     put_s(&l, "display: desktop drawn on the 1024x600 framebuffer");
     say(&l);
+    /* Startup items: Apps opens what the card's startup.txt lists (nothing, if it has none). */
+    st->spread = 1;
+    const char *at = "@startup";
+    for (int i = 0; i < 9; i++) st->pending[i] = at[i];
+    launch(st, &l, APPS_DOCK);
 
     u64 bar_wait = bar_clock(st), bar_at = millis();
     for (;;) {

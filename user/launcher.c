@@ -270,21 +270,53 @@ __attribute__((section(".text.start"))) void _start(void) {
     net_init(&st->net, SPARE_PAGE);
     st->pressed = -1;
     scan(st, &l);
-    /* Started by a click on a program pinned in the dock? Then start that, and nothing else. */
+    /* Started by a click on a program pinned in the dock? Then start that, and nothing else.
+       Started by the display server at boot ("@startup")? Then open what startup.txt on
+       the card lists: program names, and "apps" for this window (# starts a comment). */
     struct res pend = sys(SYS_CALL, ENDPOINT, OP_PENDING, 0, 0, 0);
+    char startup[512];
+    int nstartup = 0, show = 1;
     if (pend.status == OK && pend.x[2]) {
         char name[17];
         for (int i = 0; i < 16; i++) name[i] = (char)(pend.x[2 + i / 8] >> (8 * (i % 8)));
         name[16] = 0;
-        start_named(st, &l, name);
-        exit_task();
+        if (name[0] != '@') {
+            start_named(st, &l, name);
+            exit_task();
+        }
+        long n = fs_read(&st->fs, "startup.txt");
+        if (n <= 0) exit_task();                 /* nothing to open at startup */
+        const char *d = fs_data(&st->fs);
+        for (long i = 0; i < n && i < (long)sizeof startup - 1; i++) startup[nstartup++] = d[i];
+        startup[nstartup] = 0;
+        show = 0;
+        for (int i = 0; i + 3 < nstartup; i++)
+            if ((i == 0 || startup[i - 1] <= ' ') && startup[i] == 'a' && startup[i + 1] == 'p' &&
+                startup[i + 2] == 'p' && startup[i + 3] == 's' && (i + 4 == nstartup || startup[i + 4] <= ' '))
+                show = 1;
+        put_s(&l, "apps: opening what startup.txt lists\n");
+        flush(&l);
     }
-    draw(st);
-    u64 opened = app_open_at(WIN_OFFSET, AW, AH, "Apps");
-    put_s(&l, "apps: opened a window");
-    put_s(&l, outcome(opened));
-    put_s(&l, "\n");
-    flush(&l);
+    u64 opened = BAD_ARG;
+    if (show) {
+        draw(st);
+        opened = app_open_at(WIN_OFFSET, AW, AH, "Apps");
+        put_s(&l, "apps: opened a window");
+        put_s(&l, outcome(opened));
+        put_s(&l, "\n");
+        flush(&l);
+    }
+    /* the startup programs, after this window, so the last one listed ends up in front */
+    for (int i = 0; i < nstartup;) {
+        while (i < nstartup && startup[i] <= ' ') i++;
+        if (startup[i] == '#') { while (i < nstartup && startup[i] != '\n') i++; continue; }
+        char name[FS_NAME_MAX + 1];
+        int k = 0;
+        while (i < nstartup && startup[i] > ' ' && k < FS_NAME_MAX) name[k++] = startup[i++];
+        while (i < nstartup && startup[i] > ' ') i++;
+        name[k] = 0;
+        if (k && !(k == 4 && name[0] == 'a' && name[1] == 'p' && name[2] == 'p' && name[3] == 's')) start_named(st, &l, name);
+    }
     if (opened != OK) exit_task();
     int dirty = 0;
     for (;;) {

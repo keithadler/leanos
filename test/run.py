@@ -291,7 +291,7 @@ APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
              *click(150, 400), b"run clock\r", wait_for("clock: ticked 3 times"),
              *click(*DOCK["Files"]), wait_for("files: opened"),
              *[b"\x1b[B"] * 23, wait_for("files: showing hello.txt"),
-             *click(*DOCK["Security"]), wait_for("security: 12")]
+             *click(*DOCK["Security"]), wait_for("security: 13")]
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -302,6 +302,6 @@ if __name__ == "__main__":
     # --keep-sd: boot with the card the last run left (build/sd-test.img); --no-sd: no card
     sd = (TEST_CARD if "--keep-sd" in sys.argv else "" if "--no-sd" in sys.argv
           else blank_card() if "--blank-sd" in sys.argv else raw_card() if "--raw-sd" in sys.argv else None)
-    until = "display: the drag drew" if demo else "security: 12" if apps else None
+    until = "display: the drag drew" if demo else "security: 13" if apps else None
     sys.exit(boot(float(args[0]) if args else 30, steps=steps, until=until,
                   snaps={"display: boot logo drawn": "logo"}, image=image, settle=2 if apps else 0.3, sd=sd))

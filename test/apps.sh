@@ -34,7 +34,7 @@ check_order alice \
 check_order terminal \
   "terminal: opened a window -> ok" \
   "terminal: caps -> 14 capabilities" \
-  "terminal: boot -> 7 verified" \
+  "terminal: boot -> 8 verified" \
   "terminal: write hello.txt -> ok" \
   "terminal: ls -> 24 files" \
   "terminal: window closed, exiting" \
@@ -77,7 +77,7 @@ echo "$out" | grep -E "^files: showing " | tail -1 | grep -qx "files: showing he
 
 check_order security \
   "security: opened a window -> ok" \
-  "security: 12 verified, 0 refused, 5 not loaded"
+  "security: 13 verified, 0 refused, 4 not loaded"
 
 # The kernel loads and checks an app each time it is started, and only then.
 [ "$(echo "$out" | grep -c "^leanos: terminal started$")" = 2 ] || fail "Terminal was not started twice"
@@ -91,7 +91,7 @@ for app in terminal settings security files; do
 done
 
 display=$(echo "$out" | grep -E "^display: (start|closed|background)")
-expected=$(printf '%s\n' "display: closed alice's window" "display: start Notes -> ok" \
+expected=$(printf '%s\n' "display: start Apps -> ok" "display: closed alice's window" "display: start Notes -> ok" \
   "display: start Terminal -> ok" "display: start Settings -> ok" \
   "display: background 1, as Settings asked" "display: closed Terminal's window" \
   "display: start Terminal -> ok" "display: start Files -> ok" "display: start Security -> ok")
@@ -123,8 +123,9 @@ for k in range(10):
     assert count(k, green) > 60, ("check", k)
 for k in (10, 11):
     assert count(k, blue) > 60 and count(k, green) == 0, ("open slot", k, count(k, blue))
-for k in (12, 13, 14, 15):
-    assert count(k, blue) == 0 and count(k, green) == 0, ("empty open slot", k)
+for k in (12, 13, 14, 15):   # (the edge of Apps' check, just below slot 15, may show)
+    assert count(k, blue) == 0 and count(k, green) < 12, ("empty open slot", k, count(k, green))
+assert count(16, green) > 60, ("Apps, started at boot for the startup items", count(16, green))
 # the note came back after Notes started again: dark text where "Hi" is
 assert sum(1 for y in range(160, 180) for x in range(114, 132) if max(at(x, y)) < 100) > 20, "the saved note"
 # Terminal's dark window, below Security's

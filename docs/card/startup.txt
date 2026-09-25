@@ -1,0 +1,4 @@
+# What leanos opens at startup, one per line, the last in front.
+# "apps" is the Apps window; any other name is a program on this card.
+apps
+tour

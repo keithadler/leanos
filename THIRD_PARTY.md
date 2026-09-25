@@ -13,8 +13,7 @@ The fonts are rasterized and the icons scaled at build time by `tools/mkassets.p
 `tools/mkicon.py`, which have their own TrueType reader and PNG decoder; the build downloads
 nothing.
 
-Not in this repository: the Raspberry Pi boot firmware (`start4.elf`, `fixup4.dat` and the
-device-tree blob), which is the Raspberry Pi Foundation's and is fetched by
+Not in this repository: the Raspberry Pi boot firmware (`start4.elf` and `fixup4.dat`), which is the Raspberry Pi Foundation's and is fetched by
 `tools/fetch-firmware.sh` only when you build an SD card image for a real Pi.
 
 The leanos logo, the desktop's background pattern (computed by the display server) and the

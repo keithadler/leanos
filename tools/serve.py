@@ -287,7 +287,7 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 if __name__ == "__main__":
     if not os.path.exists(IMAGE):
         raise SystemExit("build/kernel8.img is missing: run `make` first")
-    template = os.path.join(ROOT, "build", "sd-template.img")
+    template = os.path.join(ROOT, "build", "sd-desktop.img")
     import shutil
     if os.path.exists(SD_IMAGE) and os.path.getmtime(template) > os.path.getmtime(SD_IMAGE):
         # `make` built newer programs than the card has: start from a fresh card, and keep the
@@ -295,7 +295,7 @@ if __name__ == "__main__":
         shutil.move(SD_IMAGE, os.path.join(ROOT, "build", "sd-old.img"))
         print("the programs changed: a fresh SD card; the old one is build/sd-old.img", flush=True)
     if not os.path.exists(SD_IMAGE):
-        # the card `make` builds: welcome.txt and the programs Terminal can run
+        # the card `make` builds: the programs, the guide, and startup.txt
         shutil.copyfile(template, SD_IMAGE)
     print(f"leanos in the browser on http://127.0.0.1:{PORT}", flush=True)
     # Stopped with a signal (as the preview pane stops it), still take QEMU down with it:

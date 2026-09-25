@@ -11,9 +11,9 @@ TOOLCHAIN := $(shell cat lean-toolchain | sed 's|/|--|; s|:|---|')
 LEAN_HOME := $(HOME)/.elan/toolchains/$(TOOLCHAIN)
 LEAN      := $(LEAN_HOME)/bin/lean
 # LLVM's bin folder: Homebrew's on macOS, else the system's (override: make LLVM=/path/to/llvm/bin)
-LLVM      ?= $(firstword $(wildcard /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin /usr/lib/llvm-19/bin /usr/lib/llvm-18/bin) /usr/bin)
+LLVM      ?= $(firstword $(wildcard /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin) $(lastword $(sort $(wildcard /usr/lib/llvm-*/bin))) /usr/bin)
 CC        := $(LLVM)/clang
-LD        := ld.lld
+LD        := $(firstword $(wildcard $(LLVM)/ld.lld) ld.lld)
 OBJCOPY   := $(LLVM)/llvm-objcopy
 QEMU      := qemu-system-aarch64
 
@@ -39,7 +39,7 @@ ARCH_O := build/boot.o build/kmain.o build/sd.o build/sha256.o build/runtime.o b
 .PHONY: all run test mutants proofs clean pi-image
 ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files launcher open)
 
-all: $(ASSET_BLOBS) build/kernel8.img build/sd-template.img proofs
+all: $(ASSET_BLOBS) build/kernel8.img build/sd-template.img build/sd-desktop.img proofs
 
 # The asset blobs are real outputs, not intermediates: a missing one must be rebuilt.
 .PRECIOUS: build/assets/%.bin
@@ -187,6 +187,12 @@ DISK_ICONS := $(patsubst %,build/icons/%.icon,$(DISK_PROGS))
 build/icons/%.icon: tools/mkicon.py tools/mkassets.py
 	@mkdir -p build/icons
 	python3 tools/mkicon.py $@ assets/icons/$(ICON_SRC_$*).png 56
+# The card people use: the same, and startup.txt (Apps and the tour open at boot). The tests
+# boot the plain card, so they see the system as it starts with nothing asked of it.
+build/sd-desktop.img: tools/mksd.py $(DISK_ELFS) $(DISK_ICONS) $(patsubst %,docs/card/%,$(DISK_DOCS)) docs/card/startup.txt
+	python3 tools/mksd.py $@ $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) \
+	  $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) \
+	  startup.txt=docs/card/startup.txt
 build/sd-template.img: tools/mksd.py $(DISK_ELFS) $(DISK_ICONS) $(patsubst %,docs/card/%,$(DISK_DOCS))
 	python3 tools/mksd.py $@ $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) \
 	  $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d))
@@ -196,7 +202,7 @@ build/sd-template.img: tools/mksd.py $(DISK_ELFS) $(DISK_ICONS) $(patsubst %,doc
 pi-image: build/pi/kernel8.img $(DISK_ELFS) $(DISK_ICONS) tools/mkpiimage.py tools/mksd.py
 	python3 tools/mkpiimage.py build/leanos-pi4.img --kernel build/pi/kernel8.img \
 	  $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) \
-	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d))
+	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup.txt
 
 # The kernel for a real Pi: the same, except that switching off halts instead of ending the
 # emulator through semihosting (a Pi has no debugger to take that call).
@@ -222,11 +228,11 @@ build/kernel8.img: build/leanos.elf
 
 # The SD card: an 8 MiB image, made once and kept, so files survive a reboot.
 SD_IMAGE := build/sd.img
-$(SD_IMAGE): build/sd-template.img
-	cp build/sd-template.img $@
+$(SD_IMAGE): build/sd-desktop.img
+	cp build/sd-desktop.img $@
 
 QEMU_ARGS := -M raspi4b -display none -serial stdio -semihosting -kernel build/kernel8.img \
-  -drive if=sd,format=raw,file=$(SD_IMAGE)
+  -drive if=sd,format=raw,file=$(SD_IMAGE) -device usb-net,netdev=n0 -netdev user,id=n0
 
 run: build/kernel8.img $(SD_IMAGE)
 	$(QEMU) $(QEMU_ARGS)
