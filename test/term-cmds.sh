@@ -7,7 +7,9 @@
 # command line (Ctrl+V), which Terminal logs, after an echo (so it runs as nothing more).
 #
 #   cp: a file of 30000 bytes and one of 40 KiB, in pieces, whole (wc, grep, tail, verify);
-#       onto itself; into a folder; a folder, a missing file and one name refused.
+#       onto itself; into a folder; a folder, a missing file and one name refused. A TO.tmp
+#       that is there already (an empty folder, a file) is refused and left as it was; the
+#       TO.tmp a cp made is gone after it, whether the copy was put in place or not.
 #   head, tail: the first and last lines, -n N, a file without a last '\n', a long line
 #       shown in its first 200 bytes (4 rows), a missing file, a bad -n.
 #   wc: lines, words and bytes; a folder refused. grep: a word, -i, several files (with
@@ -75,6 +77,11 @@ steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *cmd("cp lines.txt lines.txt"), *cmd("wc lines.txt"),
          *cmd("mkdir t"), *cmd("cp lines.txt t"), *cmd("wc t/lines.txt"),
          *cmd("cp t x"), *cmd("cp nope.txt x"), *cmd("cp lines.txt"), *cmd("wc t"),
+         # TO.tmp that is there already is left alone; one cp made and could not rename goes
+         *cmd("wc n2.txt.tmp"), *cmd("mkdir x.tmp"), *cmd("write y.tmp keep me"),
+         *cmd("cp lines.txt x"), *cmd("cp lines.txt y"), *cmd("ls x.tmp"), *cmd("wc y.tmp"),
+         *cmd("wc x"), *cmd("wc y"),
+         *cmd("mkdir z"), *cmd("mkdir z/lines.txt"), *cmd("cp lines.txt z"), *cmd("ls z"),
          # find
          *cmd("mkdir t/sub"), *cmd("write t/sub/deep.txt x"), *cmd("write t/b.txt y"),
          *cmd("find t"), *shown(), *cmd("find t deep"), *shown(), *cmd("find deep"), *shown(),
@@ -153,6 +160,15 @@ has "terminal: cp t x -> cp copies files, not folders"
 has "terminal: cp nope.txt x -> no such file"
 has "terminal: cp lines.txt -> cp FROM TO"
 has "terminal: wc t -> a folder, not a file"
+has "terminal: wc n2.txt.tmp -> no such file"                        # a copy leaves no TO.tmp
+has "terminal: cp lines.txt x -> TO.tmp is there already: rename it first"
+has "terminal: cp lines.txt y -> TO.tmp is there already: rename it first"
+has "terminal: ls x.tmp -> 0 files"                                  # the empty folder x.tmp stays
+has "terminal: wc y.tmp -> 0 lines, 2 words, 7 bytes"                # and the file y.tmp, as it was
+has "terminal: wc x -> no such file"
+has "terminal: wc y -> no such file"
+has "terminal: cp lines.txt z -> already there"                      # z/lines.txt is a folder
+has "terminal: ls z -> 1 file"                                       # and z/lines.txt.tmp is gone
 
 # find
 has "terminal: find t -> 4 found"

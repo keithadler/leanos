@@ -12,7 +12,8 @@
 #   |: cat big.txt | grep x | wc; history | tail -n 2; find | grep .txt | head -n 3 (grep
 #       completed by Tab after the |); head | cat; Up brings a line with | back and it runs.
 #   A line of 1024 bytes: 200 on the screen, all of it through > and |.
-#   An overwrite that cannot be made (FILE.tmp is a folder), a command that fails (cat of a
+#   A FILE.tmp that is there already (a folder, a file) is refused and left as it was; a
+#       write that cannot be made (a missing folder), a command that fails (cat of a
 #       missing file), and more than 64 KiB of output all leave the old file as it was.
 #   Refused, with nothing run and nothing written: > with no file, | at the start or the
 #       end, > before a |, a file that is a folder, a command that is not one, and run,
@@ -81,7 +82,9 @@ steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *cmd("cat long.txt | grep zzz | wc", "terminal: wc -> "),
          # the old file stays when the new one cannot be made, the command fails, or it is too much
          *cmd("echo old > keep.txt", "terminal: > keep.txt"), *cmd("mkdir keep.txt.tmp"),
-         *cmd("echo new > keep.txt", "terminal: > keep.txt"),
+         *cmd("echo new > keep.txt", "terminal: echo new > keep.txt -> "), *cmd("rm keep.txt.tmp"),
+         *cmd("write k.txt.tmp mine"), *cmd("echo new > k.txt", "terminal: echo new > k.txt -> "),
+         *cmd("wc k.txt.tmp"), *cmd("wc k.txt"),
          *cmd("cat nope.txt > keep.txt", "terminal: > keep.txt"), *shown(),
          *cmd("fill huge.txt 70 a"), *cmd("cat huge.txt > keep.txt", "terminal: > keep.txt"),
          *cmd("cat huge.txt | wc", "terminal: | -> "),
@@ -90,7 +93,7 @@ steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          # refused
          *cmd("echo x >", "terminal: echo x > -> "), *cmd("| wc", "terminal: | wc -> "),
          *cmd("ls |", "terminal: ls | -> "), *cmd("ls > x | wc", "terminal: ls > x | wc -> "),
-         *cmd("ls > keep.txt.tmp", "terminal: ls > keep.txt.tmp -> "),
+         *cmd("mkdir sub"), *cmd("ls > sub", "terminal: ls > sub -> "),
          *cmd("ls | nosuch", "terminal: ls | nosuch -> "),
          *cmd("run hello > x", "terminal: run hello > x -> "), *cmd("tour | wc", "terminal: tour | wc -> "),
          *cmd("cd .. > x", "terminal: cd .. > x -> "), *cmd("kill 10 | wc", "terminal: kill 10 | wc -> "),
@@ -171,7 +174,11 @@ has "terminal: wc -> 1 line, 1 word, 1025 bytes"
 
 # the old file stays
 has "terminal: > keep.txt -> 4 bytes"
-has "terminal: > keep.txt -> not written: a folder"                   # keep.txt.tmp is one
+has "terminal: echo new > keep.txt -> FILE.tmp is there already: rename it first"   # a folder
+has "terminal: rm keep.txt.tmp -> ok"                                 # still there, empty
+has "terminal: echo new > k.txt -> FILE.tmp is there already: rename it first"      # a file
+has "terminal: wc k.txt.tmp -> 0 lines, 1 word, 4 bytes"             # left as it was
+has "terminal: wc k.txt -> no such file"
 has "terminal: cat nope.txt -> no such file"
 has "terminal: > keep.txt -> stopped, the command failed"
 pasted "no such file nothing written"
@@ -187,7 +194,7 @@ has "terminal: echo x > -> > needs one file name"
 has "terminal: | wc -> | needs a command on both sides"
 has "terminal: ls | -> | needs a command on both sides"
 has "terminal: ls > x | wc -> > FILE goes at the end, once"
-has "terminal: ls > keep.txt.tmp -> a folder, not a file"
+has "terminal: ls > sub -> a folder, not a file"
 has "terminal: ls | nosuch -> not a command: nosuch"
 has "terminal: run hello > x -> run cannot be piped or redirected"
 has "terminal: tour | wc -> tour cannot be piped or redirected"
@@ -198,5 +205,5 @@ has "terminal: cat x -> no such file"
 [ "$(echo "$out" | grep -c "^terminal: ls -> ")" = 2 ] || fail "an ls that was refused ran"
 echo "$out" | grep -qE "^terminal: (run hello|run tour|kill 10|cd \.\.) -> " && fail "a refused command ran"
 # every file the card has now: no FILE.tmp left behind, no x, no huge output written
-has "terminal: ls -a -> 12 files"
+has "terminal: ls -a -> 13 files"
 echo "ok: > and >> write and add, | hands output on ($x_lines of 4000 lines through cat | grep | wc), ls, df and cat big.txt through > are what they show, the old file stays when the new one cannot be written, refused lines run nothing"

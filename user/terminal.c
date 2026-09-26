@@ -410,7 +410,9 @@ COLD static void into_folder(struct term *t, const char *from, char *to) {
     if (n + 1 + (int)slen(last) <= FS_PATH_MAX) { to[n] = '/'; scopy(to + n + 1, last); }
 }
 
-/* PATH.tmp, where fill and cp make a file before one rename puts it in place. */
+/* PATH.tmp, where fill, cp and > make a file before one rename puts it in place. cp and >
+   refuse when it is there already (it may be someone's), so the one they remove after a
+   failure is always one they made. */
 COLD static void tmp_of(const char *path, char *tmp) { scopy(tmp + scopy(tmp, path), ".tmp"); }
 
 COLD static void cmd_mv(struct term *t, struct line *l, const char *args) {
@@ -596,7 +598,8 @@ COLD static void put_line(struct term *t, struct line *l, const char *s, long k)
 }
 
 /* cp FROM TO: a copy, made as fill makes a file: in pieces into TO.tmp, then put in place
-   by one rename, so TO is its old self or the whole copy. TO may be a folder, as for mv. */
+   by one rename, so TO is its old self or the whole copy. TO may be a folder, as for mv.
+   A TO.tmp that is there already is left alone: cp refuses. */
 COLD static void cmd_cp(struct term *t, struct line *l, const char *args) {
     char a[FS_PATH_MAX + 1], b[FS_PATH_MAX + 1], pa[FS_PATH_MAX + 1], pb[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 5];
     word_of(word_of(args, a, FS_PATH_MAX), b, FS_PATH_MAX);
@@ -606,9 +609,11 @@ COLD static void cmd_cp(struct term *t, struct line *l, const char *args) {
     tmp_of(pb, tmp);
     u64 size = 0, off = 0, kind = fs_stat(&t->fs, pa, &size), st = FS_OK;
     const char *why = !a[0] || !b[0] ? "cp FROM TO" : kind == FS_DIR ? "cp copies files, not folders"
-                    : !kind ? "no such file" : same(tmp, pa) ? "FROM is where the copy is made: rename it first" : 0;
+                    : !kind ? "no such file" : same(tmp, pa) ? "FROM is where the copy is made: rename it first"
+                    : fs_stat(&t->fs, tmp, 0) ? "TO.tmp is there already: rename it first" : 0;
     if (!why) {
         st = fs_write(&t->fs, tmp, "", 0);
+        int made = st == FS_OK;
         while (st == FS_OK && off < size) {
             long n = fs_read_at(&t->fs, pa, off, &size);
             if (n <= 0) { st = n < 0 ? FS_NOT_FOUND : FS_OK; break; }
@@ -617,7 +622,7 @@ COLD static void cmd_cp(struct term *t, struct line *l, const char *args) {
             off += (u64)n;
         }
         if (st == FS_OK) st = fs_rename(&t->fs, tmp, pb);
-        if (st != FS_OK) fs_delete(&t->fs, tmp);
+        if (st != FS_OK && made) fs_delete(&t->fs, tmp);
         why = st == FS_OK ? 0 : fs_error(st);
     }
     if (why) say(t, why);
@@ -1351,7 +1356,9 @@ COLD static void run(struct term *t, struct line *l) {
     const char *op = to == 2 ? ">>" : to ? ">" : "|";
     if (!why && to) {
         resolve(t, file, path);
+        tmp_of(path, tmp);
         if (fs_stat(&t->fs, path, 0) == FS_DIR) why = "a folder, not a file";
+        else if (to == 1 && fs_stat(&t->fs, tmp, 0)) why = "FILE.tmp is there already: rename it first";
     }
     if (why) {
         say(t, why);
@@ -1386,7 +1393,6 @@ COLD static void run(struct term *t, struct line *l) {
     const char *dest = path;
     if (to == 2) fs_stat(&t->fs, path, &at);
     else {
-        tmp_of(path, tmp);
         dest = tmp;
         st = fs_write(&t->fs, tmp, "", 0);
     }
