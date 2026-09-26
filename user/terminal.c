@@ -21,6 +21,13 @@
 #include "date.h"
 #include "zone.h"
 
+/* Its code must fit the 16-page code run (user/user.ld), and at -O2 the compiler inlines
+   every command into the main loop. So what runs once per command or less (the commands,
+   help, Tab completion, copy and paste, the log lines) is compiled for size: COLD, as in the
+   display server. Drawing the text and the keys' editing of the command line are not.
+   `make` prints each program's size and what is left of its run. */
+#define COLD __attribute__((cold, minsize))
+
 /* Terminal's launch capabilities for the open slots, which run programs from the SD card. */
 #define LAUNCH_OPEN 6
 #define OPEN_FIRST 10
@@ -153,13 +160,13 @@ static int starts(const char *s, const char *w) {
     return *s == 0 || *s == ' ';
 }
 
-static void pad_to(struct line *l, u64 col) { while (l->n < col) l->b[l->n++] = ' '; }
+COLD static void pad_to(struct line *l, u64 col) { while (l->n < col) l->b[l->n++] = ' '; }
 
-static void hex8(struct line *l, u64 v) {
+COLD static void hex8(struct line *l, u64 v) {
     for (int i = 28; i >= 0; i -= 4) l->b[l->n++] = "0123456789abcdef"[(v >> i) & 15];
 }
 
-static void cmd_caps(struct term *t, struct line *l) {
+COLD static void cmd_caps(struct term *t, struct line *l) {
     int count = 0;
     for (u64 i = 0; i < 32; i++) {
         struct res r = sys1(SYS_CAPINFO, i);
@@ -191,7 +198,7 @@ static void cmd_caps(struct term *t, struct line *l) {
     flush(l);
 }
 
-static void cmd_boot(struct term *t, struct line *l) {
+COLD static void cmd_boot(struct term *t, struct line *l) {
     int verified = 0;
     for (u64 k = 0; k < NSLOTS; k++) {
         struct res r = sys1(SYS_BOOTINFO, k);
@@ -211,7 +218,7 @@ static void cmd_boot(struct term *t, struct line *l) {
     flush(l);
 }
 
-static const char *fs_error(u64 code) {
+COLD static const char *fs_error(u64 code) {
     return code == FS_NOT_FOUND ? "no such file" : code == FS_FULL ? "no room"
          : code == FS_NO_SERVER ? "the file server did not answer" : code == FS_EXISTS ? "already there"
          : code == FS_NOT_EMPTY ? "the folder is not empty" : code == FS_NOT_DIR ? "not a folder"
@@ -220,7 +227,7 @@ static const char *fs_error(u64 code) {
 
 /* A path as the file server takes it: `arg` from the top folder if it starts with '/',
    else from the current folder. */
-static void resolve(struct term *t, const char *arg, char *out) {
+COLD static void resolve(struct term *t, const char *arg, char *out) {
     int n = 0;
     if (arg[0] != '/')
         for (int i = 0; t->cwd[i] && n < FS_PATH_MAX; i++) out[n++] = t->cwd[i];
@@ -231,7 +238,7 @@ static void resolve(struct term *t, const char *arg, char *out) {
 }
 
 /* The first word of `c` into `word`; returns the rest. */
-static const char *word_of(const char *c, char *word, int max) {
+COLD static const char *word_of(const char *c, char *word, int max) {
     while (*c == ' ') c++;
     int n = 0;
     while (*c && *c != ' ' && n < max) word[n++] = *c++;
@@ -240,7 +247,7 @@ static const char *word_of(const char *c, char *word, int max) {
     return c;
 }
 
-static void fs_log(struct line *l, const char *cmd, const char *name, const char *result) {
+COLD static void fs_log(struct line *l, const char *cmd, const char *name, const char *result) {
     put_s(l, "terminal: ");
     put_s(l, cmd);
     if (name) { put_s(l, " "); put_s(l, name); }
@@ -251,7 +258,7 @@ static void fs_log(struct line *l, const char *cmd, const char *name, const char
 }
 
 /* ls [-a] [FOLDER]: without -a, programs' icons (NAME.icon, fs.h) are left out. */
-static void cmd_ls(struct term *t, struct line *l, const char *args) {
+COLD static void cmd_ls(struct term *t, struct line *l, const char *args) {
     char arg[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
     const char *rest = word_of(args, arg, FS_PATH_MAX);
     int all = same(arg, "-a");
@@ -290,7 +297,7 @@ static void cmd_ls(struct term *t, struct line *l, const char *args) {
     flush(l);
 }
 
-static void cmd_cat(struct term *t, struct line *l, const char *args) {
+COLD static void cmd_cat(struct term *t, struct line *l, const char *args) {
     char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
     word_of(args, name, FS_PATH_MAX);
     resolve(t, name, path);
@@ -317,7 +324,7 @@ static void cmd_cat(struct term *t, struct line *l, const char *args) {
     flush(l);
 }
 
-static void cmd_write(struct term *t, struct line *l, const char *args) {
+COLD static void cmd_write(struct term *t, struct line *l, const char *args) {
     char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
     const char *text = word_of(args, name, FS_PATH_MAX);
     resolve(t, name, path);
@@ -326,7 +333,7 @@ static void cmd_write(struct term *t, struct line *l, const char *args) {
     fs_log(l, "write", name, st == FS_OK ? "ok" : fs_error(st));
 }
 
-static void cmd_rm(struct term *t, struct line *l, const char *args) {
+COLD static void cmd_rm(struct term *t, struct line *l, const char *args) {
     char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
     word_of(args, name, FS_PATH_MAX);
     resolve(t, name, path);
@@ -335,7 +342,7 @@ static void cmd_rm(struct term *t, struct line *l, const char *args) {
     fs_log(l, "rm", name, st == FS_OK ? "ok" : fs_error(st));
 }
 
-static void cmd_mkdir(struct term *t, struct line *l, const char *args) {
+COLD static void cmd_mkdir(struct term *t, struct line *l, const char *args) {
     char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
     word_of(args, name, FS_PATH_MAX);
     resolve(t, name, path);
@@ -344,7 +351,7 @@ static void cmd_mkdir(struct term *t, struct line *l, const char *args) {
     fs_log(l, "mkdir", name, st == FS_OK ? "ok" : fs_error(st));
 }
 
-static void cmd_mv(struct term *t, struct line *l, const char *args) {
+COLD static void cmd_mv(struct term *t, struct line *l, const char *args) {
     char a[FS_PATH_MAX + 1], b[FS_PATH_MAX + 1], pa[FS_PATH_MAX + 1], pb[FS_PATH_MAX + 1];
     word_of(word_of(args, a, FS_PATH_MAX), b, FS_PATH_MAX);
     resolve(t, a, pa);
@@ -361,7 +368,7 @@ static void cmd_mv(struct term *t, struct line *l, const char *args) {
     fs_log(l, "mv", a, st == FS_OK ? "ok" : fs_error(st));
 }
 
-static void cmd_cd(struct term *t, struct line *l, const char *args) {
+COLD static void cmd_cd(struct term *t, struct line *l, const char *args) {
     char arg[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
     word_of(args, arg, FS_PATH_MAX);
     if (!arg[0] || (arg[0] == '/' && !arg[1])) {
@@ -390,7 +397,7 @@ static void cmd_cd(struct term *t, struct line *l, const char *args) {
 /* fill NAME KB CHAR: a file of KB kilobytes of CHAR, written in pieces to NAME.tmp and then
    put in place by one rename, which the file server does in one step: whatever happens,
    NAME is the old file or the new one, never half of each. */
-static void cmd_fill(struct term *t, struct line *l, const char *args) {
+COLD static void cmd_fill(struct term *t, struct line *l, const char *args) {
     char name[FS_PATH_MAX + 1], num[12], ch[4], path[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 1];
     word_of(word_of(word_of(args, name, FS_PATH_MAX - 4), num, 10), ch, 2);
     u64 kb = 0;
@@ -412,7 +419,7 @@ static void cmd_fill(struct term *t, struct line *l, const char *args) {
 }
 
 /* verify NAME: whether every byte of NAME is the same (what fill makes). */
-static void cmd_verify(struct term *t, struct line *l, const char *args) {
+COLD static void cmd_verify(struct term *t, struct line *l, const char *args) {
     char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
     word_of(args, name, FS_PATH_MAX);
     resolve(t, name, path);
@@ -515,7 +522,7 @@ static void cmd_ping(struct term *t, struct line *l, const char *args) {
 
 /* The time in the time zone chosen in Settings, and in UTC beside it if that is not UTC:
    "2026-09-26 08:52:24 UTC+2 (06:52:24 UTC)". */
-__attribute__((noinline)) static void put_date_in(struct line *l, u64 secs, long zone) {
+COLD static void put_date_in(struct line *l, u64 secs, long zone) {
     put_date(l, local_of(secs, zone));
     if (!zone) return;
     l->n -= 3;                           /* "UTC": the zone's name instead */
@@ -532,7 +539,7 @@ __attribute__((noinline)) static void put_date_in(struct line *l, u64 secs, long
 
 /* date: the time of day the kernel keeps (set from the network, in UTC), in the time zone
    the display keeps (asked as Clock asks it, app_zone). */
-static void cmd_date(struct term *t, struct line *l) {
+COLD static void cmd_date(struct term *t, struct line *l) {
     u64 secs = sys0(SYS_TIME).x[6];
     if (!secs) {
         say(t, "the time is not known: no time server has answered (try ntp)");
@@ -622,7 +629,7 @@ static void cmd_get(struct term *t, struct line *l, const char *args) {
    Terminal holds those slots' launch capabilities; the kernel lets nothing else stop them
    (`only_launchers_stop`). What the file server gave the slot is taken back too, whether a
    program was still running there or had ended by itself. */
-static void cmd_kill(struct term *t, struct line *l, const char *args) {
+COLD static void cmd_kill(struct term *t, struct line *l, const char *args) {
     char num[8];
     word_of(args, num, 6);
     u64 k = 0;
@@ -640,7 +647,7 @@ static void cmd_kill(struct term *t, struct line *l, const char *args) {
 }
 
 /* Every program slot and what the kernel says about it. */
-static void cmd_ps(struct term *t, struct line *l) {
+COLD static void cmd_ps(struct term *t, struct line *l) {
     int running = 0;
     for (u64 k = 0; k < NSLOTS; k++) {
         struct res r = sys1(SYS_BOOTINFO, k);
@@ -665,7 +672,7 @@ static void cmd_ps(struct term *t, struct line *l) {
    `slot`: its own folder, apps/NAME, read-write (made if new), and the files named after
    it on the command line (FS_GRANTS_PER_SLOT - 1 at most: cmd_run checks), read-write;
    nothing else. Whatever the slot's last program was given is taken back first. */
-static void give(struct term *t, struct line *l, u64 slot, const char *name, const char *files) {
+COLD static void give(struct term *t, struct line *l, u64 slot, const char *name, const char *files) {
     fs_unshare(&t->fs, slot);
     char folder[FS_PATH_MAX + 1] = "apps/";
     const char *last = name;
@@ -689,7 +696,7 @@ static void give(struct term *t, struct line *l, u64 slot, const char *name, con
     }
 }
 
-static void cmd_run(struct term *t, struct line *l, const char *args) {
+COLD static void cmd_run(struct term *t, struct line *l, const char *args) {
     char name[FS_NAME_MAX + 1];
     /* -net: let it use the network (the USB driver answers only the program allowed) */
     while (*args == ' ') args++;
@@ -766,7 +773,7 @@ static void cmd_run(struct term *t, struct line *l, const char *args) {
     fs_log(l, "run", name, "no free slot");
 }
 
-static void run(struct term *t, struct line *l) {
+COLD static void run(struct term *t, struct line *l) {
     const char *c = t->cmd;
     while (*c == ' ') c++;
     if (!*c) return;
@@ -872,7 +879,7 @@ struct comp {
     struct line row, *log;
 };
 
-__attribute__((minsize)) static void consider(struct term *t, struct comp *c, const char *name, int dir) {
+COLD static void consider(struct term *t, struct comp *c, const char *name, int dir) {
     for (int i = 0; i < c->pn; i++) if (name[i] != c->pre[i]) return;
     char full[FS_NAME_MAX + 2];
     int n = scopy(full, name);
@@ -890,7 +897,7 @@ __attribute__((minsize)) static void consider(struct term *t, struct comp *c, co
 }
 
 /* Every command name, or every name in the folder `dir`, through consider(). */
-__attribute__((minsize)) static void scan(struct term *t, struct comp *c, int command, const char *dir) {
+COLD static void scan(struct term *t, struct comp *c, int command, const char *dir) {
     if (command) {
         char w[8];
         for (const char *p = COMMANDS; *p;) { p = word_of(p, w, 7); consider(t, c, w, 0); }
@@ -911,7 +918,7 @@ __attribute__((minsize)) static void scan(struct term *t, struct comp *c, int co
    line, else a name in the folder it names (the current one if none). `again`: the key
    before was Tab too, so if nothing more can be completed, list what matches. Tab is
    rare and Terminal's code run is nearly full (64 KiB), so these are built for size. */
-__attribute__((noinline, minsize)) static void complete(struct term *t, struct line *l, int again) {
+COLD static void complete(struct term *t, struct line *l, int again) {
     t->cmd[t->len] = 0;
     int start = t->cur, command = 1;
     while (start > 0 && t->cmd[start - 1] != ' ') start--;
@@ -958,7 +965,7 @@ __attribute__((noinline, minsize)) static void complete(struct term *t, struct l
 }
 
 /* Ctrl+C: the command line, if something is typed on it, else what the last command printed. */
-static void copy_out(struct term *t, struct line *l) {
+COLD static void copy_out(struct term *t, struct line *l) {
     char buf[ROWS * (COLS + 1)];
     u64 n = 0;
     const char *what = "the command line";
@@ -985,7 +992,7 @@ static void copy_out(struct term *t, struct line *l) {
 }
 
 /* Ctrl+V: a piece of the paste onto the command line; when it ends, say what arrived. */
-static int paste_in(struct term *t, struct line *l, struct event e) {
+COLD static int paste_in(struct term *t, struct line *l, struct event e) {
     char piece[16];
     int k = paste_text(e, piece);
     if (t->paste_from < 0) { t->paste_from = t->cur; t->dropped = 0; }
