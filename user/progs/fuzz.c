@@ -9,7 +9,7 @@
      - after all of it, the slot is still itself: same badge, same data, same code.
 
    It keeps the calls that would only hurt itself out of the mix (unmapping the pages it
-   uses, dropping its own capabilities), because a program that shoots itself proves nothing about
+   uses, dropping its own capabilities, closing its window), because a program that shoots itself proves nothing about
    the kernel. Everything else is fair game, including junk messages to the display server,
    which must keep working. The seed is printed, so a failure can be run again. */
 #include "../ui.h"
@@ -129,6 +129,7 @@ static void one(struct fuzz *f) {
     } else if (pick == 5) {                            /* junk to the display server */
         u64 op = next(f) % 3 ? 7 + next(f) % 300 : next(f) % 8;
         if (next(f) % 2) sys(SYS_SEND, ENDPOINT, op, arg(f), arg(f), 0);
+        else if (op == OP_CLOSE) sys(SYS_CALL, ENDPOINT, op, arg(f) | (1UL << 40), arg(f), 0);  /* not its window */
         else if (op != OP_WAIT) sys(SYS_CALL, ENDPOINT, op, arg(f), arg(f), 0);
         f->ok[4]++;
     } else {                                           /* the rest, anything goes */

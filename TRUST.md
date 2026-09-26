@@ -260,10 +260,11 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   QEMU the host's serial bridge is too). The display sees every copy and paste, as it
   already sees every key and every window's pixels. The clipboard lives only in its memory
   and is gone when leanos restarts.
-- The display server's reply slots. It holds a waiting window's call (OP_WAIT) until it has
-  an event for it, and the kernel gives it 8 reply slots (`task_bounded`) for up to 12
-  windows. It holds at most 7, so a new call always finds one free; past that, the window
-  that has waited longest is answered with no event and its program asks again a moment
+- The display server's reply slots. It holds a waiting program's call (OP_WAIT) until it has
+  an event for any of its windows, one call per program however many windows it has, and
+  the kernel gives it 8 reply slots (`task_bounded`) for up to 12 windows. It holds at most
+  7, so a new call always finds one free; past that, the program that has waited longest is
+  answered with no event and asks again a moment
   later (`app_wait` in `user/app.h`, every 100 ms), and is answered at once, with its
   events or none, while the slots stay taken. That rule is the display server's C
   (`on_wait` and `park_oldest` in `user/display.c`), trusted, not proved. Before it, with 8
@@ -306,7 +307,10 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   stack as pixels, an endpoint as the grant, a window taller than the room, one a pixel wide;
   icons with bad markers, sizes and page counts, and not from the loader's four pages; SET,
   START, RAISE and PENDING a card program may not make; ZONE; unknown ops; grants by plain
-  send), without a window and with one; windows and icons near every limit checked against
+  send; CLOSE of window numbers it does not hold, another program's among them, and past the
+  table; a window closed twice, and a wait after closing its only window), without a window
+  and with one, and with several (every window's number the lowest it does not hold, every
+  event for a window of its own); windows and icons near every limit checked against
   the rule; floods; thousands of random requests, calls and plain sends; windows until the
   table is full. Then one is killed while the display holds its call, one killed in the
   middle, one exits and one faults just after grants sent by plain send, and the kernel heap
@@ -337,8 +341,24 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
     frame (a window 12 pixels wide or less has no close button to click; `kill` stops it).
   It found a sixth, now fixed as the next entry says (`test/spoof.sh`): the name a window
   took from its icon was whatever name any four pages with the icon's marker held, so a
-  program could take another's. Found and not fixed: a program with several windows hears
-  only its first window's events (WAIT and POLL name no window).
+  program could take another's. It found a limit too, now lifted as the entry after next
+  says: a program with several windows heard only its first window's events.
+- A program's several windows (`test/windows.sh`). A program may open up to the table's 12
+  windows. OPEN answers each with a number, 0 for its first, then the lowest the program is
+  not using; WAIT and POLL answer with the oldest event for any of its windows, the number
+  in the kind word from bit 8 up, so a program with one window sees exactly what it saw
+  before. CLOSE (12) takes one of the caller's own windows off the screen and out of the
+  table at once, and drops what it lent for it; a window whose close button was clicked
+  leaves the table when its program hears that EV_CLOSE. The display finds the window by the
+  caller's badge, which the kernel sets (`endpoints_fixed`), and the number together, so a
+  program can close, and hear the events of, only its own windows; a number it does not
+  hold is refused (the whole word counts: 2^32 is not 0). A click on a
+  running program in the dock, RAISE (Terminal's `run`), or a pinned program's icon brings
+  all its windows forward, the one of them in front last in front; the dock shows one icon
+  per program. Keys, copy and paste go to the window in front, and the program learns which
+  from the event. Trusted C (`on_wait`, `next_event`, `on_close` in `user/display.c`), not
+  proved; the grants a window takes, the icon and name rules and the 7 held calls are as
+  for one window.
 - A window's name. The display names the window of a program from the card after the file
   it was run from, and RAISE, `run` and the dock's pinned programs look for that name: while
   a window is named clock, clicking Clock in the dock or typing `run clock` brings that

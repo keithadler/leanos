@@ -433,6 +433,15 @@ only ever the program's own code run, and the loaders run no image that carries 
 marker of its own (`test/spoof.sh`). TRUST.md says what the display is trusted to do and
 what the fuzzer checks.
 
+Done too: a program with several windows. The fuzzer's author found that WAIT and POLL
+name no window, so a program heard only its first window's events, and a second window's
+close button went nowhere. Now OPEN answers with the window's number, every event carries
+it (a program with one window sees no difference), one waiting call hears all of a
+program's windows, and CLOSE closes one of the caller's own windows at once. The dock and
+RAISE bring all of a program's windows forward. `test/windows.sh` runs a program with three
+windows through clicks, keys, copy and paste, both ways of closing one, and closing the
+last; dfuzz asks CLOSE for numbers it does not hold and checks every number it is given.
+
 Next: the first boot on real Pi 4 hardware (EMMC2, colors, timings), the USB-A ports
 (xHCI on PCIe), the Pi 4's own Ethernet (GENET), a kernel lock finer than the whole kernel
 (disk and USB transfers hold it today), and the Pi 5.

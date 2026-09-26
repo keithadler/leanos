@@ -25,9 +25,15 @@
         code run without the execute right, and from code pages the loader did not write;
         then its own icon, as app_open lends it, which must be taken. SET with every `what`, in and out of range (a card program may
         set nothing); START, RAISE and PENDING (a card program is not Apps); ZONE (anyone
-        may ask: a quarter hour in range); COPY unasked; unknown ops; every op as a plain
-        send with a grant, then a call that must still be answered. Once without a window,
-        then again holding one.
+        may ask: a quarter hour in range); COPY unasked; CLOSE of every window number it
+        does not hold (the other fuzzer holds some of them) and of numbers past the table,
+        with bits past 32; unknown ops; every op as a plain send with a grant, then a call
+        that must still be answered. Once without a window, then again holding one.
+        Before them, a window opened and closed, closed again, then WAIT and POLL (no
+        window: EV_NONE at once). After them, more windows: a CLOSE by plain send (not
+        taken), closing one, closing it twice, a POLL (never an event for it), the number
+        taken again, the rest closed. Every window it is given must have the lowest number
+        it does not hold, and every event one of its own windows' numbers.
      2. Requests near the display's limits: windows of sizes at and around its bounds from
         grants of 1 to 200 pages anywhere in the spare run, read-only or read-write, and
         icons with good and bad markers, sizes, names and page counts from the spare run,
@@ -64,6 +70,7 @@ struct df {
     char name[16];
     u64 me, seed, rng, requests, wrong, shown, taken, t0;
     int have_win;           /* it has opened at least one real window */
+    u64 ids;                /* the numbers of the windows it holds, a bit each */
 };
 
 /* ---- small things ---- */
@@ -94,8 +101,8 @@ static void say(struct df *f, const char *what, u64 n, const char *rest) {
 
 static const char *op_name(u64 op) {
     static const char *const names[] = {"op 0", "OPEN", "WAIT", "SET", "POLL", "ICON", "START",
-                                        "RAISE", "PENDING", "ZONE", "COPY"};
-    return op >= 1 && op <= 10 ? names[op] : "op 11+";
+                                        "RAISE", "PENDING", "ZONE", "COPY", "op 11", "CLOSE"};
+    return op >= 1 && op <= 12 ? names[op] : "op 13+";
 }
 
 /* A wrong answer: counted, and the first few described. */
@@ -132,9 +139,18 @@ static int answered(struct df *f, const char *what, u64 op, struct res r) {
     return 1;
 }
 
-/* A call to the display, and its reply. */
+/* A call to the display, and its reply. The windows it holds are kept track of: a window
+   the display gives it must have the lowest number it does not hold (user/app.h). */
 static struct res dcall(struct df *f, u64 op, u64 w1, u64 w2, u64 grant) {
-    return sys(SYS_CALL, ENDPOINT, op, w1, w2, grant);
+    struct res r = sys(SYS_CALL, ENDPOINT, op, w1, w2, grant);
+    if (r.status == OK && op == OP_OPEN && r.x[1] == 0) {
+        u64 low = 0;
+        while (low < 12 && (f->ids >> low & 1)) low++;
+        if (r.x[2] != low) wrong(f, "a window's number is not the lowest it does not hold", op, r);
+        if (r.x[2] < 12) f->ids |= 1UL << r.x[2];
+    }
+    if (r.status == OK && op == OP_CLOSE && r.x[1] == 0 && w1 < 12) f->ids &= ~(1UL << w1);
+    return r;
 }
 
 /* A capability to `count` pages of run `cap` from `off`, with `rights` (as far as the run
@@ -165,13 +181,28 @@ static void paint(u64 off, int w, int h, unsigned color) {
     for (int i = 0; i < w * h; i++) px[i] = color;
 }
 
-/* Open a WIN_W x WIN_H window from the spare run at `off`. OK if the display took it. */
-static u64 open_win(struct df *f, u64 off, unsigned color) {
+/* Open a WIN_W x WIN_H window from the spare run at `off`: its number, or -1 if the
+   display did not take it. */
+static long open_id(struct df *f, u64 off, unsigned color) {
     paint(off, WIN_W, WIN_H, color);
     struct res r = grant_call(f, OP_OPEN, (u64)WIN_W << 16 | WIN_H, 0x7a75666420UL /* " dfuz" */,
                               off, WIN_PAGES, R);
-    if (!answered(f, "open a window", OP_OPEN, r)) return BAD_ARG;
-    return r.x[1] == 0 ? OK : BAD_ARG;
+    if (!answered(f, "open a window", OP_OPEN, r)) return -1;
+    return r.x[1] == 0 ? (long)r.x[2] : -1;
+}
+
+/* The same: OK if the display took it. */
+static u64 open_win(struct df *f, u64 off, unsigned color) { return open_id(f, off, color) >= 0 ? OK : BAD_ARG; }
+
+/* Is a WAIT or POLL answer one the protocol allows: no event (0), or an event of a known
+   kind for one of its own windows (the number from bit EV_WIN up)? An EV_CLOSE means that
+   window is gone. */
+static int event_ok(struct df *f, u64 x) {
+    u64 kind = x & ((1UL << EV_WIN) - 1), win = x >> EV_WIN;
+    if (!kind) return x == 0;
+    if (kind > 8 || win >= 12 || !(f->ids >> win & 1)) return 0;
+    if (kind == EV_CLOSE) f->ids &= ~(1UL << win);
+    return 1;
 }
 
 /* Lay a made-up icon (a marker, a size, then pixels, a name at the end) in the scratch
@@ -304,15 +335,26 @@ static void fixed(struct df *f, const char *when) {
     /* COPY nobody asked for: refused. */
     want1(f, "copy unasked", OP_COPY, dcall(f, OP_COPY, 0x4141414141414141UL, 0, 0), 1, -1);
 
+    /* CLOSE of every window number it does not hold (the other fuzzer may hold windows of
+       those numbers: a number means something only with its own badge), of numbers past the
+       table, of its own numbers with bits past 32 set, and with a grant: all refused. */
+    for (u64 id = 0; id < 12; id++)
+        if (!(f->ids >> id & 1)) want1(f, "close a window it does not hold", OP_CLOSE, dcall(f, OP_CLOSE, id, 0, 0), 1, -1);
+    static const u64 no_window[] = {12, 13, 255, 256, 1UL << 32, (1UL << 32) | 1, (1UL << 32) | 2, 0x7fffffffffffffffUL};
+    for (u64 i = 0; i < sizeof no_window / sizeof no_window[0]; i++)
+        want1(f, "close a number past the table", OP_CLOSE, dcall(f, OP_CLOSE, no_window[i], next(f), 0), 1, -1);
+    want1(f, "close with a grant", OP_CLOSE, grant_call(f, OP_CLOSE, 12, 0, WIN_OFF, WIN_PAGES, R), 1, -1);
+
     /* Unknown op numbers. */
     want1(f, "op 0", 0, dcall(f, 0, 0, 0, 0), 1, -1);
     want1(f, "op 11", 11, dcall(f, 11, 0, 0, 0), 1, -1);
+    want1(f, "op 13", 13, dcall(f, 13, 0, 0, 0), 1, -1);
     want1(f, "op big", 0x7ff, dcall(f, 0x7ff, next(f), next(f), 0), 1, -1);
 
     /* Grants by plain send, nobody asked for: the display must let go of every one, or its
        64 capabilities fill and it can take no more (test/chaos.sh tests the same for
        plain sends; here every op, call and send). */
-    for (u64 op = 0; op <= 12; op++) {
+    for (u64 op = 0; op <= 14; op++) {
         struct res d = sys(SYS_DERIVE, SPARE, R, WIN_OFF, WIN_PAGES, 0);
         if (d.status == OK) {
             sys(SYS_SEND, ENDPOINT, op, next(f), next(f), d.x[1] + 1);
@@ -334,6 +376,45 @@ static void wait_no_window(struct df *f) {
     /* WAIT with a grant and no window: the grant is dropped, the answer is EV_NONE. */
     want1(f, "wait with a grant", OP_WAIT,
           grant_call(f, OP_WAIT, 0, 0, WIN_OFF, WIN_PAGES, R), EV_NONE, -1);
+    /* A window opened and closed at once: then it has none again. Closing it twice is
+       refused; WAIT (with its bit dirty) and POLL answer EV_NONE at once. (If the table is
+       full, the display may refuse the window: nothing to close.) */
+    long id = open_id(f, WIN_OFF, 0x806040);
+    if (id >= 0) {
+        want1(f, "close its only window", OP_CLOSE, dcall(f, OP_CLOSE, (u64)id, 0, 0), 0, -1);
+        want1(f, "close its only window twice", OP_CLOSE, dcall(f, OP_CLOSE, (u64)id, 0, 0), 1, -1);
+        want1(f, "wait after closing its only window", OP_WAIT, dcall(f, OP_WAIT, 1UL << id, 0, 0), EV_NONE, -1);
+        want1(f, "poll after closing its only window", OP_POLL, dcall(f, OP_POLL, 1UL << id, 0, 0), EV_NONE, -1);
+        if (f->ids) wrong(f, "a window closed is still counted", OP_CLOSE, (struct res){.x = {OK, 0, f->ids, 0}});
+    }
+}
+
+/* Several windows: numbers, CLOSE, and events only for its own. Windows it cannot get (the
+   table full) skip what needs them. */
+static void close_cases(struct df *f) {
+    long b = open_id(f, WIN_OFF + WIN_PAGES, 0x40c060);
+    if (b < 0) {
+        say(f, "several windows: the table is full", 0, 0);
+        return;
+    }
+    /* by plain send, CLOSE is not taken (it needs an answer): the next window gets another number */
+    sys(SYS_SEND, ENDPOINT, OP_CLOSE, (u64)b, 0, 0);
+    f->requests++;
+    long c = open_id(f, WIN_OFF + 2 * WIN_PAGES, 0x60c040);
+    if (c == b) wrong(f, "a CLOSE by plain send closed a window", OP_CLOSE, (struct res){.x = {OK, 0, (u64)b, 0}});
+    want1(f, "close one of its windows", OP_CLOSE, dcall(f, OP_CLOSE, (u64)b, 0, 0), 0, -1);
+    want1(f, "close a window twice", OP_CLOSE, dcall(f, OP_CLOSE, (u64)b, 0, 0), 1, -1);
+    /* a POLL: no event, or one for a window it still holds (never the closed one) */
+    struct res r = dcall(f, OP_POLL, 0, 0, 0);
+    if (answered(f, "poll after a close", OP_POLL, r) && !event_ok(f, r.x[1])) wrong(f, "an event for no window of its own", OP_POLL, r);
+    /* its number is free again: the next window takes it (dcall checks: the lowest) */
+    long d = open_id(f, WIN_OFF + 3 * WIN_PAGES, 0x6040c0);
+    /* the numbers it does not hold, with windows of its own open: refused */
+    for (u64 id = 0; id < 12; id++)
+        if (!(f->ids >> id & 1)) want1(f, "close a window it does not hold, with several", OP_CLOSE, dcall(f, OP_CLOSE, id, 0, 0), 1, -1);
+    if (c >= 0) want1(f, "close another of its windows", OP_CLOSE, dcall(f, OP_CLOSE, (u64)c, 0, 0), 0, -1);
+    if (d >= 0) want1(f, "close a window that took a number again", OP_CLOSE, dcall(f, OP_CLOSE, (u64)d, 0, 0), 0, -1);
+    say(f, "several windows: numbered, closed, and closed again refused; windows held ", (u64)__builtin_popcountl(f->ids), "");
 }
 
 /* ---- 3. random requests ---- */
@@ -345,7 +426,8 @@ static int reply_ok(struct df *f, u64 op, int have_win, struct res r) {
     switch (op) {
     case OP_OPEN: return x == 0 || x == 1;                 /* took it, or refused */
     case OP_WAIT:
-    case OP_POLL: return x <= 8;                           /* EV_NONE .. EV_PASTE */
+    case OP_POLL: return event_ok(f, x);                   /* EV_NONE .. EV_PASTE, its own windows */
+    case OP_CLOSE: return x == 1;                          /* never a number it holds (random_run) */
     case OP_SET: return x == 0 || x == 1;
     case OP_ICON: return x == 0 || x == 1;
     case OP_START: return x == 0 || x == 1;
@@ -355,7 +437,7 @@ static int reply_ok(struct df *f, u64 op, int have_win, struct res r) {
     case OP_COPY: return x == 0 || x == 1;
     default: return x == 1;                                /* unknown op */
     }
-    (void)f; (void)have_win;
+    (void)have_win;
 }
 
 /* A window or an icon made to sit near the display's limits, with the answer the rule
@@ -406,9 +488,10 @@ static void structured(struct df *f) {
 
 static void random_run(struct df *f, u64 count) {
     for (u64 i = 0; i < count; i++) {
-        u64 op = next(f) % 13;                 /* 0..12: the ops and a couple past them */
-        if (f->have_win && op == OP_WAIT) op = OP_POLL;   /* a WAIT with a window may block */
+        u64 op = next(f) % 14;                 /* 0..13: the ops, 11 (none) and one past them */
+        if ((f->have_win || f->ids) && op == OP_WAIT) op = OP_POLL;   /* a WAIT with a window may block */
         u64 w1 = next(f), w2 = next(f);
+        if (op == OP_CLOSE) w1 |= 1UL << 40;   /* never a window it holds: its windows stay for the rest */
         int use_grant = next(f) & 1;
         int as_call = op != OP_WAIT ? (next(f) & 1) : 1;  /* WAIT (no window) as a call */
         u64 grant = 0, gi = 0;
@@ -580,6 +663,7 @@ __attribute__((section(".text.start"))) void _start(void) {
         struct res r = grant_from(f, 0, OP_ICON, 0, 0, ICON_IMAGE_PAGE, 4, R | X);
         want1(f, "its own icon, as app_open lends it", OP_ICON, r, 0, -1);
         named = r.status == OK && r.x[1] == 0;
+        close_cases(f);
     }
 
     /* dfuzzx and dfuzzf end here, in the middle of an exchange: grants sent by plain send,

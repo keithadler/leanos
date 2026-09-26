@@ -1,18 +1,22 @@
 /* The display server. It owns the framebuffer (capability 5) and nothing else can reach it.
 
-   Clients call it. RAISE (7): w1 w2 = a card file's name, bring its window forward.
+   Clients call it. RAISE (7): w1 w2 = a card file's name, bring its windows forward.
    PENDING (8): Apps asks which pinned program the dock wants started. OPEN: w0 = 1, w1 = width << 16 | height, w2 = up to 8 bytes of title,
-   with a read-only capability to the window's pixels; the reply is 0 on success. WAIT:
-   w0 = 2, w1 = 1 if the client redrew its pixels; the reply comes when there is an event
-   for the client (w0 = kind, w1, w2). The server never blocks on a client: it holds each
-   caller's reply slot until it has something to say.
+   with a read-only capability to the window's pixels; the reply is 0 on success, and the
+   window's number as its program knows it: 0 for its first, then the lowest it is not
+   using. WAIT: w0 = 2, w1 = the windows the client redrew, a bit per number (1: its first);
+   the reply comes when there is an event for any of the client's windows (w0 = kind | the
+   window's number << 8, w1, w2), the oldest first. The server never blocks on a client: it
+   holds each program's one waiting call until it has something to say. CLOSE (12): w1 = one
+   of the caller's window numbers; the window goes at once, and the reply is 0 (1: the
+   caller has no window of that number).
 
    The kernel gives it 8 reply slots (maxCallers) and it may show 12 windows, so it holds at
-   most HOLD_MAX (7) waiting windows' calls, and one slot is always free for the next call.
-   When a WAIT would take an 8th, the window that has waited longest hears no event
+   most HOLD_MAX (7) waiting programs' calls, and one slot is always free for the next call.
+   When a WAIT would take an 8th, the program that has waited longest hears no event
    (EV_NONE) and is parked: it asks again a moment later (app_wait), and while the slots are
    still taken it is answered at once, with its events if it has any, else with none again.
-   A parked window that gets an event is held again when it next waits, in place of the one
+   A parked program that gets an event is held again when it next waits, in place of the one
    that has waited longest. If a receive ever finds the slots full all the same, the one
    that has waited longest is let go the same way: before, the display retried that receive
    for ever, and no key or click reached anyone again.
@@ -26,9 +30,12 @@
 
    The input driver sends it keys and mouse reports (badge 3). Keys go to the focused window;
    a click focuses and raises a window, and dragging its title bar moves it. The sender's
-   badge, which the kernel sets, names every window, so no client can pass for another.
-   A click inside a window goes to its client (EV_DOWN, window coordinates); a click on the
-   red button asks the client to close (EV_CLOSE), and the window goes at once.
+   badge, which the kernel sets, names every window, so no client can pass for another, and
+   a window's number means something only with its program's badge: no program can name
+   another's window. A click inside a window goes to its client (EV_DOWN, window
+   coordinates); a click on the red button asks the client to close (EV_CLOSE, with that
+   window's number), and the window goes from the screen at once, and from the table when
+   its client hears it.
 
    It holds a launch capability for each app (capabilities 6 to 10: Notes, Terminal,
    Settings, Security, Files). Clicking an app in the dock starts it if it is not running; the
@@ -88,7 +95,9 @@ __attribute__((noinline)) static void rounded(struct surface *s, int x, int y, i
 #define MINI_GAP 8
 #define DOCK_AREA_X 0         /* the part of the screen the dock and its labels can cover */
 #define QUEUE 128        /* a pasted line, or fast typing into a busy app, must not be lost */
-#define HOLD_MAX 7       /* waiting windows' calls held at once: one fewer than the kernel's 8 reply slots */
+#define HOLD_MAX 7       /* waiting programs' calls held at once: one fewer than the kernel's 8 reply slots */
+#define NSLOT 17         /* program slots: a badge's slot_of */
+#define EV_WIN 8         /* an event's kind word: the kind, and the window's number from this bit up */
 #define TITLE_H 30
 #define BAR_H 30
 #define W 1024
@@ -96,7 +105,8 @@ __attribute__((noinline)) static void rounded(struct surface *s, int x, int y, i
 #define RADIUS 12
 
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
-       OP_ZONE = 9, OP_COPY = 10 };
+       OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12 };
+/* 11 is no request: programs ask it to show that no request reads the clipboard (mallory, tour) */
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7, EV_PASTE = 8 };
 enum { KEY_COPY = 3, KEY_PASTE = 22 };   /* Ctrl+C, Ctrl+V */
 #define CLIP_MAX 4096     /* as user/app.h */
@@ -140,17 +150,16 @@ static const unsigned theme_glow[NTHEME] = {0x606ee6, 0x5a6482, 0xe07aa0};
 struct win {
     int used;
     u64 badge;
+    int id;                     /* its number as its program knows it (OPEN's answer, in its events) */
     int x, y;                   /* outer frame */
     struct surface content;
     char title[9];
     int closing;                /* closed on screen; the client hears EV_CLOSE when it next waits */
+    unsigned close_seq;         /* when the close button was clicked (the event count) */
     struct picture icon;        /* the icon a program from the card lent (OP_ICON), or none */
     char prog[16];              /* and the card file it came from, or "" */
-    u64 slot;                   /* reply slot + 1 while the client waits, else 0 */
     u64 hash;                   /* the first word of its slot's measured hash when it opened */
-    u64 held_at;                /* when its wait was held (a count), to find the one held longest */
-    int parked;                 /* let go with no event while HOLD_MAX were held: asks again soon */
-    unsigned queue[QUEUE][3];    /* events waiting for the client (kind, a, b), oldest at qhead */
+    unsigned queue[QUEUE][4];    /* events waiting for the client (kind, a, b, when), oldest at qhead */
     int qhead, qlen;
     /* a paste on its way: what was copied when the user pasted here, handed out 16 bytes to
        an event when an EV_PASTE in the queue comes up */
@@ -162,7 +171,7 @@ struct win {
    globals. */
 struct state {
     unsigned char ignored[32];   /* requests not understood, per badge, so a flood logs once */
-    unsigned char said[32];      /* refused windows and raises logged, per badge: a few, not a flood */
+    unsigned char said[32];      /* refused windows, raises and closes logged, per badge: a few, not a flood */
     struct surface screen;
     struct font ui, ui_bold, small, huge, medium;
     struct picture icons[DOCK_ALL];
@@ -208,8 +217,14 @@ struct state {
     char clip[CLIP_MAX], copy_buf[CLIP_MAX];
     u64 drag_frames, drag_us;
     int drag_pending, pend_x, pend_y;   /* a drag move not drawn yet, and where the window was */
-    u64 waits;                  /* waits held so far: each window's held_at */
-    int parked_said;            /* the log has said once that windows are parked */
+    u64 waits;                  /* waits held so far: each program's held_at */
+    int parked_said;            /* the log has said once that programs are parked */
+    /* per program slot (slot_of its badge): its one waiting call (reply slot + 1, or 0),
+       when it was held (a count, to find the one held longest), and whether it was let go
+       with no event while HOLD_MAX were held (it asks again soon) */
+    u64 hold[NSLOT], held_at[NSLOT];
+    unsigned char parked[NSLOT];
+    unsigned events;            /* events queued so far: which of a program's is oldest */
 };
 _Static_assert(sizeof(struct state) <= 8 * 4096, "the server's state must fit in its 8 data pages");
 
@@ -525,13 +540,22 @@ static int running(struct state *st, int i) {
     return run_state(dock_slot[i]) == 1;
 }
 
-/* Windows of programs from the card, in the order they appear in the dock (after the
-   built-in apps, so those never move). */
+/* Is window k shown, and the first in the table of its program's shown windows? */
+static int first_of(struct state *st, int k) {
+    struct win *w = &st->win[k];
+    if (!w->used || w->closing) return 0;
+    for (int j = 0; j < k; j++)
+        if (st->win[j].used && !st->win[j].closing && st->win[j].badge == w->badge) return 0;
+    return 1;
+}
+
+/* Programs from the card with a window, one icon each (its first window's), in the order
+   they appear in the dock (after the built-in apps, so those never move). */
 static int dock_extras(struct state *st, int *which) {
     int n = 0;
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
-        if (w->used && !w->closing && w->badge >= 10 && w->badge <= 15 && !pinned(w)) which[n++] = k;
+        if (first_of(st, k) && w->badge >= 10 && w->badge <= 15 && !pinned(w)) which[n++] = k;
     }
     return n;
 }
@@ -760,6 +784,23 @@ COLD static void bring_to_front(struct state *st, int k) {
     composite(st, 0, 0, W, BAR_H + 1);
 }
 
+/* Bring every window of window k's program to the front, in the order they were in, so
+   the one of them that was in front last is in front now (the dock, RAISE: a program, not
+   a window, was asked for), and redraw what changed. */
+COLD static void raise_program(struct state *st, int k) {
+    u64 badge = st->win[k].badge;
+    int old = focused(st), n = st->nz;
+    for (int i = 0, seen = 0; seen < n; seen++) {
+        int j = st->z[i];
+        if (st->win[j].badge == badge) raise(st, j);   /* to the top: the rest move down */
+        else i++;
+    }
+    if (old >= 0 && st->win[old].badge != badge) composite_window(st, old);
+    for (int i = 0; i < st->nz; i++)
+        if (st->win[st->z[i]].badge == badge) composite_window(st, st->z[i]);
+    composite(st, 0, 0, W, BAR_H + 1);
+}
+
 COLD static int window_at(struct state *st, int x, int y) {
     for (int i = st->nz - 1; i >= 0; i--) {
         struct win *w = &st->win[st->z[i]];
@@ -780,13 +821,33 @@ COLD static int dock_at(struct state *st, int x, int y) {
     return 0;
 }
 
-/* The next event for window k's client, taken from its queue: 0 if there is none. An
-   EV_PASTE in the queue stands for the whole paste, and stays at the front until the last
-   of it (fewer than 16 bytes) is handed out. */
-COLD __attribute__((noinline)) static int next_event(struct win *w, u64 e[3]) {
-    if (!w->qlen) return 0;
+COLD static void forget(struct state *st, int k);
+
+/* The next event for the program with this badge: the oldest waiting for any of its
+   windows, taken from that window's queue, with the window's number in its kind word; 0 if
+   there is none. An EV_PASTE in a queue stands for the whole paste, and stays at the front
+   until the last of it (fewer than 16 bytes) is handed out. A window closed on screen (its
+   close button) has EV_CLOSE after the events it already had; handing that out forgets it. */
+COLD __attribute__((noinline)) static int next_event(struct state *st, u64 badge, u64 e[3]) {
+    int k = -1;
+    unsigned at = 0;
+    for (int j = 0; j < MAX_WIN; j++) {
+        struct win *c = &st->win[j];
+        if (!c->used || c->badge != badge || (!c->qlen && !c->closing)) continue;
+        unsigned when = c->qlen ? c->queue[c->qhead][3] : c->close_seq;
+        if (k < 0 || (int)(when - at) < 0) { k = j; at = when; }
+    }
+    if (k < 0) return 0;
+    struct win *w = &st->win[k];
+    u64 id = (u64)w->id << EV_WIN;
+    if (!w->qlen) {
+        e[0] = EV_CLOSE | id;
+        e[1] = e[2] = 0;
+        forget(st, k);
+        return 1;
+    }
     unsigned *q = w->queue[w->qhead];
-    e[0] = q[0];
+    e[0] = q[0] | id;
     e[1] = q[1];
     e[2] = q[2];
     if (q[0] == EV_PASTE) {
@@ -803,17 +864,20 @@ COLD __attribute__((noinline)) static int next_event(struct win *w, u64 e[3]) {
 }
 
 /* Give window k's client an event: now, if it is waiting, or when it next asks. */
-COLD static void deliver_event(struct win *w, u64 kind, u64 a, u64 b) {
+COLD static void deliver_event(struct state *st, int k, u64 kind, u64 a, u64 b) {
+    struct win *w = &st->win[k];
     if (w->qlen < QUEUE) {
         int at = (w->qhead + w->qlen++) % QUEUE;
         w->queue[at][0] = (unsigned)kind;   /* keys and screen positions fit in 32 bits */
         w->queue[at][1] = (unsigned)a;
         w->queue[at][2] = (unsigned)b;
+        w->queue[at][3] = ++st->events;
     }
+    int p = slot_of(w->badge);
     u64 e[3];
-    if (w->slot && next_event(w, e)) {
-        sys(SYS_REPLY, w->slot - 1, e[0], e[1], e[2], 0);
-        w->slot = 0;
+    if (st->hold[p] && next_event(st, w->badge, e)) {
+        sys(SYS_REPLY, st->hold[p] - 1, e[0], e[1], e[2], 0);
+        st->hold[p] = 0;
     }
 }
 
@@ -844,34 +908,46 @@ COLD static void hide(struct state *st, int k) {
         st->nz--;
     }
     if (st->drag == k + 1) st->drag = 0;
+    if (st->hover == 101 + k) st->hover = 0;
     sys2(SYS_UNMAP, WIN_PAGE + WIN_MAX_PAGES * (u64)k, WIN_MAX_PAGES);
 }
 
-/* Forget window k. A reply slot still held for it is answered, which frees it. */
-COLD static void release(struct state *st, int k) {
+/* Forget window k: off the screen, its capabilities (pixels, icon) let go, its place in the
+   table free. */
+COLD static void forget(struct state *st, int k) {
     struct win *w = &st->win[k];
     hide(st, k);
     for (int i = st->ncaps - 1; i >= 0; i--)
         if (st->cap_win[i] == k + 1) cap_drop(st, i);
-    if (w->slot) sys(SYS_REPLY, w->slot - 1, EV_CLOSE, 0, 0, 0);
-    w->slot = 0;
     w->used = 0;
     w->closing = 0;
     w->paste_len = w->paste_at = 0;
     if (st->copy_win == k + 1) st->copy_win = 0;
 }
 
-/* The close button: the window goes now, and its client hears EV_CLOSE. */
+/* Forget window k. A call its program is still held in is answered (EV_CLOSE, for this
+   window), which frees the reply slot. */
+COLD static void release(struct state *st, int k) {
+    u64 id = (u64)st->win[k].id << EV_WIN;
+    int p = slot_of(st->win[k].badge);
+    forget(st, k);
+    if (st->hold[p]) sys(SYS_REPLY, st->hold[p] - 1, EV_CLOSE | id, 0, 0, 0);
+    st->hold[p] = 0;
+}
+
+/* The close button: the window goes now, and its client hears EV_CLOSE (after the events
+   its window already had). */
 COLD static void close_window(struct state *st, struct line *l, int k) {
     struct win *w = &st->win[k];
     put_s(l, "display: closed ");
     put_s(l, name_of(w->badge));
     put_s(l, "'s window");
     say(l);
-    if (w->slot) release(st, k);
+    if (st->hold[slot_of(w->badge)]) release(st, k);   /* it waits: nothing else is queued */
     else {
         hide(st, k);
         w->closing = 1;
+        w->close_seq = ++st->events;
     }
     redraw_all(st);
 }
@@ -906,15 +982,17 @@ static void say3(struct line *l, const char *a, const char *b, const char *c);
    starts it (app_before_start in user/app.h), so the display has let go of the last run
    before the kernel does. Beyond that, what the kernel hands it shows what it missed: */
 
+/* The badge of the programs in slot p (slot_of's inverse). */
+static u64 badge_in(int p) { return p == 0 ? BADGE_ALICE : (u64)p; }
+
 /* A call in reply slot k: the calls the display holds are all in slots of their own, so any
    record it still has of slot k is of a call the kernel has dropped (its caller's slot was
    started again). It is forgotten, not answered: an answer now would reach the new caller. */
 COLD static void claim_slot(struct state *st, struct line *l, u64 slot) {
-    for (int k = 0; k < MAX_WIN; k++) {
-        struct win *w = &st->win[k];
-        if (w->slot != slot) continue;
-        w->slot = 0;
-        say3(l, "the kernel dropped the call held for ", name_of(w->badge), "'s last run; forgot it");
+    for (int p = 0; p < NSLOT; p++) {
+        if (st->hold[p] != slot) continue;
+        st->hold[p] = 0;
+        say3(l, "the kernel dropped the call held for ", name_of(badge_in(p)), "'s last run; forgot it");
     }
 }
 
@@ -959,12 +1037,12 @@ COLD static int lost_runs(struct state *st, struct line *l, int real) {
             struct win *w = &st->win[k];
             if (!w->used || slot_of(w->badge) != pick) continue;
             hide(st, k);
-            w->slot = 0;
             w->used = w->closing = w->paste_len = w->paste_at = 0;
             if (st->copy_win == k + 1) st->copy_win = 0;
         }
         for (int i = st->ncaps - 1; i >= 0; i--)
             if (st->cap_badge[i] && slot_of(st->cap_badge[i]) == pick) cap_forget(st, i);
+        st->hold[pick] = 0;
     } else {
         say3(l, "a slot was started again unseen, and it cannot tell which: every window closes", "", "");
         for (int i = real - 1; i >= st->own_caps; i--, dropped++) sys1(SYS_DROP, (u64)i);
@@ -975,7 +1053,7 @@ COLD static int lost_runs(struct state *st, struct line *l, int real) {
     return dropped;
 }
 
-/* Dock item i: show the app's window, or start the app. */
+/* Dock item i: show the app's windows, or start the app. */
 COLD static void launch(struct state *st, struct line *l, int i) {
     int slot = dock_slot[i];
     if (slot < 0) {
@@ -987,7 +1065,7 @@ COLD static void launch(struct state *st, struct line *l, int i) {
     }
     for (int k = 0; k < MAX_WIN; k++)
         if (st->win[k].used && !st->win[k].closing && slot_of(st->win[k].badge) == slot) {
-            bring_to_front(st, k);
+            raise_program(st, k);
             return;
         }
     if (run_state(slot) == 1) return; /* started, not showing a window yet */
@@ -1012,14 +1090,14 @@ COLD static void launch(struct state *st, struct line *l, int i) {
     composite(st, DOCK_AREA_X, DOCK_Y - 44, W, DOCK_H + 44);
 }
 
-/* A pinned program: bring its window forward, or have Apps start it. Apps reads the card
+/* A pinned program: bring its windows forward, or have Apps start it. Apps reads the card
    and holds the open slots' launch capabilities; the display holds neither. If Apps is
    showing its window, it gets the name as an event; if not, the display starts Apps, which
    asks for the name first thing (OP_PENDING), starts the program, and leaves quietly. */
 COLD static void open_pinned(struct state *st, struct line *l, int p) {
     int k = window_of(st, pin_files[p]);
     if (k >= 0) {
-        bring_to_front(st, k);
+        raise_program(st, k);
         return;
     }
     put_s(l, "display: open ");
@@ -1035,7 +1113,7 @@ COLD static void open_pinned(struct state *st, struct line *l, int p) {
     for (int j = 0; j < MAX_WIN; j++) {
         struct win *w = &st->win[j];
         if (w->used && !w->closing && slot_of(w->badge) == 16) {
-            deliver_event(w, EV_LAUNCH, a, b);
+            deliver_event(st, j, EV_LAUNCH, a, b);
             return;
         }
     }
@@ -1127,7 +1205,7 @@ COLD static void copy_ask(struct state *st, struct line *l) {
     st->copy_badge = w->badge;
     st->copy_at = millis();
     st->copy_len = 0;
-    deliver_event(w, EV_COPY, 0, 0);
+    deliver_event(st, k, EV_COPY, 0, 0);
     say3(l, "copy: asked ", name_of(w->badge), " for its text");
 }
 
@@ -1145,7 +1223,7 @@ COLD static void paste_to(struct state *st, struct line *l) {
         copy_bytes(w->paste, st->clip, st->clip_len);
         w->paste_len = st->clip_len;
         w->paste_at = 0;
-        deliver_event(w, EV_PASTE, 0, 0);
+        deliver_event(st, k, EV_PASTE, 0, 0);
         put_s(l, "display: paste: ");
         put_dec(l, (u64)st->clip_len);
         say3(l, " bytes to ", name_of(w->badge), "");
@@ -1202,7 +1280,7 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
     if (kind == EV_KEY) {
         int k = focused(st);
         if (k < 0) return;
-        deliver_event(&st->win[k], EV_KEY, a, 0);
+        deliver_event(st, k, EV_KEY, a, 0);
         if (a == '\r' || a == '\n') put_s(l, "display: key return to ");
         else {
             put_s(l, "display: key '");
@@ -1249,7 +1327,7 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
     }
     if (kind == EV_DOWN) {
         int d = dock_at(st, st->px, st->py);
-        if (d > 100) bring_to_front(st, d - 101);
+        if (d > 100) raise_program(st, d - 101);
         else if (d > DOCK_N) open_pinned(st, l, d - 1 - DOCK_N);
         else if (d) launch(st, l, d - 1);
         int k = d ? -1 : window_at(st, st->px, st->py);
@@ -1268,7 +1346,7 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
                 say(l);
             }
             if (st->py >= w->y + TITLE_H)
-                deliver_event(w, EV_DOWN, (u64)(st->px - w->x), (u64)(st->py - w->y - TITLE_H));
+                deliver_event(st, k, EV_DOWN, (u64)(st->px - w->x), (u64)(st->py - w->y - TITLE_H));
             if (st->py < w->y + TITLE_H) {
                 st->drag = k + 1;
                 st->grab_x = st->px - w->x;
@@ -1342,8 +1420,20 @@ COLD static void on_open(struct state *st, struct line *l, struct res *r) {
         return;
     }
     struct win *wn = &st->win[k];
+    /* its number: the lowest its program is not using (0 for its first) */
+    int id = 0, others = 0;
+    for (int again = 1; again;) {
+        again = 0;
+        for (int j = 0; j < MAX_WIN; j++) {
+            if (!st->win[j].used || st->win[j].badge != badge) continue;
+            others = 1;
+            if (st->win[j].id == id) { id++; again = 1; }
+        }
+    }
+    if (!others) st->parked[slot_of(badge)] = 0;   /* its first window: it starts afresh */
     wn->used = 1;
     wn->badge = badge;
+    wn->id = id;
     wn->content = surface_of((unsigned *)PAGE(WIN_PAGE + WIN_MAX_PAGES * (u64)k), (int)w, (int)h);
     for (int i = 0; i < 8; i++) wn->title[i] = (char)(title >> (8 * i));
     wn->title[8] = 0;
@@ -1372,9 +1462,7 @@ COLD static void on_open(struct state *st, struct line *l, struct res *r) {
     /* but never over the menu bar, as a drag keeps it: a window taller than the room between
        them reaches over the dock instead, which is drawn over every window */
     if (wn->y < BAR_H + 2) wn->y = BAR_H + 2;
-    wn->slot = 0;
     wn->hash = sys1(SYS_BOOTINFO, (u64)slot_of(badge)).x[2];
-    wn->parked = 0;
     wn->closing = 0;
     wn->icon.px = 0;
     wn->prog[0] = 0;
@@ -1400,67 +1488,104 @@ COLD static void on_open(struct state *st, struct line *l, struct res *r) {
     put_s(l, " window from a read-only capability to ");
     put_dec(l, info.x[3]);
     put_s(l, " pages");
+    if (id) {
+        put_s(l, ", its window ");
+        put_dec(l, (u64)id);
+    }
     say(l);
-    sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
+    sys(SYS_REPLY, slot - 1, 0, (u64)id, 0, 0);
 }
 
-/* How many waiting windows' calls it holds: each takes one of its 8 reply slots. */
+/* How many waiting programs' calls it holds: each takes one of its 8 reply slots. */
 COLD static int held(struct state *st) {
     int n = 0;
-    for (int k = 0; k < MAX_WIN; k++) n += st->win[k].slot != 0;
+    for (int p = 0; p < NSLOT; p++) n += st->hold[p] != 0;
     return n;
 }
 
-/* Answer the window that has waited longest with no event, which frees its reply slot. Its
-   client asks again a moment later (app_wait); until then its events wait in its queue. */
+/* Answer the program that has waited longest with no event, which frees its reply slot. It
+   asks again a moment later (app_wait); until then its events wait in its windows' queues. */
 COLD static void park_oldest(struct state *st, struct line *l) {
     int o = -1;
-    for (int k = 0; k < MAX_WIN; k++)
-        if (st->win[k].slot && (o < 0 || st->win[k].held_at < st->win[o].held_at)) o = k;
+    for (int p = 0; p < NSLOT; p++)
+        if (st->hold[p] && (o < 0 || st->held_at[p] < st->held_at[o])) o = p;
     if (o < 0) return;
     if (!st->parked_said) {
         st->parked_said = 1;
-        say3(l, "more windows wait than the 7 calls it holds: ", name_of(st->win[o].badge),
+        say3(l, "more windows wait than the 7 calls it holds: ", name_of(badge_in(o)),
              ", waiting longest, hears no event and asks again");
     }
-    sys(SYS_REPLY, st->win[o].slot - 1, 0, 0, 0, 0);
-    st->win[o].slot = 0;
-    st->win[o].parked = 1;
+    sys(SYS_REPLY, st->hold[o] - 1, 0, 0, 0, 0);
+    st->hold[o] = 0;
+    st->parked[o] = 1;
 }
 
 /* WAIT (and POLL, which answers at once, with no event if there is none, for a client
-   that keeps time itself and must not block). A parked window, asking again while HOLD_MAX
-   waits are held, is answered at once too; any other wait is held, in place of the one held
-   longest if HOLD_MAX already are. */
+   that keeps time itself and must not block), for any of the caller's windows: a program
+   holds one call, however many windows it has. A parked program, asking again while
+   HOLD_MAX waits are held, is answered at once too; any other wait is held, in place of the
+   one held longest if HOLD_MAX already are. */
 COLD static void on_wait(struct state *st, struct line *l, struct res *r, int poll) {
     u64 badge = r->x[1], dirty = r->x[3], slot = r->x[6];
+    int any = 0;
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
         if (!w->used || w->badge != badge) continue;
-        /* Events that came before the close button still go first: keys typed just
-           before a click on close are the program's to handle (Notes saves them). */
-        if (w->closing && !w->qlen) {
-            sys(SYS_REPLY, slot - 1, EV_CLOSE, 0, 0, 0);
-            w->used = 0;
-            w->closing = 0;
-            return;
-        }
-        if (dirty && !w->closing) composite_window(st, k);
-        u64 e[3];
-        if (next_event(w, e)) {
-            w->parked = 0;
-            sys(SYS_REPLY, slot - 1, e[0], e[1], e[2], 0);
-        } else if (poll || (w->parked && held(st) >= HOLD_MAX)) {
-            sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
-        } else {
-            if (held(st) >= HOLD_MAX) park_oldest(st, l);
-            w->slot = slot;
-            w->parked = 0;
-            w->held_at = ++st->waits;
-        }
+        any = 1;
+        if (((dirty >> w->id) & 1) && !w->closing) composite_window(st, k);
+    }
+    if (!any) {
+        sys(SYS_REPLY, slot - 1, 0, 0, 0, 0); /* no window: nothing to wait for */
         return;
     }
-    sys(SYS_REPLY, slot - 1, 0, 0, 0, 0); /* no window: nothing to wait for */
+    /* Events that came before a close button still go first: keys typed just before a
+       click on close are the program's to handle (Notes saves them). */
+    int p = slot_of(badge);
+    u64 e[3];
+    if (next_event(st, badge, e)) {
+        st->parked[p] = 0;
+        sys(SYS_REPLY, slot - 1, e[0], e[1], e[2], 0);
+    } else if (poll || (st->parked[p] && held(st) >= HOLD_MAX)) {
+        sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
+    } else {
+        if (held(st) >= HOLD_MAX) park_oldest(st, l);
+        st->hold[p] = slot;
+        st->parked[p] = 0;
+        st->held_at[p] = ++st->waits;
+    }
+}
+
+/* CLOSE: the caller closes one of its own windows (w1: its number), which goes at once:
+   off the screen, its capabilities let go, its place in the table free. The badge, which
+   the kernel sets, and the number together name the window, so a program can close only its
+   own. 0 if it did, 1 if the caller has no window of that number (one it closed already,
+   or whose EV_CLOSE it has heard). A window whose close button was clicked goes the same
+   way, its EV_CLOSE unsaid: the program closed it itself. */
+COLD static void on_close(struct state *st, struct line *l, struct res *r) {
+    u64 badge = r->x[1], id = r->x[3], slot = r->x[6];
+    int k = -1;
+    for (int j = 0; j < MAX_WIN; j++)
+        if (st->win[j].used && st->win[j].badge == badge && (u64)st->win[j].id == id) k = j;
+    if (k < 0) {
+        if (st->said[badge & 31] < 3) {
+            st->said[badge & 31]++;
+            say3(l, name_of(badge), " asked to close a window it does not have; refused", "");
+        }
+        sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
+        return;
+    }
+    forget(st, k);
+    redraw_all(st);
+    sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
+    int n = 0;
+    for (int j = 0; j < MAX_WIN; j++) n += st->win[j].used;
+    put_s(l, "display: ");
+    put_s(l, name_of(badge));
+    put_s(l, " closed its window ");
+    put_dec(l, id);
+    put_s(l, "; windows in the table: ");
+    put_dec(l, (u64)n);
+    say(l);
 }
 
 /* ICON: a program from the card lends the icon and name its loader gave it: 4 pages of its
@@ -1478,7 +1603,7 @@ COLD static void on_icon(struct state *st, struct res *r) {
     u64 ok = 1;
     for (int k = 0; k < MAX_WIN && cap && badge >= 10 && badge <= 15; k++) {
         struct win *w = &st->win[k];
-        if (!w->used || w->closing || w->badge != badge || w->icon.px) continue;
+        if (!w->used || w->closing || w->badge != badge || w->icon.px || w->prog[0]) continue;
         struct res info = sys1(SYS_CAPINFO, cap - 1);
         /* exactly its four pages (a longer run would be mapped over the next window's icon),
            of a code run; then the read-only copy, at the grant's place (the grant is last) */
@@ -1514,8 +1639,8 @@ COLD static void on_icon(struct state *st, struct res *r) {
 
 /* START: Apps asks for one of the built-in apps (w1 = its place in the dock), as if its
    dock icon were clicked. Only Apps may ask. */
-/* RAISE: bring forward the window of the program from card file w1 w2 (up to 15 bytes), if
-   one is open. Answers 0 if it did, 1 if there is none (always, for no name: a launcher
+/* RAISE: bring forward the windows of the program from card file w1 w2 (up to 15 bytes),
+   if one is open. Answers 0 if it did, 1 if there is none (always, for no name: a launcher
    about to start a slot asks that, app_before_start). Anyone may ask: it only moves a
    window up. The name is the one its icon brought (ICON): the name of the file the loader
    ran, from the program's code run (on_icon). */
@@ -1530,7 +1655,7 @@ COLD static void on_raise(struct state *st, struct line *l, struct res *r) {
         int i = 0;
         while (i < 16 && w->prog[i] == want[i] && want[i]) i++;
         if (i < 16 && w->prog[i] == want[i]) {
-            bring_to_front(st, k);
+            raise_program(st, k);
             if (st->said[r->x[1] & 31] < 3) {    /* a program may name its own window and ask again */
                 st->said[r->x[1] & 31]++;
                 say3(l, want, " is already open; brought it to the front", "");
@@ -1559,7 +1684,7 @@ COLD static void save_zone(struct state *st, struct line *l) {
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
         if (w->used && !w->closing && slot_of(w->badge) == 16) {
-            deliver_event(w, EV_LAUNCH, 0x6e6f7a40 /* "@zon" */, 'e');
+            deliver_event(st, k, EV_LAUNCH, 0x6e6f7a40 /* "@zon" */, 'e');
             st->zone_unsaved = 0;
             return;
         }
@@ -1651,6 +1776,8 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
     st->zone = 0;
     st->zone_unsaved = st->zone_restore = 0;
     st->waits = 0;
+    st->events = 0;
+    for (int p = 0; p < NSLOT; p++) st->hold[p] = st->parked[p] = 0;
     st->parked_said = 0;
     make_background(st);
     st->px = W / 2;
@@ -1739,6 +1866,8 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
             on_pending(st, &r);
         } else if (slot && op == OP_ZONE) {
             on_zone(st, &r);
+        } else if (slot && op == OP_CLOSE) {
+            on_close(st, &l, &r);
         } else if (op == OP_COPY && !grant) {
             on_copy(st, &l, &r);
         } else {

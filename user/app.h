@@ -1,16 +1,23 @@
-/* The client side of the display server's protocol, for an app with one window.
+/* The client side of the display server's protocol.
 
    An app draws its window into its own spare run, after its assets, and hands the display
    server a read-only capability to exactly those pages. Then it asks, over and over, for its
    next event; the display answers when it has one. EV_CLOSE means the window's close button
-   was clicked: the app should stop. */
+   was clicked: the window is gone, and an app with one window should stop.
+
+   An app may open more windows (app_window_at). Each has a number, 0 for its first, then
+   the lowest the app is not using; one wait hears the events of all of them, the oldest
+   first, and each event says which window it is for (event.win). The display holds one
+   waiting call per program, however many windows it has. An app closes a window of its
+   own with app_close; one whose close button was clicked is gone when the app hears its
+   EV_CLOSE. An app with one window never sees any of this: its events are all for 0. */
 #pragma once
 #include "lib.h"
 #include "gfx.h"
 #include "assets.h"
 
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
-       OP_ZONE = 9, OP_COPY = 10 };
+       OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12 };   /* 11: no request (none reads the clipboard) */
 enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7,
        EV_PASTE = 8 };
 /* The arrow keys, as EV_KEY codes (the input driver turns ESC [ A..D into these). */
@@ -22,7 +29,10 @@ enum { SET_BACKGROUND = 1, SET_ZONE = 2 };
 #define APP_WIN_OFFSET 64   /* the window's pixels, this many pages into the spare run */
 #define APP_WIN_PAGES 164   /* the most a window may use: the spare run's 228 pages less the assets' 64 */
 
-struct event { u64 kind, a, b; };
+/* win: which of the program's windows the event is for (0: its first). The display sends it
+   in the kind word, from bit EV_WIN up: a program with one window gets the kind alone. */
+struct event { u64 kind, a, b, win; };
+#define EV_WIN 8
 
 #define NSLOTS 17  /* program slots in the manifest */
 
@@ -37,14 +47,16 @@ static inline struct surface app_surface_at(u64 offset, int w, int h) {
 }
 static inline struct surface app_surface(int w, int h) { return app_surface_at(APP_WIN_OFFSET, w, h); }
 
-/* Ask the display for a window showing the pixels app_surface_at(offset) returns. */
-static inline u64 app_open_at(u64 offset, int w, int h, const char *title) {
+/* Ask the display for a window showing the pixels app_surface_at(offset) returns; its
+   number goes in *id. */
+static inline u64 app_open_id(u64 offset, int w, int h, const char *title, u64 *id) {
     u64 pages = ((u64)w * (u64)h * 4 + 4095) / 4096, t = 0;
     for (int i = 0; i < 8 && title[i]; i++) t |= (u64)(unsigned char)title[i] << (8 * i);
     struct res ro = sys(SYS_DERIVE, SPARE, R, offset, pages, 0);
     if (ro.status != OK) return ro.status;
     struct res r = sys(SYS_CALL, ENDPOINT, OP_OPEN, (u64)w << 16 | (u64)h, t, ro.x[1] + 1);
     if (r.status != OK || r.x[1] != 0) return BAD_ARG;
+    *id = r.x[2];
     /* If the loader put this program's icon and name in its image (pages 12-15 of the code
        run, see elf.h), lend the display those pages, for the title bar and the dock, with the
        code run's read and execute rights: the display takes a name only from pages that can
@@ -55,10 +67,28 @@ static inline u64 app_open_at(u64 offset, int w, int h, const char *title) {
     }
     return OK;
 }
+static inline u64 app_open_at(u64 offset, int w, int h, const char *title) {
+    u64 id;
+    return app_open_id(offset, w, h, title, &id);
+}
 static inline u64 app_open(int w, int h, const char *title) { return app_open_at(APP_WIN_OFFSET, w, h, title); }
 
+/* Another window (or a first): its number, or -1 if the display refused it. Each window
+   needs pixels of its own in the spare run, at offsets that do not overlap. */
+static inline long app_window_at(u64 offset, int w, int h, const char *title) {
+    u64 id;
+    return app_open_id(offset, w, h, title, &id) == OK ? (long)id : -1;
+}
+
+/* Close window `id` of this program: it goes at once. OK if it did; not if this program
+   has no window of that number (it closed it already, or heard its EV_CLOSE). */
+static inline u64 app_close(u64 id) {
+    struct res r = sys(SYS_CALL, ENDPOINT, OP_CLOSE, id, 0, 0);
+    return r.status == OK && r.x[1] == 0 ? OK : BAD_ARG;
+}
+
 /* If the program from the card file `name` already has a window, ask the display to bring
-   it to the front, and say so: one copy of a program is enough. The name goes in two
+   its windows to the front, and say so: one copy of a program is enough. The name goes in two
    message words, eight bytes each (ASCII never sets a word's top bit, which messages drop). */
 static inline int app_raise(const char *name) {
     u64 w[2] = {0, 0};
@@ -75,22 +105,28 @@ static inline int app_raise(const char *name) {
    OP_RAISE with no name asks nothing else. */
 static inline void app_before_start(void) { sys(SYS_CALL, ENDPOINT, OP_RAISE, 0, 0, 0); }
 
-/* The display holds at most 7 waiting windows' calls (the kernel gives it 8 reply slots, and
-   it keeps one free). With more windows waiting, it answers the one that has waited longest
-   with no event (EV_NONE), and answers again at once, with no event, while that window has
-   none and the slots are still taken: a program that waits must then ask again only after
-   a moment, as app_wait does, or it and the display spin. */
+/* The display holds at most 7 waiting programs' calls (the kernel gives it 8 reply slots,
+   and it keeps one free). With more programs waiting, it answers the one that has waited
+   longest with no event (EV_NONE), and answers again at once, with no event, while that
+   program has none and the slots are still taken: a program that waits must then ask again
+   only after a moment, as app_wait does, or it and the display spin. A program with no
+   window hears EV_NONE at once. */
 #define WAIT_AGAIN_MS 100
 
-/* Wait for the next event (never EV_NONE). `dirty`: the app redrew its pixels since it last
-   asked. */
+/* The event in a WAIT or POLL answer. */
+static inline struct event app_event(struct res e) {
+    struct event ev = {e.status == OK ? e.x[1] & ((1u << EV_WIN) - 1) : EV_NONE, e.x[2], e.x[3],
+                       e.status == OK ? e.x[1] >> EV_WIN : 0};
+    return ev;
+}
+
+/* Wait for the next event, for any of the app's windows (never EV_NONE). `dirty`: which
+   windows the app redrew since it last asked, a bit per window number (1: its first, all
+   an app with one window has). */
 static inline struct event app_wait(int dirty) {
     for (;;) {
         struct res e = sys(SYS_CALL, ENDPOINT, OP_WAIT, (u64)dirty, 0, 0);
-        if (e.status == OK && e.x[1] != EV_NONE) {
-            struct event ev = {e.x[1], e.x[2], e.x[3]};
-            return ev;
-        }
+        if (e.status == OK && e.x[1] != EV_NONE) return app_event(e);
         dirty = 0;               /* the display drew it when it took the call */
         sleep_ms(WAIT_AGAIN_MS);
     }
@@ -99,9 +135,7 @@ static inline struct event app_wait(int dirty) {
 /* The next event if there is one, EV_NONE if not: never blocks. For a program that keeps
    time itself (with sleep) and must still hear the close button. */
 static inline struct event app_poll(int dirty) {
-    struct res e = sys(SYS_CALL, ENDPOINT, OP_POLL, (u64)dirty, 0, 0);
-    struct event ev = {e.status == OK ? e.x[1] : EV_NONE, e.x[2], e.x[3]};
-    return ev;
+    return app_event(sys(SYS_CALL, ENDPOINT, OP_POLL, (u64)dirty, 0, 0));
 }
 
 /* The time zone the display server keeps (zone.h): minutes east of UTC. Anyone may ask; only
@@ -116,7 +150,7 @@ static inline long app_zone(void) {
 /* Copy and paste. The display server keeps what was copied: up to CLIP_MAX bytes of text,
    printable ASCII and line breaks. Text moves between programs only by the user's hand:
 
-   - EV_COPY: the user pressed Ctrl+C (or chose Edit, Copy) with this window in front. Answer
+   - EV_COPY: the user pressed Ctrl+C (or chose Edit, Copy) with this window (event.win) in front. Answer
      with app_copy() at once. The display takes a copy only from the window it asked, once,
      within COPY_MS of asking; OP_COPY at any other time is refused.
    - EV_PASTE: the user pressed Ctrl+V (or Edit, Paste) with this window in front. The text
