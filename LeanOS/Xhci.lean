@@ -861,28 +861,49 @@ theorem xhci_guard_safe (s : KState) (num a0 a1 a2 a3 a4 : Nat)
 
 /-! ## What the xHCI memory holds from boot -/
 
-/-- Evaluates `xhciBoot` at an index given as arithmetic: every condition that does not hold
-is refuted, and the one that does is taken. -/
-macro "boot_eval" : tactic => `(tactic| ((unfold xhciBoot) <;> (repeat' split) <;>
-  first | (exfalso; simp only [xCmdTrbs, xRingTrbs, xInputs] at *; omega) | rfl))
+/-- Every word of the boot content but the tables, the ERST, the rings' closing Links and the
+input contexts' ring pointers is 0. -/
+theorem xhciBoot_other {i : Nat} (h0 : 514 ≤ i) (hc1 : i ≠ 3 * 512 + 2 * (xCmdTrbs - 1))
+    (hc2 : i ≠ 3 * 512 + 2 * (xCmdTrbs - 1) + 1) (hr1 : i ≠ 48 * 512 + 2 * (xRingTrbs - 1))
+    (hr2 : i ≠ 48 * 512 + 2 * (xRingTrbs - 1) + 1)
+    (hin : ¬ (32 * 512 ≤ i ∧ i < 48 * 512 ∧ i % 8 = 1 ∧ 2 ≤ i % 512 / 8 ∧ i % 512 / 8 < 33)) :
+    xhciBoot i = 0 := by
+  unfold xhciBoot
+  rw [if_neg (by omega), if_neg (by omega), if_neg (by omega), if_neg (by omega), if_neg hc1,
+    if_neg hc2, if_neg hr1, if_neg hr2, if_neg hin]
 
 theorem boot_cmd {k : Nat} (hk : k + 1 < xCmdTrbs) :
     xhciBoot (3 * 512 + 2 * k) = 0 ∧ xhciBoot (3 * 512 + 2 * k + 1) = 0 := by
-  exact ⟨by boot_eval, by boot_eval⟩
+  simp only [xCmdTrbs] at hk
+  exact ⟨xhciBoot_other (by omega) (by simp only [xCmdTrbs]; omega) (by simp only [xCmdTrbs]; omega)
+      (by simp only [xRingTrbs]; omega) (by simp only [xRingTrbs]; omega) (by omega),
+    xhciBoot_other (by omega) (by simp only [xCmdTrbs]; omega) (by simp only [xCmdTrbs]; omega)
+      (by simp only [xRingTrbs]; omega) (by simp only [xRingTrbs]; omega) (by omega)⟩
 
 theorem boot_ring {m : Nat} (hm : m + 1 < xRingTrbs) :
     xhciBoot (48 * 512 + 2 * m) = 0 ∧ xhciBoot (48 * 512 + 2 * m + 1) = 0 := by
-  exact ⟨by boot_eval, by boot_eval⟩
+  simp only [xRingTrbs] at hm
+  exact ⟨xhciBoot_other (by omega) (by simp only [xCmdTrbs]; omega) (by simp only [xCmdTrbs]; omega)
+      (by simp only [xRingTrbs]; omega) (by simp only [xRingTrbs]; omega) (by omega),
+    xhciBoot_other (by omega) (by simp only [xCmdTrbs]; omega) (by simp only [xCmdTrbs]; omega)
+      (by simp only [xRingTrbs]; omega) (by simp only [xRingTrbs]; omega) (by omega)⟩
 
 theorem boot_input_lo {q c u : Nat} (hq : q < xInputs) (hc : c < 33) (hu : u < 2) :
     xhciBoot (32 * 512 + q * 512 + c * 8 + u * 2) = 0 := by
-  boot_eval
+  simp only [xInputs] at hq
+  exact xhciBoot_other (by omega) (by simp only [xCmdTrbs]; omega) (by simp only [xCmdTrbs]; omega)
+    (by simp only [xRingTrbs]; omega) (by simp only [xRingTrbs]; omega) (by omega)
 
 theorem boot_input_hi {q c u : Nat} (hq : q < xInputs) (hc : c < 33) (hu : u < 2) :
     xhciBoot (32 * 512 + q * 512 + c * 8 + u * 2 + 1) = if 2 ≤ c ∧ u = 0 then xRings else 0 := by
+  simp only [xInputs] at hq
   split
-  · boot_eval
-  · boot_eval
+  · unfold xhciBoot
+    rw [if_neg (by omega), if_neg (by omega), if_neg (by omega), if_neg (by omega),
+      if_neg (by simp only [xCmdTrbs]; omega), if_neg (by simp only [xCmdTrbs]; omega),
+      if_neg (by simp only [xRingTrbs]; omega), if_neg (by simp only [xRingTrbs]; omega), if_pos (by omega)]
+  · exact xhciBoot_other (by omega) (by simp only [xCmdTrbs]; omega) (by simp only [xCmdTrbs]; omega)
+      (by simp only [xRingTrbs]; omega) (by simp only [xRingTrbs]; omega) (by omega)
 
 /-- **What the xHCI memory holds from boot is safe.** Every entry of the DCBAA leads to the
 scratchpad array (entry 0) or to a device context; every entry of the scratchpad array to
