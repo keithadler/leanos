@@ -306,6 +306,14 @@ if __name__ == "__main__":
     if not os.path.exists(SD_IMAGE):
         # the card `make` builds: the programs, the guide, and startup.txt
         shutil.copyfile(template, SD_IMAGE)
+    try:
+        server = Server(("127.0.0.1", PORT), Handler)
+    except OSError as e:
+        import errno
+        if e.errno != errno.EADDRINUSE:
+            raise
+        raise SystemExit(f"port {PORT} is in use: leanos is probably running already, so open "
+                         f"http://127.0.0.1:{PORT} in a browser (or stop the other serve.py first)")
     print(f"leanos in the browser on http://127.0.0.1:{PORT}", flush=True)
     # Stopped with a signal (as the preview pane stops it), still take QEMU down with it:
     # otherwise the emulator keeps running, and keeps the SD card image open.
@@ -314,6 +322,6 @@ if __name__ == "__main__":
     for sig in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, leave)
     try:
-        Server(("127.0.0.1", PORT), Handler).serve_forever()
+        server.serve_forever()
     finally:
         stop_qemu("?")
