@@ -16,7 +16,7 @@ echo "$axioms" | grep -v "depends on axioms: \[\(propext\|Classical.choice\|Quot
   | grep -v "does not depend on any axioms$" | grep -q . && fail "unexpected axiom: $axioms"
 echo "ok: $(echo "$axioms" | wc -l | tr -d ' ') theorems rest only on Lean's standard axioms"
 
-rm -f "$T/screen.ppm" "$T/screen.png" "$T/logo.ppm" "$T/logo.png"
+rm -f "$T/screen.ppm" "$T/screen.png" "$T/logo.ppm" "$T/logo.png" "$T/console.ppm" "$T/console.png"
 # Boot, wait for the desktop to settle, type "Hi!" into the Notes window, drag it by its
 # title bar, then capture the screen (test/run.py, DEMO_STEPS).
 out=$(python3 test/run.py 40 --demo)
@@ -110,6 +110,49 @@ echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 echo "$out" | grep -qE "SHOULD NOT|CHANGED" && fail "a protection failed"
 echo "ok: boot transcript matches"
 
+# The boot steps (arch/bootcon.c): each announced before it runs, its results after it, and
+# nothing else of the kernel's in between; the last before any task runs.
+boot_head=$(echo "$out" | sed -n '1,/^leanos: \[13\/13\]/p' | sed 's/sha256 0x[0-9a-f]*\.\.\.$/sha256 .../')
+expected_boot=$(printf '%s\n' "leanos © 2026 Keith Adler" \
+  "leanos: [1/13] serial console: PL011 on GPIO 14/15, 115200 8N1" \
+  "leanos: Raspberry Pi 4, booting on EL1" \
+  "leanos: [2/13] board: the firmware's mailbox; revisions, RAM, USB power" \
+  "leanos: board revision 0xb03115, firmware 0x548e1" \
+  "leanos: serial console: PL011, 115200 baud from a 3000000 Hz clock (the firmware's)" \
+  "leanos: system counter: 62500000 Hz" \
+  "leanos: RAM for the ARM: 0x0 to 0x3c000000" \
+  "leanos: USB controller powered on" \
+  "leanos: [3/13] Lean runtime: initializing the kernel's Lean code" \
+  "leanos: [4/13] framebuffer: asking the firmware's mailbox for the screen" \
+  "leanos: the firmware's framebuffer: 1024x600 (screen 1024x600), 32 bits, pitch 4096, BGR, alpha mode 2, 2457600 bytes at bus address 0x3c100000" \
+  "leanos: framebuffer 1024x600 at 0x3c100000" \
+  "leanos: [5/13] MMU: kernel page tables, then the caches" \
+  "leanos: MMU on" \
+  "leanos: [6/13] SD card: EMMC2, then EMMC; the partition table" \
+  "leanos: SD: EMMC2: SDHCI 3.0, base clock 700000 kHz (the firmware's)" \
+  "leanos: SD: EMMC2: I/O lines at 3.3 V" \
+  "leanos: SD: EMMC2: identification clock 400 kHz" \
+  "leanos: SD: EMMC2: no card answered CMD8 or ACMD41" \
+  "leanos: SD: EMMC: SDHCI 3.0, base clock 50000 kHz (the firmware's)" \
+  "leanos: SD: EMMC: identification clock 396 kHz" \
+  "leanos: SD: EMMC: a standard-capacity card, powered up after 0 ms" \
+  "leanos: SD: EMMC: ready, transfer clock 25000 kHz" \
+  "leanos: SD card ready, data partition of 7 MiB" \
+  "leanos: [7/13] Lean kernel: the first state, from the boot manifest" \
+  "leanos: Lean kernel initialized, 18 tasks" \
+  "leanos: [8/13] memory: clearing the task frames; SHA-256 self-test" \
+  "leanos: [9/13] programs: loading each, checking it against the manifest" \
+  "leanos: alice verified, sha256 ..." "leanos: display verified, sha256 ..." "leanos: mallory verified, sha256 ..." \
+  "leanos: carol verified, sha256 ..." "leanos: input verified, sha256 ..." "leanos: fs verified, sha256 ..." \
+  "leanos: usb verified, sha256 ..." \
+  "leanos: [10/13] page tables: every task's address space" \
+  "leanos: [11/13] interrupts: the GIC-400 and the 10 ms timer" \
+  "leanos: [12/13] cores 1-3: releasing them from the spin table" \
+  "leanos: [13/13] first task: the display server takes the screen")
+[ "$boot_head" = "$expected_boot" ] || { echo "expected:"; echo "$expected_boot"; echo "got:"; echo "$boot_head"; fail "the boot steps"; }
+[ "$(echo "$out" | grep -c "^leanos: \[")" = 13 ] || fail "a boot step printed twice"
+echo "ok: the 13 boot steps are announced in order, each before it runs, the last before any task"
+
 # Drawing speed: each timing is reported, and a drag frame stays well under the 35 ms it
 # took before drawing was reworked (the bound is loose: QEMU shares this machine).
 for what in "a full redraw took" "a click on a window redrew in" "the drag drew"; do
@@ -128,6 +171,16 @@ def load(path):
     w, h = map(int, dims.split())
     assert (w, h) == (1024, 600), (w, h)
     return lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
+
+# The boot console (arch/bootcon.c), as the last boot step began: its title, the full
+# progress bar, and a green "ok" beside each step already done.
+con = load(os.path.join(sys.argv[1], "console.ppm"))
+assert max(con(8, 590)) < 40, ("console background", con(8, 590))
+assert sum(1 for y in range(26, 48) for x in range(40, 470) if min(con(x, y)) > 200) > 300, "console title"
+assert all(con(x, 101)[1] > 150 and con(x, 101)[0] < 120 for x in (41, 512, 982)), "console progress bar"
+oks = sum(1 for y in range(114, 600) for x in range(960, 986) if con(x, y)[1] > 150 and con(x, y)[0] < 120)
+assert oks > 12 * 20, ("the ok marks", oks)
+assert sum(1 for y in range(114, 600) for x in range(40, 900) if min(con(x, y)) > 200) > 3000, "console text"
 
 logo = load(os.path.join(sys.argv[1], "logo.ppm"))
 r, g, b = logo(566, 172)          # the logo tile, off the lambda: indigo to teal
@@ -160,5 +213,5 @@ for x, y in ((144, 144), (16, 48), (976, 560)):
 dark = sum(1 for y in range(my + 84, my + 106) for x in range(mx + 16, mx + 54) if max(at(x, y)) < 100)
 assert dark > 20, ("typed text", dark)
 assert max(at(215, 548)) > 120, ("the Notes icon in the dock", at(215, 548))
-print("ok: the boot screen, the desktop, the dock, the typed note and the moved window are on screen; mallory's write never landed")
+print("ok: the boot console, the boot screen, the desktop, the dock, the typed note and the moved window are on screen; mallory's write never landed")
 PY

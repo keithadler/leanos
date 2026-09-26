@@ -396,4 +396,4 @@ if __name__ == "__main__":
           else blank_card() if "--blank-sd" in sys.argv else raw_card() if "--raw-sd" in sys.argv else None)
     until = "display: the drag drew" if demo else "security: 13" if apps else None
     sys.exit(boot(float(args[0]) if args else 30, steps=steps, until=until,
-                  snaps={"display: boot logo drawn": "logo"}, image=image, settle=2 if apps else 0.3, sd=sd))
+                  snaps={"leanos: [13/13]": "console", "display: boot logo drawn": "logo"}, image=image, settle=2 if apps else 0.3, sd=sd))

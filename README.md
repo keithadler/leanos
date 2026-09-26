@@ -8,7 +8,7 @@ and proved correct.**
 Who may touch which memory, which device, which file, which task runs next: every one of
 those decisions is Lean code, compiled into the kernel image. The theorems are about that
 same code, not about a separate specification that could drift from what runs. Underneath,
-about 2,100 lines of C and assembly boot the board, write page tables and switch tasks,
+about 2,700 lines of C and assembly boot the board, write page tables and switch tasks,
 but decide nothing.
 
 On top of it is a small but real desktop system: windows, a dock, a file system with a
@@ -152,7 +152,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 29 tests: proofs, axioms, boot transcript, pixels on screen, apps, windows, USB, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 30 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, windows, USB, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -180,6 +180,10 @@ tools/fetch-firmware.sh      # once: the Pi's boot firmware, from the Raspberry 
 make pi-image                # build/leanos-pi4.img: a FAT boot partition and the data partition
 ```
 
+```bash
+tools/serial.py --summary    # watch it boot over the serial cable, and say where it got to
+```
+
 Write `build/leanos-pi4.img` to a microSD card (Raspberry Pi Imager, "Use custom", or
 `dd`) and boot a Pi 4 with an HDMI screen. leanos draws at 1024×600, so a 7-inch
 1024×600 screen matches exactly.
@@ -187,13 +191,17 @@ Write `build/leanos-pi4.img` to a microSD card (Raspberry Pi Imager, "Use custom
 What you need to know first:
 
 - **Input today is the serial console**: a 3.3 V USB-serial cable on header pins 6
-  (ground), 8 (TX) and 10 (RX), 115200 baud. The USB driver runs the Pi 4's DWC2 controller,
-  which is the USB-C port; the four USB-A ports sit behind a VL805 chip on PCIe and need an
-  xHCI driver, which is not written yet.
+  (ground), 8 (TX) and 10 (RX), 115200 baud (`tools/serial.py --keys --mouse`). The USB
+  driver runs the Pi 4's DWC2 controller, which is the USB-C port; the four USB-A ports sit
+  behind a VL805 chip on PCIe and need an xHCI driver, which is not written yet.
 - **It has never booted on real hardware.** Likely trouble spots are the SD controller
-  (EMMC2), the screen's color order, and timings QEMU does not model. The serial console
-  shows where it stops. `make test` checks what can be checked without a Pi: the boot
-  partition is a clean FAT file system, and leanos never writes to it.
+  (EMMC2), the screen's color order, and timings QEMU does not model. Each boot step is
+  announced before it runs, on the serial console, on the screen and (a panic's) on the
+  green LED, so whatever works shows where it stops; `make pi-bringup` builds a card whose
+  kernel also blinks every step on the LED
+  ([docs/SETUP.md](docs/SETUP.md#first-boot-on-a-real-pi-4-what-to-expect)). `make test`
+  checks what can be checked without a Pi: the boot partition is a clean FAT file system,
+  and leanos never writes to it.
 
 ## How it fits together
 
@@ -206,11 +214,11 @@ What you need to know first:
 | [`LeanOS/Fair.lean`](LeanOS/Fair.lean) | The proof that a receive takes waiting senders in turn, so none waits for good. |
 | [`LeanOS/Arm.lean`](LeanOS/Arm.lean), [`LeanOS/Tables.lean`](LeanOS/Tables.lean) | A model of the MMU's translation walk, and the proof that the page tables give user mode exactly its mappings. |
 | [`LeanOS/JournalModel.lean`](LeanOS/JournalModel.lean), [`LeanOS/Journal.lean`](LeanOS/Journal.lean) | The file system journal's model, and the proof that a power cut never leaves a change half done. |
-| [`arch/`](arch) | The machine layer: boot, exception vectors, MMU, interrupts, four cores, the SD card. It carries out what the Lean kernel returns. |
+| [`arch/`](arch) | The machine layer: boot, exception vectors, MMU, interrupts, four cores, the SD card, and the boot console (each boot step on serial, on screen and on the LED). It carries out what the Lean kernel returns. |
 | [`rt/`](rt) | The bare-metal slice of Lean's runtime: allocator, reference counts, closures. |
 | [`user/`](user) | Everything in user space: the display server, the file server, the USB driver and network stack, the apps, and the programs on the card (`user/progs/`). |
 | [`test/`](test) | `make test` and `make mutants`: boot transcripts, screenshots, the apps, USB, network, power cuts, tampering, fuzzers for system calls, the file server and the display, the kernel stack at its deepest and its bound from the code, the trusted base with every limit reached at once, servers kept busy by low slots. |
-| [`tools/`](tools) | Building assets and SD cards, the kernel stack's bound (`stackcheck.py`), each program's code size (`codesize.py`), and the browser console (`serve.py`). |
+| [`tools/`](tools) | Building assets and SD cards, the kernel stack's bound (`stackcheck.py`), each program's code size (`codesize.py`), the browser console (`serve.py`), and the serial console for a real Pi (`serial.py`). |
 
 A system call works like this. The machine layer saves the task's registers and hands the
 Lean kernel its state and the call's arguments. Lean returns a new state and a short list of

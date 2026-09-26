@@ -16,6 +16,8 @@ Usage: mkpiimage.py OUT.img [--kernel IMG] [--firmware DIR] NAME=FILE ...
   --kernel IMG    the kernel (make pi-image passes build/pi/kernel8.img, built for real
                   hardware; the tests pass the QEMU build)
   --firmware DIR  only to test the image with stand-in files
+  --bringup       the first-boot card (make pi-bringup): its config.txt is CONFIG, marked as
+                  the bring-up card, with the firmware's own log always on (bringup_config)
 """
 import os
 import struct
@@ -93,6 +95,19 @@ disable_splash=1
 """
 
 
+
+def bringup_config():
+    """config.txt for the bring-up card (make pi-bringup): the same as CONFIG, whose kernel
+    does the extra reporting, with the firmware's own log forced on even if CONFIG's is
+    turned off (tools/serial.py --summary reads where it put the kernel from it)."""
+    lines = CONFIG.split(b"\n")
+    assert b"uart_2ndstage=1" in lines or b"uart_2ndstage=0" in lines, "CONFIG must set uart_2ndstage"
+    lines = [b"uart_2ndstage=1" if l == b"uart_2ndstage=0" else l for l in lines]
+    head = (b"# The bring-up card (make pi-bringup): its kernel blinks each boot step on the green light,\n"
+            b"# times the steps and prints more of the board; docs/SETUP.md, \"If it does not start\".\n")
+    return head + b"\n".join(lines)
+
+
 def fat16(files):
     """A FAT16 file system of BOOT_SECTORS sectors with `files` (8.3 name, bytes) in its
     root directory."""
@@ -166,13 +181,16 @@ def main():
         return value
     firmware = option("--firmware", os.path.join(ROOT, "build", "firmware"))
     kernel = option("--kernel", os.path.join(ROOT, "build", "pi", "kernel8.img"))
+    bringup = "--bringup" in args
+    if bringup:
+        args.remove("--bringup")
     specs = args
     needed = ["start4.elf", "fixup4.dat"]
     missing = [f for f in needed if not os.path.exists(os.path.join(firmware, f))]
     if missing:
         sys.exit(f"missing {', '.join(missing)} in build/firmware/: run tools/fetch-firmware.sh first")
     boot_files = [(f, open(os.path.join(firmware, f), "rb").read()) for f in needed]
-    boot_files += [("config.txt", CONFIG),
+    boot_files += [("config.txt", bringup_config() if bringup else CONFIG),
                    ("kernel8.img", open(kernel, "rb").read())]
     data_start = BOOT_START + BOOT_SECTORS
     total = CARD_SECTORS

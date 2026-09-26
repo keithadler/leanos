@@ -8,6 +8,9 @@
 #   make proofs   check the proofs only
 #   make mutants  break the kernel on purpose and check the proofs notice
 #   make stackcheck  the kernel stack's worst case, computed from the code (make test runs it)
+#   make pi-image    build/leanos-pi4.img, the card a Raspberry Pi 4 boots
+#   make pi-bringup  build/leanos-pi4-bringup.img: the same, with the first-boot diagnostics
+#                    (LED blink codes for every boot step, step times, more of the board)
 
 TOOLCHAIN := $(shell cat lean-toolchain | sed 's|/|--|; s|:|---|')
 LEAN_HOME := $(HOME)/.elan/toolchains/$(TOOLCHAIN)
@@ -37,9 +40,9 @@ KERNEL_LEAN_C := .lake/build/ir/LeanOS/Kernel.c
 USER_PROGS := alice display mallory carol input terminal settings security fs files launcher usb
 USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
-ARCH_O := build/boot.o build/kmain.o build/sd.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
+ARCH_O := build/boot.o build/kmain.o build/bootcon.o build/sd.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
 
-.PHONY: all run test mutants proofs clean pi-image stackcheck
+.PHONY: all run test mutants proofs clean pi-image pi-bringup stackcheck
 ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files launcher open)
 
 all: $(ASSET_BLOBS) build/kernel8.img build/sd-template.img build/sd-desktop.img build/codesize.txt proofs
@@ -89,7 +92,7 @@ build/Kernel.o: $(KERNEL_LEAN_C)
 	@mkdir -p build
 	$(CC) $(LEANC_FLAGS) -c $< -o $@
 
-build/%.o: arch/%.c arch/arch.h build/user/font.h
+build/%.o: arch/%.c arch/arch.h arch/bootcon.h build/user/font.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -Ibuild/user -Wall -Werror -c $< -o $@
 
@@ -222,15 +225,36 @@ pi-image: build/pi/kernel8.img $(DISK_ELFS) $(DISK_ICONS) tools/mkpiimage.py too
 	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup.txt
 
 # The kernel for a real Pi: the same, except that switching off halts instead of ending the
-# emulator through semihosting (a Pi has no debugger to take that call).
-build/pi/kmain.o: arch/kmain.c arch/arch.h build/user/font.h
+# emulator through semihosting (a Pi has no debugger to take that call), and the green LED
+# shows the boot (arch/bootcon.c: on while booting, a panic blinks its step).
+PI_C := kmain bootcon
+build/pi/%.o: arch/%.c arch/arch.h arch/bootcon.h build/user/font.h
 	@mkdir -p build/pi
 	$(CC) $(filter-out -DLEANOS_QEMU,$(CFLAGS)) -Ibuild/user -Wall -Werror -c $< -o $@
 
-PI_ARCH_O := $(filter-out build/kmain.o,$(ARCH_O)) build/pi/kmain.o
+PI_ARCH_O := $(filter-out $(PI_C:%=build/%.o),$(ARCH_O)) $(PI_C:%=build/pi/%.o)
 build/pi/kernel8.img: $(PI_ARCH_O) $(INIT_O) arch/kernel.ld
 	$(LD) -T arch/kernel.ld --gc-sections $(PI_ARCH_O) $(INIT_O) -o build/pi/leanos.elf
 	$(OBJCOPY) -O binary build/pi/leanos.elf $@
+
+# The first-boot kernel (LEANOS_BRINGUP): the Pi's, and before each boot step the LED blinks
+# the step's number; each step line says how long the step before took, and the firmware's
+# board and clock readings are printed. The blinks add about 40 s to the boot, so it is a
+# build of its own, never the normal image. Its config.txt is the normal card's (mkpiimage.py
+# --bringup), with the firmware's own log on the serial console always on.
+build/pi-bringup/%.o: arch/%.c arch/arch.h arch/bootcon.h build/user/font.h
+	@mkdir -p build/pi-bringup
+	$(CC) $(filter-out -DLEANOS_QEMU,$(CFLAGS)) -DLEANOS_BRINGUP -Ibuild/user -Wall -Werror -c $< -o $@
+
+BRINGUP_ARCH_O := $(filter-out $(PI_C:%=build/%.o),$(ARCH_O)) $(PI_C:%=build/pi-bringup/%.o)
+build/pi-bringup/kernel8.img: $(BRINGUP_ARCH_O) $(INIT_O) arch/kernel.ld
+	$(LD) -T arch/kernel.ld --gc-sections $(BRINGUP_ARCH_O) $(INIT_O) -o build/pi-bringup/leanos.elf
+	$(OBJCOPY) -O binary build/pi-bringup/leanos.elf $@
+
+pi-bringup: build/pi-bringup/kernel8.img $(DISK_ELFS) $(DISK_ICONS) tools/mkpiimage.py tools/mksd.py
+	python3 tools/mkpiimage.py build/leanos-pi4-bringup.img --kernel build/pi-bringup/kernel8.img --bringup \
+	  $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) \
+	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup.txt
 
 build/user/%.bin: build/user/%.elf
 	$(OBJCOPY) -O binary $< $@
@@ -274,7 +298,7 @@ build/stack/Init_%.o: build/c/Init_%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(LEANC_FLAGS) -fstack-usage -c $< -o $@
 
-build/stack/%.o: arch/%.c arch/arch.h build/user/font.h
+build/stack/%.o: arch/%.c arch/arch.h arch/bootcon.h build/user/font.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Ibuild/user -Wall -Werror -fstack-usage -c $< -o $@
 

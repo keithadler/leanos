@@ -187,7 +187,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   constants built once at boot) come on top. If the heap runs out anyway, the kernel
   panics, which denies service but never breaks isolation.
 
-**`arch/boot.S` and `arch/kmain.c` (~1,600 lines)**
+**`arch/boot.S`, `arch/kmain.c` and `arch/bootcon.c` (~2,200 lines)**
 - Storing the tables: `mmu_init`, `tables_init` and `build_user_pages` must store each
   word Lean computes at its index, in the page-aligned arrays whose addresses they pass to
   Lean (a level-1 table, a level-2 table, and 16 level-3 tables in one array). For level 3,
@@ -408,7 +408,17 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   its window clock, a program with a forged code run named its window clock the same way,
   and the dock's Clock only brought the impostor forward.
 - The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
-  then stops.
+  with the boot step it stopped in and, for an exception, its class, ELR, FAR and ESR, then
+  stops (on a Pi, blinking the step on the green LED). A fault while stopping halts at once.
+- The boot console (`arch/bootcon.c`): each boot step is announced before it runs, on the
+  serial port and, once the framebuffer exists, drawn on it with the kernel's lines, until
+  just before the first task runs; from then on only the panic screen draws. Every pixel it
+  draws is cleaned and invalidated out of the cache at once, so no dirty line of the
+  kernel's cached view of the framebuffer can land later over what the display server
+  draws through its own uncached mapping. It reports and decides nothing. When `kputc`
+  gives up on a UART that takes nothing, the console says so on the screen. On a Pi it
+  also drives the green activity LED (GPIO 42, the light `_start` turns on when loaded at
+  the wrong address) during boot, and blinks a panic's step on it.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.
 - Four cores (`arch/kmain.c`, "the cores"; `arch/boot.S`, `secondary`). Core 0 boots, then
   hands cores 1-3 their entry through the boot stub's spin table (on a Pi 4 the firmware's
@@ -504,8 +514,9 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   the stack goes does not depend on how many a task holds. What recursion is left walks
   short lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines
   (at most two; `task_bounded`, `state_bounded`).
-  The deepest use measured is 2,144 bytes, with a task holding all 8192 mappings
-  (`test/stack.sh`; it was about 900 KiB before the loops).
+  The deepest use measured is 2,160 bytes, at boot (drawing the boot console); a task
+  holding all 8192 mappings needs no more (`test/stack.sh`; it was about 900 KiB before
+  the loops).
 
   The worst case is also computed from the code: `tools/stackcheck.py` (`make stackcheck`,
   and `test/stackcheck.sh` in `make test`) finds how deep the stack can go from each place
@@ -517,11 +528,12 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   tail), `placeCaller` and `forgetCaller` a task's reply slots (9), `dropLine` the pending
   lines (3). Recursion not in the table, an indirect call it cannot resolve, a frame of
   variable size (alloca, a variable-length array) or a worst case over 32 KiB, half the
-  stack, fails the check. The worst case is 5,824 bytes: 2,912 for a system call (`start`
+  stack, fails the check. The worst case is 6,976 bytes: 3,488 for a system call (`start`
   taking back a slot's memory: `revokeAll` over the tasks, then `forgetCaller` over one
-  task's reply slots, then an allocation that can fail into `kpanic`, which draws the panic
-  screen), and a kernel
-  exception on top of that. What it trusts:
+  task's reply slots, then an allocation that can fail into `kpanic`, whose message goes
+  through `kputc` into the boot console's recording; the tool cannot see that the
+  recording stops when the boot ends, so it counts it), and a kernel exception on top of
+  that. What it trusts:
   - clang's frame sizes. Each C file of the kernel (`arch/`, `rt/`, the Lean kernel's and
     the standard library's generated C) is compiled a second time into `build/stack/`, with
     the shipped flags and `-fstack-usage`; the tool checks that each object's code and
@@ -548,9 +560,11 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
     synchronous exception can come in the kernel; it goes straight to `kpanic`, whose own
     path is taken not to fault again.
   The check covers the image `make` builds for QEMU; the Pi's (`make pi-image`) differs
-  only in `poweroff`. The stack is still painted at boot and its bottom checked on every
-  return to user mode, for what the tool trusts: an overflow stops the machine instead of
-  corrupting kernel memory silently.
+  in `poweroff` and in `arch/bootcon.c`'s LED and UART waits (leaf loops, no calls), and
+  the bring-up kernel (`make pi-bringup`) also in its blink codes, step times and board
+  report. The stack is still painted at boot and its bottom checked on every return to
+  user mode, for what the tool trusts: an overflow stops the machine instead of corrupting
+  kernel memory silently.
 - User mode may read the processor's virtual counter (CNTKCTL_EL1.EL0VCTEN), for
   animations and timeouts. This gives no new power: a task could already time itself by
   counting loops. Timing side channels remain out of scope.

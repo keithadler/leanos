@@ -10,6 +10,7 @@
  */
 #include <lean/lean.h>
 #include "arch.h"
+#include "bootcon.h"
 
 /* ---- the Lean kernel (LeanOS/Kernel.lean) ---- */
 lean_object *initialize_leanos_LeanOS_Kernel(uint8_t builtin);
@@ -165,8 +166,10 @@ static void uart_init(void) {
    drop it no longer waits at all. */
 static int uart_stuck;
 void kputc(char c) {
+    if (bootcon_on) bootcon_putc(c);                 /* the boot console (arch/bootcon.c) */
     for (uint64_t d = deadline_us(20000); mmio_r32(UART0 + 0x18) & (1 << 5);)
         if (uart_stuck || passed(d)) {
+            if (!uart_stuck) bootcon_uart_stuck();   /* said once, on the screen */
             uart_stuck = 1;
             return;
         }
@@ -252,6 +255,7 @@ static void panic_screen(const char *msg) {
     panic_text(40, 200, 2, "The kernel met something it cannot safely go on from,", 0xc8cad4);
     panic_text(40, 224, 2, "and stopped rather than guess. It wrote nothing after this.", 0xc8cad4);
     panic_text(40, 248, 2, "Switch the Pi off and on to start again.", 0xc8cad4);
+    boot_panic_screen(panic_fb, panic_w, panic_h, panic_stride, 296);   /* the step, the boot's last lines */
     /* The kernel maps the framebuffer as cached memory: push the picture out to where the
        GPU reads it. */
     for (uint64_t a = (uint64_t)panic_fb & ~63UL; a < (uint64_t)(panic_fb + panic_stride * panic_h); a += 64)
@@ -260,11 +264,13 @@ static void panic_screen(const char *msg) {
 }
 
 void kpanic(const char *msg) {
+    boot_panic_begin();
     kputs("\nleanos: PANIC: ");
     kputs(msg);
     kputs("\n");
+    boot_panic_where();
     panic_screen(msg);
-    poweroff();
+    boot_halt();
 }
 
 /* ---- the firmware's mailbox ----
@@ -1028,13 +1034,13 @@ static void load_result(uint64_t j) {
  * stack goes no longer depends on how many a task holds. What recursion is left walks short
  * lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines (at most
  * one of each). tools/stackcheck.py computes the worst case from the code (clang's frame
- * sizes, the calls in the linked image, and a bound for each of those recursions): 5,824
+ * sizes, the calls in the linked image, and a bound for each of those recursions): 6,976
  * bytes, with a kernel exception on top of the deepest system call, and `make test` fails if
- * it passes half the stack. The deepest measured, with a task holding all 8192 mappings, is
- * 2,144 bytes (test/stack.sh). The computation trusts clang, the call graph it reads and the
- * recursion bounds it is given (TRUST.md), so the stack is still checked as well: it is
- * painted at boot, and every return to user mode checks that the bottom of the paint is
- * intact. Running past it stops the machine rather than letting the stack grow into the
+ * it passes half the stack. The deepest measured is 2,160 bytes, at boot (the boot console);
+ * a task holding all 8192 mappings needs no more (test/stack.sh). The computation trusts
+ * clang, the call graph it reads and the recursion bounds it is given (TRUST.md), so the
+ * stack is still checked as well: it is painted at boot, and every return to user mode
+ * checks that the bottom of the paint is intact. Running past it stops the machine rather than letting the stack grow into the
  * kernel's other data. */
 extern char __stack_bottom[], __stack_top[], __core_stacks[], __core_stacks_end[];
 #define STACK_SIZE 0x10000UL
@@ -1181,7 +1187,7 @@ void trap(struct frame *f, uint64_t kind) {
         kputhex(SYSREG_READ(elr_el1));
         kputs(" far ");
         kputhex(SYSREG_READ(far_el1));
-        kpanic("stopping");
+        kpanic(boot_exception(kind, SYSREG_READ(esr_el1), SYSREG_READ(elr_el1), SYSREG_READ(far_el1)));
     }
     lock();
     uint64_t cur = core_task[c];
@@ -1262,9 +1268,12 @@ static void start_cores(void) {
 }
 
 void kmain(void) {
+    boot_led_on();                      /* the first sign of life: the green LED (Pi only) */
     stack_paint();
+    boot_led_code(STAGE_UART);
     uart_init();
     kputs("leanos \xc2\xa9 2026 Keith Adler\n");
+    boot_stage(STAGE_UART);
     if ((uint64_t)(__stack_top - __stack_bottom) != STACK_SIZE ||
         (uint64_t)(__core_stacks_end - __core_stacks) != (NCORES - 1) * STACK_SIZE)
         kpanic("the kernel stacks in arch/kernel.ld are not STACK_SIZE each");
@@ -1272,20 +1281,25 @@ void kmain(void) {
     uint64_t el = SYSREG_READ(CurrentEL) >> 2;
     kputs(el == 1 ? "EL1" : "EL?");
     kputs("\n");
+    boot_stage(STAGE_BOARD);
     board_check();
+    boot_board_info();
     /* User mode may read the virtual counter (and its frequency) to keep time: animations
        need it, and a task could already time itself by counting loops. */
     SYSREG_WRITE(cntkctl_el1, 1UL << 1);
 
     /* The Lean kernel comes up first: it says what screen to ask for, and computes the
        tables the MMU is turned on with. */
+    boot_stage(STAGE_LEAN);
     lean_object *res = initialize_leanos_LeanOS_Kernel(1);
     if (!lean_io_result_is_ok(res)) kpanic("Lean module initialization failed");
     lean_dec(res);
 
+    boot_stage(STAGE_FB);
     uint64_t fb = fb_alloc();
     panic_fb = (uint32_t *)fb;
     if (fb) {
+        bootcon_start((uint32_t *)fb, panic_w, panic_h, panic_stride);
         kputs("leanos: framebuffer ");
         kputdec(nat(leanos_fb_width(lean_box(0))));
         kputs("x");
@@ -1295,8 +1309,10 @@ void kmain(void) {
         kputs("\n");
     } else kputs("leanos: no framebuffer\n");
 
+    boot_stage(STAGE_MMU);
     mmu_init();
     kputs("leanos: MMU on\n");
+    boot_stage(STAGE_SD);
     if (!sd_init()) kputs("leanos: no SD card\n");
     else {
         uint64_t blocks = sd_partition();
@@ -1307,6 +1323,7 @@ void kmain(void) {
         } else kputs("leanos: SD card has no data partition (type 0xDA); files stay in memory\n");
     }
 
+    boot_stage(STAGE_STATE);
     K = leanos_init(lean_box(fb));
     ntasks = nat(leanos_ntasks(K1));
     if (ntasks > MAX_TASKS || ntasks > sizeof names / sizeof names[0]) kpanic("the manifest has more tasks than the machine layer supports");
@@ -1314,25 +1331,32 @@ void kmain(void) {
     kputdec(ntasks);
     kputs(" tasks\n");
 
+    boot_stage(STAGE_MEMORY);
     memset((void *)FRAME_BASE, 0, NFRAMES * PAGE_SIZE);
     sha256_self_test();
+    boot_stage(STAGE_PROGRAMS);
     /* The programs that start at boot. The apps wait in their slots until started. */
     for (uint64_t i = 0; i < ntasks; i++)
         if (leanos_autostart(lean_box(i))) {
             load_program(i);
             measure_and_verify(i);
         }
+    boot_stage(STAGE_TABLES);
     for (uint64_t i = 0; i < ntasks; i++) {
         tables_init(i);
         build_user_pages(i);
     }
+    boot_stage(STAGE_IRQ);
     irq_init();
 
     lock();
     core_task[0] = NONE;
     core_stack_top[0] = (uint64_t)__stack_top;
+    boot_stage(STAGE_CORES);
     start_cores();
+    boot_stage(STAGE_FIRST);
     enter_lean(0);
+    bootcon_end();                      /* from here the display server owns the screen */
     leave(0, pick(0), &first_frame[0]);
     enter_user(&first_frame[0], (uint64_t)__stack_top);
 }

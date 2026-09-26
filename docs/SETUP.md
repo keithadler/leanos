@@ -157,7 +157,8 @@ make mutants
 ## 5. Run it on a real Raspberry Pi 4
 
 > leanos has not booted on real hardware yet. Expect to help find what QEMU does not model:
-> the SD controller, the screen, timings. The serial console shows where it stops: see
+> the SD controller, the screen, timings. The serial console, the screen and the green LED
+> each show where it stops: see
 > [First boot on a real Pi 4: what to expect](#first-boot-on-a-real-pi-4-what-to-expect).
 
 ### What you need
@@ -210,124 +211,157 @@ On Linux, find the card with `lsblk` and use `of=/dev/sdX bs=4M conv=fsync`.
 
 ### Wire the serial cable
 
+Switch the Pi off first. The cable crosses over: what one side sends, the other receives.
+
 | Serial cable | Pi 4 header |
 |---|---|
 | GND (black) | pin 6 (ground) |
-| RX (white on Adafruit's) | pin 8 (GPIO 14, the Pi's TX) |
-| TX (green on Adafruit's) | pin 10 (GPIO 15, the Pi's RX) |
+| RX, the cable's input (white on Adafruit's) | pin 8 (GPIO 14, the Pi's TX) |
+| TX, the cable's output (green on Adafruit's) | pin 10 (GPIO 15, the Pi's RX) |
+| power (red) | nothing: leave it unconnected |
 
-Leave the cable's power wire (red) unconnected: the Pi has its own supply. Then open the
-serial port at 115200 baud, for example:
+Never connect anything to pins 2 or 4: they are 5 V, and 5 V on a GPIO pin destroys it. The
+Pi has its own supply, so the cable's power wire stays loose. Pin 1 is at the header's end
+farthest from the USB ports, in the row nearer the middle of the board; the even pins run
+along the board's edge: 2 and 4 (5 V) first, then 6 (ground), 8 and 10.
+
+### Watch it boot
 
 ```bash
-screen /dev/tty.usbserial-XXXX 115200
+tools/serial.py --summary
 ```
 
-(`ls /dev/tty.usb*` on macOS or `ls /dev/ttyUSB*` on Linux shows the name.) Put the card in
-the Pi, connect the screen to **HDMI 0** (the micro-HDMI port next to the USB-C power port),
-and power it on. The firmware's own log comes first, then leanos's, from
-`leanos © 2026 Keith Adler`. Keys you type in the serial window go to the window in front.
+It finds the adapter (`/dev/cu.usbserial-*`, `cu.usbmodem*`, `cu.SLAB_USBtoUART*` or
+`cu.wchusbserial*` on macOS; `/dev/ttyUSB*` or `/dev/ttyACM*` on Linux), waits for one to be
+plugged in if there is none, opens it at 115200 8N1, and prints every line with the time
+and the seconds since the first byte. Everything also goes to `build/serial-DATE.log`.
+
+Put the card in the Pi, connect the screen to **HDMI 0** (the micro-HDMI port next to the
+USB-C power port), and power it on. The firmware's own log comes first, then leanos's, from
+`leanos © 2026 Keith Adler`. Ctrl+C stops the tool, and `--summary` then says where the
+boot got to: the last boot step and what it does, the lines after it, a panic and its
+registers, and where the firmware put the kernel. With nothing received at all it goes
+through the wiring. Other options: `--device PATH`, `--list`, `--until TEXT` (stop at a
+line), `--timeout SECONDS`, `--log PATH`. Any other serial terminal works too
+(`screen /dev/cu.usbserial-XXXX 115200`), without the times, the log or the summary.
+
+`tools/serial.py --self-test` checks the tool itself with pseudo-terminals, no Pi needed;
+`make test` runs it, and also points QEMU's serial port at a pseudo-terminal and watches a
+whole boot through it (`test/serial.sh`).
 
 The card's `config.txt` is written by `tools/mkpiimage.py`, where each line is explained.
+
+### Use the desktop over the cable
+
+The Pi 4's USB-A ports need a driver leanos does not have yet, so the serial cable is the
+keyboard and mouse:
+
+```bash
+tools/serial.py --keys --mouse
+```
+
+What you type goes to the window in front; the arrow keys, Return, Backspace, Tab, and
+Ctrl+C / Ctrl+V (leanos's copy and paste) work as in the browser console. With `--mouse`,
+this terminal window stands for the Pi's screen: a click or a drag at a spot in the window
+is a click or drag at the same spot on the Pi's screen (`--screen WxH` if it is not
+1024x600). **Ctrl+]** stops it.
 
 ### First boot on a real Pi 4: what to expect
 
 leanos has so far run only on QEMU, which is more forgiving than the chip: it has no caches
 to keep coherent, accepts any clock divisor, never pads a framebuffer row, and answers every
 mailbox request at once. Everything that could differ on a real board is checked at boot
-and printed, so the serial console says where it stops and why. Below is each step in
-order: what the console prints when it goes well, and what to try if it stops there. The
-values in angle brackets depend on your board.
+and printed, and each of the kernel's 13 boot steps is announced before it runs, so
+whatever still works shows where it is, or where it stopped:
 
-**0. The firmware.** With `uart_2ndstage=1` (set in the card's `config.txt`), the firmware
-prints its own log first, on the same pins: it names the files it reads, `config.txt` and
-then `kernel8.img`, and where it puts the kernel, which must be `0x80000`.
+- **Serial**: `leanos: [n/13] what` before step n, then the step's results.
+- **Screen**: as soon as the framebuffer exists (step 4), the kernel draws the same lines as
+  a boot console, with a green `ok` beside each finished step and a progress bar. The
+  display server's boot screen replaces it when it takes over.
+- **The green activity LED** (GPIO 42, which needs nothing set up first): on from the
+  kernel's first instruction, off when the display server takes over (the codes are below).
+- **A panic or an exception** prints its step, the exception class, ELR, FAR and ESR on
+  serial and on the panic screen, with the boot's last lines, and blinks the step on the LED.
 
-| If it stops here | Try |
-|---|---|
-| Nothing on the serial console at all | Check the wiring: the cable's RX goes to pin 8, its TX to pin 10, ground to pin 6; 115200 baud, 8N1, no flow control. Look at the green light: a repeating pattern of flashes is the bootloader's error code (Raspberry Pi's documentation, "LED warning codes"): 4 short flashes mean `start4.elf` was not found (run `tools/fetch-firmware.sh`, then `make pi-image` again), 7 short the kernel image, 2 long then 1 short a boot partition that is not FAT. The Pi 4's bootloader EEPROM may also need updating with Raspberry Pi Imager's "Bootloader" image. |
-| The firmware's log, then nothing, and the **green light stays on** | The kernel was loaded somewhere other than `0x80000` and stopped at once (it turns the light on when it finds itself elsewhere, since at the wrong address it cannot drive the UART). Check `kernel_address=0x80000` is still in `config.txt`. |
-| The firmware's log, then nothing, light off | The kernel stopped before its first line. Note the firmware's last lines and try another firmware release: `tools/fetch-firmware.sh TAG`, with a release tag from github.com/raspberrypi/firmware, then `make pi-image`. |
+**Before leanos: the firmware.** With `uart_2ndstage=1` (set in the card's `config.txt`),
+the firmware prints its own log first, on the same pins: it names the files it reads,
+`config.txt` and then `kernel8.img`, and where it puts the kernel, which must be `0x80000`
+(`serial.py --summary` checks).
 
-**1. The console and the board.**
+**The steps.** Values in angle brackets depend on your board.
 
-```
-leanos © 2026 Keith Adler
-leanos: Raspberry Pi 4, booting on EL1
-leanos: board revision <0xc03111>, firmware <0x...>
-leanos: serial console: PL011, 115200 baud from a 48000000 Hz clock (the firmware's)
-leanos: system counter: 54000000 Hz
-leanos: RAM for the ARM: 0x0 to <0x3b400000>
-leanos: USB controller powered on
-```
+| Step | Serial line (`leanos: [n/13] ...`) | Then, when it goes well | If it stops here |
+|---|---|---|---|
+| 1 | serial console: PL011 on GPIO 14/15, 115200 8N1 | `Raspberry Pi 4, booting on EL1` | The kernel runs and its UART works. |
+| 2 | board: the firmware's mailbox; revisions, RAM, USB power | `board revision <0xc03111>, firmware <0x...>`, `serial console: PL011, 115200 baud from a 48000000 Hz clock (the firmware's)`, `system counter: 54000000 Hz`, `RAM for the ARM: 0x0 to <0x3b400000>`, `USB controller powered on` | Its waits are bounded; see the messages below. |
+| 3 | Lean runtime: initializing the kernel's Lean code | | The heap after the image, or RAM. |
+| 4 | framebuffer: asking the firmware's mailbox for the screen | `the firmware's framebuffer: 1024x600 (screen 1024x600), 32 bits, pitch 4096, BGR, alpha mode 2, 2457600 bytes at bus address <0xfe...>`, `framebuffer 1024x600 at <0x3e...>` | The firmware's answer; the screen console starts here. |
+| 5 | MMU: kernel page tables, then the caches | `MMU on` | Turning on the MMU and caches failed. Report it. |
+| 6 | SD card: EMMC2, then EMMC; the partition table | `SD: EMMC2: SDHCI 3.0, base clock <100000> kHz (the firmware's)`, `SD: EMMC2: I/O lines at 3.3 V`, `SD: EMMC2: identification clock <400> kHz`, `SD: EMMC2: an SDHC or SDXC card, powered up after <N> ms`, `SD: EMMC2: ready, transfer clock 25000 kHz`, `SD card ready, data partition of 63 MiB` | The `SD:` lines say which command got no answer; see below. |
+| 7 | Lean kernel: the first state, from the boot manifest | `Lean kernel initialized, 18 tasks` | Lean code and its heap. |
+| 8 | memory: clearing the task frames; SHA-256 self-test | | RAM from 0x4000000. |
+| 9 | programs: loading each, checking it against the manifest | `alice verified, sha256 <0x...>...`, and so on for 7 programs | The last `verified` line names the program before the one it stopped in. |
+| 10 | page tables: every task's address space | | |
+| 11 | interrupts: the GIC-400 and the 10 ms timer | | `enable_gic=1` must be in `config.txt`. |
+| 12 | cores 1-3: releasing them from the spin table | | Core 0 itself: a core that never starts does not stop it. |
+| 13 | first task: the display server takes the screen | `core 1 up`, `core 2 up`, `core 3 up`, then the tasks' lines; the screen shows the boot checks, then the desktop, and the LED goes off | A missing `core N up`: that core did not leave the firmware's spin table; leanos runs on the cores that came up. Report it. |
+
+**What the messages mean.**
 
 | If you see | It means, and what to try |
 |---|---|
-| Garbage instead of text | The UART's clock is not what the kernel divides: the clock line says which it used. Keep `init_uart_clock=48000000` in `config.txt`. |
+| Nothing on the serial console at all | Check the wiring (above); 115200 baud, 8N1, no flow control. Then look at the green LED (the codes are below). |
+| The firmware's log, then nothing from leanos | See the LED's codes: on and steady means the kernel was loaded at the wrong address or stopped before its first line; off means it never ran. Note the firmware's last lines and try another firmware release: `tools/fetch-firmware.sh TAG`, with a release tag from github.com/raspberrypi/firmware, then `make pi-image`. |
+| Garbage instead of text | The UART's clock is not what the kernel divides: the step 2 clock line says which it used. Keep `init_uart_clock=48000000` in `config.txt`. (Or the cable's ground is missing.) |
 | `booting on EL?` | The firmware's boot stub left the core at an exception level leanos does not expect. Report it with the firmware's log. |
 | `the firmware does not answer the mailbox` | Nothing that uses the firmware will work (screen, SD clock, USB power); leanos goes on without them. Try another firmware release. |
 | `system counter: ... (assumed: CNTFRQ_EL0 was not set)` | The boot stub did not set the counter's rate; leanos assumes 54 MHz, the Pi 4's crystal. Timing may be off if that is wrong. |
 | `PANIC: the firmware left the ARM RAM from ...` | Too much memory went to the GPU: remove any `gpu_mem` line you added. leanos needs the first 84 MiB. |
 | `the firmware did not power the USB controller on` | USB will not work; everything else goes on. |
-
-**2. The screen.**
-
-```
-leanos: the firmware's framebuffer: 1024x600 (screen 1024x600), 32 bits, pitch 4096, BGR, alpha mode 2, 2457600 bytes at bus address <0xfe...>
-leanos: framebuffer 1024x600 at <0x3e...>
-leanos: MMU on
-```
-
-| If you see | It means, and what to try |
-|---|---|
 | `no framebuffer: ...` | The firmware gave no usable screen; leanos runs without one (the serial console still works). Check the monitor is on HDMI 0 and `hdmi_force_hotplug=1` is in `config.txt`. |
 | `PANIC: the firmware's framebuffer has rows of N bytes, not 4096` (also on the screen) | The firmware pads each row; the display server cannot draw on that yet. Please report the line: it needs a kernel change. |
 | `PANIC: the firmware gave a WxH framebuffer, not 1024x600`, or one about its size or address | The firmware did not honor the request; report it with the framebuffer line above it. |
 | `the firmware kept RGB pixel order: red and blue will look swapped` | leanos runs, with red and blue swapped. Report it. |
 | `the firmware kept alpha reversed` | The screen may stay black while everything else works. Report it. |
 | The framebuffer lines look right but the screen is black or says "no signal" | The monitor may not like the mode the firmware picked. Try adding `hdmi_safe=1`, or `hdmi_group=2` and `hdmi_mode=16` (1024x768 at 60 Hz), to `config.txt`. |
-| Nothing after the framebuffer line (no `MMU on`) | Turning on the MMU and caches failed. Report it. |
+| An `SD:` line saying a command got no answer (`no answer to CMD0`, `no card answered CMD8 or ACMD41`, `the card did not finish powering up within a second`) | leanos then tries the older EMMC controller (on a Pi 4 it holds the Wi-Fi chip, not a card, so it fails too) and goes on with `leanos: no SD card`: files stay in memory, and everything else works. Try another card (a plain SDHC card of 32 GB or less is the simplest case), and report the lines. |
+| `leanos: SD: read of block N failed, interrupt status 0x...` | A block failed after the card was set up. Report it, with the card's make and size. |
+| `serial: the UART takes no characters; serial output is dropped` (on the screen) | The UART never took a character, so the kernel stopped waiting for it and boots on; the screen and the LED still report. |
+| `PANIC: exception in the kernel: ...` | The kernel faulted: the line names the class (a data abort, say), the fault, ELR (the instruction), FAR (the address) and ESR; the line after it names the step. Report both. |
+| `usb: nothing plugged in` | Expected: a keyboard on the USB-A ports needs a driver for their controller (the VL805, over PCIe), which leanos does not have, and the USB-C port is the Pi's power input, which gives a device plugged into it no power. Use the serial cable. |
 
-**3. The SD card.** Each step of bringing up the Pi 4's SD controller (EMMC2) is printed:
+When you report a first boot, include the whole serial log, from the firmware's first line:
+`serial.py` keeps it in `build/serial-DATE.log`.
 
-```
-leanos: SD: EMMC2: SDHCI 3.0, base clock <100000> kHz (the firmware's)
-leanos: SD: EMMC2: I/O lines at 3.3 V
-leanos: SD: EMMC2: identification clock <400> kHz
-leanos: SD: EMMC2: an SDHC or SDXC card, powered up after <N> ms
-leanos: SD: EMMC2: ready, transfer clock 25000 kHz
-leanos: SD card ready, data partition of 63 MiB
-```
+### The LED's codes
 
-A failed step says which command got no answer (`no answer to CMD0`, `no card answered CMD8
-or ACMD41`, `the card did not finish powering up within a second`, and so on), then leanos
-tries the older EMMC controller (on a Pi 4 it holds the Wi-Fi chip, not a card, so it fails
-too) and goes on with `leanos: no SD card`: files stay in memory, and everything else works.
-A block that fails later prints `leanos: SD: read of block N failed, interrupt status 0x...`.
-Try another card (a plain SDHC card of 32 GB or less is the simplest case), and report the
-lines.
+| The green LED | What it means |
+|---|---|
+| A repeating pattern of long and short flashes, with no leanos output | The Pi's bootloader or firmware stopped (Raspberry Pi's documentation, "LED warning flash codes"): 4 short flashes mean `start4.elf` was not found (run `tools/fetch-firmware.sh`, then `make pi-image` again), 7 short the kernel image, 2 long then 1 short a boot partition that is not FAT. The Pi 4's bootloader EEPROM may also need updating with Raspberry Pi Imager's "Bootloader" image. |
+| Off after the firmware's flicker, nothing from leanos | The kernel never started. |
+| On and steady, nothing from leanos on serial or the screen | The kernel was loaded somewhere other than `0x80000` and stopped at once: it turns the light on there, since at the wrong address it cannot drive the UART (`arch/boot.S`). Check `kernel_address=0x80000` is still in `config.txt`; the firmware's log says where it put the kernel. (A kernel that hangs in steps 1 to 3, before the screen, looks the same without a serial cable: the bring-up card tells them apart, since its light goes dark and blinks at step 1.) |
+| On and steady, with leanos's steps on serial or the screen | The kernel is booting, or hung (without a panic) in the last step shown. |
+| Off, after being on | The boot finished and the display server runs (Settings can switch it on and off from then). |
+| A burst of fast flickers, a pause, then N slow blinks, over and over | The kernel stopped (a panic or an exception) in step N; 14 means after boot, while running tasks. |
+| Bring-up card only: a second dark, then N quick blinks, then on | Step N is starting. |
 
-**4. The programs and the cores.**
+### If it does not start: the bring-up card
 
-```
-leanos: Lean kernel initialized, 18 tasks
-leanos: alice verified, sha256 <0x...>...
-...
-leanos: core 1 up
-leanos: core 2 up
-leanos: core 3 up
+```bash
+make pi-bringup
 ```
 
-The screen shows the boot checks, then the desktop. If a `core N up` line is missing, that
-core did not leave the firmware's spin table; leanos runs on the cores that came up. Report
-it.
+This writes `build/leanos-pi4-bringup.img`, for a board that stops where nothing shows why.
+Its `config.txt` is the normal card's (with the firmware's log always on); its kernel adds:
 
-**5. Input.** Keys typed on the serial console go to the window in front, as in the browser.
-`usb: nothing plugged in` is expected: a keyboard on the USB-A ports needs a driver for their
-controller (the VL805, over PCIe), which leanos does not have, and the USB-C port is the Pi's
-power input, which gives a device plugged into it no power.
+- before each step the LED blinks the step's number (count the quick blinks after each dark
+  second; if it then stays on, that step hung). This adds about 40 seconds to the boot.
+- a line after each step says how long it took (`leanos: step 6 took 3 ms`).
+- more of the board, in step 2: the processor's MIDR and SCTLR, the EMMC2, ARM and core
+  clocks, the ARM's maximum clock, and the chip's temperature.
 
-When you report a first boot, include the whole serial log, from the firmware's first line.
+`make pi-image` stays the normal card: the same steps on serial and on the screen, the LED
+on while it boots, and no blink codes except a panic's.
 
 ## 6. Troubleshooting
 
@@ -340,6 +374,7 @@ When you report a first boot, include the whole serial log, from the firmware's 
 | The browser page stays black | The page loads noVNC from cdn.jsdelivr.net: check the browser is online. Check the terminal running `serve.py` for errors. |
 | `Address already in use` from `serve.py` | Another copy is running: stop it, or anything else on port 8796. |
 | Keys do nothing in the browser | Click the screen first; keys go to the window in front. |
+| A real Pi 4 shows nothing, or stops during boot | See [First boot on a real Pi 4: what to expect](#first-boot-on-a-real-pi-4-what-to-expect): the steps, what each message means, and the LED's codes. |
 | `make test` fails on "drawing speed" | The timing check is loose but can trip on a very busy machine: run it again, or with fewer tests at once (`make test JOBS=2`). |
 
 Still stuck? Open an issue with what you ran and what it printed.
