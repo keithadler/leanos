@@ -48,7 +48,7 @@ out=$(python3 - "$card" "$seed" "$count" <<'PY'
 import sys
 from collections import Counter
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for, snap, pause, DOCK
+from run import boot, mouse, wait_for, snap, pause, wmouse, wclick, CLOSE, DOCK
 card, seed, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 rerun = max(1, count // 4)
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
@@ -59,11 +59,12 @@ seen = Counter()
 def cmd(line, done):
     seen[done] += 1                     # the same command again waits for its next line
     return [*keys(line + "\r"), wait_for(done, seen[done])]
-# Notes closed, and Terminal dragged to the right (as test/restart.sh does): the left of the
-# screen is clear for dfuzz's first window, one pixel wide
-steps = [*click(114, 91), wait_for("alice: window closed"),
+# Notes closed, and Terminal dragged 540 px to the right, from the top left where the first
+# window goes: the left of the screen is clear for dfuzz's first window, one pixel wide
+steps = [*wclick("alice", *CLOSE), wait_for("alice: window closed"),
          *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
-         mouse("d", 300, 88), mouse("v", 520, 88), mouse("v", 740, 88), mouse("u", 740, 88),
+         wmouse("d", "Terminal", 164, 12), wmouse("v", "Terminal", 164 + 270, 12),
+         wmouse("v", "Terminal", 164 + 540, 12), wmouse("u", "Terminal", 164 + 540, 12),
          wait_for("display: moved Terminal's window"),
          *cmd("mkdir apps", "terminal: mkdir apps ")]
 for k, name in enumerate(NAMES):
@@ -99,9 +100,10 @@ steps += [*front, *cmd("kill 11", "terminal: kill 11")]
 # dfuzzc, one window, alone: Ctrl+C (answered with more than the clipboard holds), Ctrl+V,
 # Ctrl+C again (answered late), then its close button (a copy after it)
 C = "dfuzz: dfuzzc in slot 10: "
+SD = "a program from the SD card"      # dfuzzc's window: it lends no name, so the display's log calls it this
 steps += [*front, *cmd("run dfuzzc", "terminal: run dfuzzc -> slot 10"), wait_for(C + "copy and paste: window 1"),
           b"\x03", wait_for(C + "copy: sent"), b"\x16", wait_for(C + "paste: got"),
-          b"\x03", wait_for(C + "copy: a late answer"), *click(154, 127), wait_for(C + "closed; all done")]
+          b"\x03", wait_for(C + "copy: a late answer"), *wclick(SD, *CLOSE), wait_for(C + "closed; all done")]
 steps += [*click(*DOCK["Settings"]), wait_for("settings: opened"),
           *front, *cmd("write after.txt still here", "terminal: write after.txt")]
 sys.exit(boot(150, steps=steps, until="terminal: write after.txt", sd=card, settle=1))
@@ -221,8 +223,8 @@ box = [(x, y) for y in range(40, 500) for x in range(0, 500)
 assert box, "the narrow window was not drawn"
 bw = max(x for x, _ in box) - min(x for x, _ in box) + 1
 assert bw <= 1 + 2 * 12, ("the narrow window drew outside its frame", bw, min(box), max(box))
-# the far bottom-left corner is background (no window starts left of x 96, and the dock is
-# centered): it must be a colour, not black or white noise
+# the far bottom-left corner is background (no window reaches below the dock's top, and the
+# dock is centered): it must be a colour, not black or white noise
 corner = at(8, 560)
 assert 8 < max(corner) < 240, ("the corner is not the desktop background", corner)
 print(f"ok: a window one pixel wide changed a strip {bw} px wide; the desktop is drawn ({bar_bright} bright menu-bar pixels, {dock_px} dock pixels, corner {corner}); "

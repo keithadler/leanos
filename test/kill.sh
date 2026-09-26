@@ -9,11 +9,11 @@ fail() { echo "FAIL: $*"; exit 1; }
 out=$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for, DOCK
+from run import boot, mouse, wait_for, wclick, DOCK
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [c.encode() for c in s]
 steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
-         *keys("run clock\r"), wait_for("clock: opened"), *click(150, 400),
+         *keys("run clock\r"), wait_for("clock: opened"), *wclick("Terminal", 230, 150),
          *keys("kill 10\r"), wait_for("terminal: kill"), *keys("kill 10\r"), wait_for("terminal: kill", 2),
          *keys("kill 3\r"), wait_for("terminal: kill", 3), *keys("ps\r"), wait_for("terminal: ps")]
 sys.exit(boot(90, steps=steps, until="terminal: ps", settle=0.5))

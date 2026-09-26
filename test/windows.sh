@@ -8,9 +8,10 @@
 # closed second window stayed in the table until the program stopped.)
 #
 # mwin (user/progs/mwin.c), run from Terminal, opens three windows, red, green and blue
-# (numbers 0, 1, 2, at (136, 112), (176, 148) and (216, 184), each 200 x 120: Notes is
-# closed first, so Terminal has the table's first place and they the next three), and says
-# every event with its window's number.
+# (numbers 0, 1, 2, each 200 x 120), and says every event with its window's number. Notes is
+# closed first. The display puts the three where they cover least, clear of Terminal and of
+# each other; the test drags them by their title bars (which no program hears) to (136, 112),
+# (176, 148) and (216, 184), each over the one before and all where Terminal can cover them.
 #
 #   1. A click and a key in each window, at a point only that window covers.
 #   2. Ctrl+C with the blue window in front (mwin answers "from window 2"), Ctrl+V into the red.
@@ -37,39 +38,46 @@ out=$(python3 - "$card" <<'PY'
 import sys
 from collections import Counter
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for, pause, snap, DOCK
+from run import boot, mouse, wait_for, pause, snap, wmouse, wclick, CLOSE, DOCK
 card = sys.argv[1]
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
-RED, GREEN, BLUE = (150, 200), (190, 280), (300, 320)   # points only that window covers
-GREEN_CLOSE, RED_CLOSE = (194, 163), (154, 127)
+PLACES = [(136, 112), (176, 148), (216, 184)]           # where the test drags windows 0, 1, 2
+def drag(win, to):
+    return [wmouse("d", "mwin", 100, 12, win), mouse("v", to[0] + 100, to[1] + 12), mouse("u", to[0] + 100, to[1] + 12),
+            wait_for(f"display: moved mwin's window to ({to[0]}, {to[1]})" + (f", its window {win}" if win else ""))]
+# points only that window covers once they are in their places (the pixel check below
+# looks just beside them, where the pointer is not)
+RED, GREEN, BLUE = wclick("mwin", 14, 88, 0), wclick("mwin", 14, 132, 1), wclick("mwin", 84, 136, 2)
+GREEN_CLOSE, RED_CLOSE = wclick("mwin", *CLOSE, 1), wclick("mwin", *CLOSE, 0)
 seen = Counter()
 def after(prefix):
     seen[prefix] += 1                     # the same line again waits for its next one
     return wait_for(prefix, seen[prefix])
 EV = "mwin: window "
-steps = [*click(114, 91), wait_for("alice: window closed"),
+steps = [*wclick("alice", *CLOSE), wait_for("alice: window closed"),
          *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          b"run mwin\r", wait_for("mwin: opened windows"),
+         *[step for win, to in enumerate(PLACES) for step in drag(win, to)],
          # 1. a click and a key in each
-         *click(*RED), after(EV), b"a", after(EV),
-         *click(*GREEN), after(EV), b"b", after(EV),
-         *click(*BLUE), after(EV), b"c", after(EV), pause(0.3), snap("three"),
+         *RED, after(EV), b"a", after(EV),
+         *GREEN, after(EV), b"b", after(EV),
+         *BLUE, after(EV), b"c", after(EV), pause(0.3), snap("three"),
          # 2. copy from the blue window, paste into the red
-         b"\x03", wait_for("display: copied"), *click(*RED), after(EV), b"\x16", after(EV),
+         b"\x03", wait_for("display: copied"), *RED, after(EV), b"\x16", after(EV),
          # 3. Terminal over them, then run mwin: all of mwin's windows come forward
          *click(*DOCK["Terminal"]), pause(0.5), snap("covered"),
          b"run mwin\r", wait_for("terminal: run mwin", 2), pause(0.5), snap("raised"), b"r", after(EV),
          # 4. the green window's close button
-         *click(*GREEN), after(EV), *click(*GREEN_CLOSE), wait_for("mwin: ready"), pause(0.5), snap("two"),
+         *GREEN, after(EV), *GREEN_CLOSE, wait_for("mwin: ready"), pause(0.5), snap("two"),
          # 5. the blue window still hears; then the red window's close button
-         *click(*BLUE), after(EV), b"z", after(EV),
-         *click(*RED_CLOSE), wait_for("mwin: no window left")]
+         *BLUE, after(EV), b"z", after(EV),
+         *RED_CLOSE, wait_for("mwin: no window left")]
 sys.exit(boot(90, steps=steps, until="mwin: no window left", sd=card, settle=0.5))
 PY
 )
 status=$?
 echo "$out" > "$T/serial.txt"
-echo "$out" | grep -E "^(mwin: |terminal: run|display: (a program from the SD card (opened|closed)|closed|copied|paste|mwin is))" | sed 's/^/  | /'
+echo "$out" | grep -E "^(mwin: |terminal: run|display: (a program from the SD card (opened|closed)|mwin opened|closed|copied|paste|mwin is))" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish (status $status)"
 echo "$out" | grep -qE "PANIC|exception in the kernel" && fail "the kernel stopped"
 bad=$(echo "$out" | grep -E "^leanos: ([a-z]+|slot 1[0-5]) stopped" | grep -vE "^leanos: (mallory|carol) stopped" | head -1)
@@ -80,8 +88,11 @@ failed=0
 has() { echo "$out" | grep -qxF "$1" || { echo "FAIL: missing: $1"; failed=1; }; }
 S="a program from the SD card"
 has "mwin: opened windows 0, 1, 2"
-has "display: $S opened a 200x120 window from a read-only capability to 24 pages, its window 1"
-has "display: $S opened a 200x120 window from a read-only capability to 24 pages, its window 2"
+# each window opened with its number, under the name of the file its program came from
+for n in 1 2; do
+  echo "$out" | grep -qE "^display: mwin opened a 200x120 window at [0-9]+,[0-9]+ from a read-only capability to 24 pages, its window $n$" \
+    || { echo "FAIL: missing: display: mwin opened a 200x120 window ..., its window $n"; failed=1; }
+done
 # 1. each window's click (in its own coordinates) and key, with its number
 has "mwin: window 0: click at (14, 58)"
 has "mwin: window 0: key 'a'"
@@ -129,7 +140,7 @@ def load(name):
     return w, h, px
 COLORS = {"red": (0xd0, 0x40, 0x40), "green": (0x40, 0xb0, 0x40), "blue": (0x40, 0x60, 0xd0), "yellow": (0xd0, 0xc0, 0x40)}
 # where only that window can be seen, beside where the test clicked (the pointer is there)
-POINTS = {"red": (146, 196), "green": (186, 276), "blue": (296, 316)}
+POINTS = {"red": (146, 196), "green": (186, 276), "blue": (296, 316)}   # in the places the test dragged them to
 MINI = (58, 110, 230)          # the dock's square for a program with no icon
 def near(p, c):
     return all(abs(p[i] - c[i]) <= 2 for i in range(3))

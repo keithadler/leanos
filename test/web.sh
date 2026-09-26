@@ -30,12 +30,12 @@ url = f"10.0.2.2:{os.environ['PORT']}/index.html\r"
 steps = [wait_for("usb: network: address"),
          # from the dock, before anything was allowed: Apps allows the browser
          *click(*DOCK["Web"]), wait_for("web: opened"), *keys(url.replace(".html", ".html?dock")), wait_for("web: http"),
-         *click(154, 127), wait_for("web: window closed"),         # the second window: its close button
+         *__import__("run").wclick("web", 18, 15), wait_for("web: window closed"),     # its close button
          # from Terminal without -net, in the same slot: refused
          *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *keys("run web\r"), wait_for("web: opened", 2), *keys(url), wait_for("web: http", 2),
-         *click(194, 163), wait_for("web: window closed", 2),       # its close button
-         *click(150, 300), *keys("run -net web\r"), wait_for("web: opened", 3),
+         *__import__("run").wclick("web", 18, 15), wait_for("web: window closed", 2),  # its close button
+         *click(*DOCK["Terminal"]), *keys("run -net web\r"), wait_for("web: opened", 3),
          *keys(url), wait_for("web: http", 3), *keys("1\r")]
 sys.exit(boot(200, net=True, steps=steps, until=f"web: http://10.0.2.2:{os.environ['PORT']}/page2", settle=1))
 PY

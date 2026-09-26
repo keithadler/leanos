@@ -17,8 +17,9 @@ rm -f "$T"/paste-*.png "$T"/edit-menu.png "$T"/tour-clipboard.png "$T/screen.png
 out=$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for, pause, snap, usb_key, DOCK
+from run import boot, mouse, wait_for, pause, snap, usb_key, wclick, DOCK
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
+TERM = wclick("Terminal", 364, 100)     # in Terminal's window, where no other window covers it
 keys = lambda s: [c.encode() for c in s]
 COPY, PASTE, LEFT, RIGHT = b"\x03", b"\x16", b"\x1b[D", b"\x1b[C"
 steps = [wait_for("usb: ready"),
@@ -27,20 +28,21 @@ steps = [wait_for("usb: ready"),
          *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *usb_key("v", ctrl=True), wait_for("terminal: pasted"), pause(0.5), snap("paste-terminal"),
          b"\r", pause(0.3), *usb_key("c", ctrl=True), wait_for("display: copied", 2),   # what echo printed
-         *click(110, 200), b"\r", PASTE, wait_for("alice: pasted"), pause(0.5), snap("paste-notes"),
-         *click(500, 380), *keys("run edit\r"), wait_for("edit: opened a window"),
+         *wclick("alice", 14, 124), b"\r", PASTE, wait_for("alice: pasted"), pause(0.5), snap("paste-notes"),
+         *TERM, *keys("run edit\r"), wait_for("edit: opened a window"),
          *click(165, 15), wait_for("display: the Edit menu"), pause(0.3), snap("edit-menu"),
          *click(180, 80), wait_for("edit: pasted"), wait_for("edit: saved"), pause(0.3), snap("paste-edit"),
-         *click(150, 400), *keys("tour\r"), wait_for("tour: opened"),
+         *TERM, *keys("tour\r"), wait_for("tour: opened"),
          *[b"\r"] * 5, wait_for("tour: What you copy"), pause(0.3), snap("tour-clipboard"),
          COPY, wait_for("display: copy: asked a program"), pause(2.5),
          LEFT, RIGHT, wait_for("tour: What you copy", 2),
-         *click(150, 400), *keys("cat notes.txt\r"), wait_for("terminal: cat notes.txt"),
+         *TERM, *keys("cat notes.txt\r"), wait_for("terminal: cat notes.txt"),
          PASTE, wait_for("terminal: pasted", 2), COPY]
 sys.exit(boot(120, usb=True, steps=steps, until="terminal: copied the command line", settle=0.5))
 PY
 )
 status=$?
+echo "$out" > "$T/serial.txt"            # where each window opened, for the pixel checks
 echo "$out" | grep -E "^(mallory: (ask|put)|alice: (copied|pasted)|terminal: (copied|pasted|cat|run)|edit: (copied|pasted|saved)|tour: What|display: (copy|copied|paste|the Edit|.*(copy|request)))" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish (status $status)"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
@@ -90,6 +92,11 @@ count 2 "display: copied 14 bytes from Terminal"
 
 python3 - "$T" <<'PYS' || fail "the screens are not what copy and paste drew"
 import os, sys
+sys.path.insert(0, "test")
+from run import window_pos
+log = open(os.path.join(sys.argv[1], "serial.txt")).read()
+tx, ty = window_pos(log, "Terminal")
+ex, ey = window_pos(log, "edit")
 def load(name):
     data = open(os.path.join(sys.argv[1], name + ".ppm"), "rb").read()
     _, dims, _, px = data.split(b"\n", 3)
@@ -97,12 +104,13 @@ def load(name):
     return lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
 # Terminal's prompt line holds the pasted command: light text on its dark window, after "$ "
 at = load("paste-terminal")
-assert sum(1 for y in range(170, 190) for x in range(160, 330) if min(at(x, y)) > 150) > 150, "the pasted command"
+assert sum(1 for y in range(ty + 58, ty + 78) for x in range(tx + 24, tx + 194) if min(at(x, y)) > 150) > 150, \
+    "the pasted command"
 # the Edit menu is open under its name: a light panel below the menu bar; edit's page is
 # still empty behind it
 at = load("edit-menu")
 assert all(min(at(x, 40)) > 220 for x in range(160, 310)), ("the Edit menu", at(200, 40))
-edit_text = lambda at: sum(1 for y in range(186, 206) for x in range(188, 320) if max(at(x, y)) < 110)
+edit_text = lambda at: sum(1 for y in range(ey + 38, ey + 58) for x in range(ex + 12, ex + 144) if max(at(x, y)) < 110)
 assert edit_text(at) < 5, ("edit's page before the paste", edit_text(at))
 # then edit shows the pasted text on its first line: dark text on its light page
 assert edit_text(load("paste-edit")) > 100, "edit's pasted line"

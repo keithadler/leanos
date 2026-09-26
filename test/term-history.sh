@@ -52,6 +52,7 @@ sys.exit(boot(90, usb=True, steps=steps, until="terminal: verify", settle=0.5))
 PY
 )
 status=$?
+echo "$out" > "$T/serial.txt"            # where Terminal opened, for the pixel checks
 echo "$out" | grep -E "^terminal: " | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish (status $status)"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
@@ -92,6 +93,9 @@ has "terminal: verify a.txt -> 3 bytes, mixed"
 
 python3 - "$T" <<'PYS' || fail "the screens are not what Terminal should draw"
 import os, sys
+sys.path.insert(0, "test")
+from run import window_pos
+tx, ty = window_pos(open(os.path.join(sys.argv[1], "serial.txt")).read(), "Terminal")
 def load(name):
     data = open(os.path.join(sys.argv[1], name + ".ppm"), "rb").read()
     _, dims, _, px = data.split(b"\n", 3)
@@ -101,8 +105,9 @@ def load(name):
 # where light text is (the cursor's own letter is drawn dark on the block)
 def prompt(name):
     at = load(name)
-    green = [x for x in range(170, 590) if sum(1 for y in range(378, 398) if at(x, y) == (0x7f, 0xd1, 0xa0)) > 12]
-    text = [x for x in range(170, 590) if any(min(at(x, y)) > 150 for y in range(378, 398))]
+    xs, ys = range(tx + 34, tx + 454), range(ty + 266, ty + 286)
+    green = [x for x in xs if sum(1 for y in ys if at(x, y) == (0x7f, 0xd1, 0xa0)) > 12]
+    text = [x for x in xs if any(min(at(x, y)) > 150 for y in ys)]
     assert green and text, (name, "no prompt line", green[:3], text[:3])
     return green, text
 green, text = prompt("term-recalled")         # cat welcome.txt, the cursor after it

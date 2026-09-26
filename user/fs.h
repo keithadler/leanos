@@ -198,4 +198,16 @@ static inline const struct fs_entry *fs_entries(struct fs_client *c) {
     return (const struct fs_entry *)(c->buf + FS_DATA_OFF);
 }
 static inline const char *fs_data(struct fs_client *c) { return c->buf + FS_DATA_OFF; }
+
+/* NAME.icon is a program's icon, which the loader adds to program NAME when it runs it
+   (elf.h): how the program looks, not a file anyone opens. Files and Terminal's ls leave
+   them out of their lists (ls -a shows them); cat, rm and the rest reach them as any file. */
+static inline int fs_is_icon(const struct fs_entry *e) {
+    int n = 0;
+    while (n < (int)sizeof e->name && e->name[n]) n++;
+    const char *x = ".icon";
+    if (e->kind == FS_DIR || n <= 5) return 0;
+    for (int i = 0; i < 5; i++) if (e->name[n - 5 + i] != x[i]) return 0;
+    return 1;
+}
 #endif

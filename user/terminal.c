@@ -19,6 +19,7 @@
 #include "elfload.h"
 #include "net.h"
 #include "date.h"
+#include "zone.h"
 
 /* Terminal's launch capabilities for the open slots, which run programs from the SD card. */
 #define LAUNCH_OPEN 6
@@ -249,9 +250,12 @@ static void fs_log(struct line *l, const char *cmd, const char *name, const char
     flush(l);
 }
 
+/* ls [-a] [FOLDER]: without -a, programs' icons (NAME.icon, fs.h) are left out. */
 static void cmd_ls(struct term *t, struct line *l, const char *args) {
     char arg[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
-    word_of(args, arg, FS_PATH_MAX);
+    const char *rest = word_of(args, arg, FS_PATH_MAX);
+    int all = same(arg, "-a");
+    if (all) word_of(rest, arg, FS_PATH_MAX);
     resolve(t, arg, path);
     u64 total = 0, from = 0;
     long shown = 0;
@@ -260,6 +264,8 @@ static void cmd_ls(struct term *t, struct line *l, const char *args) {
         if (n < 0) { say(t, "no such folder"); fs_log(l, "ls", arg[0] ? arg : 0, "no such folder"); return; }
         const struct fs_entry *e = fs_entries(&t->fs);
         for (long i = 0; i < n; i++) {
+            if (!all && fs_is_icon(&e[i])) continue;
+            shown++;
             put_s(l, e[i].name);
             if (e[i].kind == FS_DIR) {
                 put_s(l, "/");
@@ -271,12 +277,12 @@ static void cmd_ls(struct term *t, struct line *l, const char *args) {
             put_s(l, " bytes");
             out(t, l);
         }
-        shown += n;
         from += (u64)n;
         if (n == 0 || from >= total) break;
     }
     if (shown == 0) say(t, "nothing here");
     put_s(l, "terminal: ls");
+    if (all) put_s(l, " -a");
     if (arg[0]) { put_s(l, " "); put_s(l, arg); }
     put_s(l, " -> ");
     put_dec(l, (u64)shown);
@@ -507,7 +513,25 @@ static void cmd_ping(struct term *t, struct line *l, const char *args) {
     flush(l);
 }
 
-/* date: the time of day the kernel keeps (set from the network; UTC). */
+/* The time in the time zone chosen in Settings, and in UTC beside it if that is not UTC:
+   "2026-09-26 08:52:24 UTC+2 (06:52:24 UTC)". */
+__attribute__((noinline)) static void put_date_in(struct line *l, u64 secs, long zone) {
+    put_date(l, local_of(secs, zone));
+    if (!zone) return;
+    l->n -= 3;                           /* "UTC": the zone's name instead */
+    put_zone(l, zone);
+    struct line u = {.n = 0};
+    put_date(&u, secs);
+    u.b[u.n] = 0;
+    const char *time = u.b;
+    while (*time && *time++ != ' ') {}   /* the time of day, after the date */
+    put_s(l, " (");
+    put_s(l, time);
+    put_s(l, ")");
+}
+
+/* date: the time of day the kernel keeps (set from the network, in UTC), in the time zone
+   the display keeps (asked as Clock asks it, app_zone). */
 static void cmd_date(struct term *t, struct line *l) {
     u64 secs = sys0(SYS_TIME).x[6];
     if (!secs) {
@@ -516,10 +540,11 @@ static void cmd_date(struct term *t, struct line *l) {
         flush(l);
         return;
     }
-    put_date(l, secs);
+    long zone = app_zone();
+    put_date_in(l, secs, zone);
     out(t, l);
     put_s(l, "terminal: date -> ");
-    put_date(l, secs);
+    put_date_in(l, secs, zone);
     put_s(l, "\n");
     flush(l);
 }
@@ -747,7 +772,7 @@ static void run(struct term *t, struct line *l) {
     if (!*c) return;
     if (starts(c, "help")) {
         say(t, "whoami caps boot ps uptime echo clear exit");
-        say(t, "ls [FOLDER], cat FILE, write FILE TEXT, rm FILE");
+        say(t, "ls [-a] [FOLDER], cat FILE, write FILE TEXT, rm FILE");
         say(t, "mkdir FOLDER, cd FOLDER, pwd, mv FROM TO, run [-net] PROGRAM [FILE...]");
         say(t, "fill FILE KB CHAR, verify FILE");
         say(t, "ip, ping HOST, get http://URL [FILE], kill SLOT");

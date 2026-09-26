@@ -2,7 +2,7 @@ leanos: a short guide
 
 The dock
   Notes     a note that is saved to the SD card as you type
-  Files     every file on the card; click one to read it, Delete removes it
+  Files     the files on the card; click one to read it, Delete removes it
   Terminal  commands; type help
   Settings  the background, the time zone, and the Raspberry Pi's speed and light
   Security  what every program's boot check found, and what is proved
@@ -34,12 +34,12 @@ Copy and paste
   host's clipboard as keys). Under make run, your terminal's Ctrl+C stops QEMU itself.
 
 Terminal
-  ls, cat FILE, write FILE TEXT, rm FILE    files on the card
+  ls, cat FILE, write FILE TEXT, rm FILE    files on the card (ls -a: icons too)
   mkdir FOLDER, cd FOLDER, cd .., pwd       folders
   mv FROM TO                                move or rename, in one step
   fill FILE KB CHAR, verify FILE            a big test file, and checking one
   ip, ping HOST, get http://URL [FILE]      the network (a USB network adapter)
-  date, ntp [HOST]                          the time of day (set from a time server)
+  date, ntp [HOST]                          the time in your zone and UTC (set by ntp)
   run PROGRAM [FILE...]                     start a program from the card, giving it
                                             those files, 7 at most (and its own folder,
                                             apps/NAME)

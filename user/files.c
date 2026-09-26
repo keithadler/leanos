@@ -2,7 +2,8 @@
    file, or use the up and down arrows (the list scrolls), to show it; click a folder, or
    press Enter or the right arrow on it, to open it; the left arrow goes back up; click
    anywhere else to look again; Delete (or Backspace) removes the selected file or empty
-   folder. It reaches the files only by asking the file server, one request at a time. */
+   folder. Programs' icons (NAME.icon, fs.h) are not listed. It reaches the files only by
+   asking the file server, one request at a time. */
 #include "app.h"
 #include "fs.h"
 
@@ -147,10 +148,12 @@ static void show(struct files *st, struct line *l, int i) {
 }
 
 static void refresh(struct files *st, struct line *l) {
-    st->count = fs_list_dir(&st->fs, st->dir, 0, 0);
-    if (st->count > 128) st->count = 128;
+    long n = fs_list_dir(&st->fs, st->dir, 0, 0);
+    if (n > 128) n = 128;
     const struct fs_entry *e = fs_entries(&st->fs);
-    for (long i = 0; i < st->count; i++) st->list[i] = e[i];
+    st->count = n < 0 ? n : 0;
+    for (long i = 0; i < n; i++)
+        if (!fs_is_icon(&e[i])) st->list[st->count++] = e[i];   /* how programs look (fs.h) */
     if (st->selected >= st->count) st->selected = st->count > 0 ? 0 : -1;
     put_s(l, "files: listed ");
     put_dec(l, (u64)(st->count < 0 ? 0 : st->count));

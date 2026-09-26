@@ -10,10 +10,10 @@ fail() { echo "FAIL: $*"; exit 1; }
 out=$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for, DOCK
+from run import boot, mouse, wait_for, wclick, DOCK
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [c.encode() for c in s]
-term = click(150, 400)
+term = wclick("Terminal", 230, 150)     # in Terminal's window, where edit's does not cover it
 steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *keys("write memo.txt hello\r"), wait_for("terminal: write"),
          *keys("run edit memo.txt\r"), wait_for("edit: opened a window"),

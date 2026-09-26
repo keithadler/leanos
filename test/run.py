@@ -14,6 +14,7 @@ Usage: test/run.py [timeout-seconds]    (exit status: QEMU's, or 124 on timeout)
 """
 import json
 import os
+import re
 import socket
 import struct
 import subprocess
@@ -73,7 +74,8 @@ class Qmp:
 
 
 def mouse(kind, x, y):
-    """A mouse report for the input driver: kind is 'd' (down), 'u' (up) or 'v' (moved)."""
+    """A mouse report for the input driver: kind is 'd' (down), 'u' (up) or 'v' (moved).
+    Three digits each: x and y up to 999."""
     return f"\x1bm{kind}{x:03d}{y:03d}".encode()
 
 
@@ -109,6 +111,48 @@ def usb_touch(x, y, down=None):
 # Where each dock icon's center is (user/display.c: DOCK_X + DOCK_PAD + ICON / 2 + 66 i).
 DOCK = {name: (215 + 66 * i, 548) for i, name in enumerate(
     ["Notes", "Files", "Terminal", "Settings", "Security", "Apps", "Clock", "Calculator", "Tour", "Web"])}
+
+
+# Where the display put each window: it logs "display: NAME opened a WxH window at X,Y from
+# ..., its window N" (NAME: the app, or the card file a program came from; N only for a
+# program's second window on), and "display: moved NAME's window to (X, Y)" after a drag.
+OPENED = re.compile(r"^display: (.+?) opened a (\d+)x(\d+) window at (\d+),(\d+) from a read-only "
+                    r"capability to \d+ pages(?:, its window (\d+))?$")
+MOVED = re.compile(r"^display: moved (.+?)'s window to \((-?\d+), (-?\d+)\)(?:, its window (\d+))?$")
+# Where to click in a window, from its top-left corner: its close button, its title bar.
+CLOSE = (18, 15)
+TITLE_H = 30
+
+
+def window_pos(lines, name, win=0):
+    """The top-left corner (x, y) of window `win` of `name` (as the display's log names it),
+    where the display last put it: from the serial lines so far (a list, or the whole text),
+    or None if it has not opened."""
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    pos = None
+    for line in lines:
+        m = OPENED.match(line)
+        if m and m.group(1) == name and int(m.group(6) or 0) == win:
+            pos = (int(m.group(4)), int(m.group(5)))
+            continue
+        m = MOVED.match(line)
+        if m and pos and m.group(1) == name and int(m.group(4) or 0) == win:
+            pos = (int(m.group(2)), int(m.group(3)))
+    return pos
+
+
+def wmouse(kind, name, dx, dy, win=0):
+    """A mouse report (as mouse()) at (dx, dy) from the top-left corner of `name`'s window
+    `win`, where the display's log last put it when the step runs (it waits for the window
+    to open). A drag's steps all count from where the window was when it began: the log says
+    where it went only when the button comes up."""
+    return ("win", kind, name, win, dx, dy)
+
+
+def wclick(name, dx, dy, win=0):
+    """A click at (dx, dy) from the top-left corner of `name`'s window (wmouse)."""
+    return [wmouse("d", name, dx, dy, win), wmouse("u", name, dx, dy, win)]
 
 
 def wait_for(prefix, times=1):
@@ -236,6 +280,20 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                         if isinstance(chunk, tuple) and chunk[0] == "sleep":
                             time.sleep(chunk[1])
                             continue
+                        if isinstance(chunk, tuple) and chunk[0] == "win":
+                            _, kind, name, win, dx, dy = chunk
+                            with cond:
+                                cond.wait_for(lambda: window_pos(seen, name, win) is not None,
+                                              timeout=max(0, deadline[0] - time.monotonic()))
+                                pos = window_pos(seen, name, win)
+                            if pos is None:
+                                print(f"run.py: no window of {name} (its window {win}) in the log", flush=True)
+                                return
+                            x, y = pos[0] + dx, pos[1] + dy
+                            if not (0 <= x <= 999 and 0 <= y <= 999):
+                                print(f"run.py: ({x}, {y}) in {name}'s window is past what a mouse report can say", flush=True)
+                                return
+                            chunk = mouse(kind, x, y)
                         if isinstance(chunk, tuple) and chunk[0] == "snap":
                             ppm = os.path.join(SCRATCH, chunk[1] + ".ppm")
                             qmp.cmd("screendump", filename=ppm)
@@ -286,9 +344,11 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
 
 
 # The interaction `make test` performs: type into the focused Notes window, then drag it by
-# its title bar.
-DEMO_STEPS = [b"H", b"i", b"!", mouse("v", 120, 88), mouse("d", 120, 88), mouse("v", 200, 150),
-              mouse("v", 300, 220), mouse("u", 300, 220)]
+# its title bar, 180 px right and 132 down.
+DEMO_DRAG = (180, 132)
+DEMO_STEPS = [b"H", b"i", b"!", wmouse("v", "alice", 24, 12), wmouse("d", "alice", 24, 12),
+              wmouse("v", "alice", 104, 74), wmouse("v", "alice", 24 + DEMO_DRAG[0], 12 + DEMO_DRAG[1]),
+              wmouse("u", "alice", 24 + DEMO_DRAG[0], 12 + DEMO_DRAG[1])]
 
 # The apps: type into Notes, close it and start it again (the note is back, from the file
 # server); start Terminal from the dock, ask it things and write a file; pick a background in
@@ -302,17 +362,17 @@ def click(x, y):
     return [mouse("d", x, y), mouse("u", x, y)]
 
 
-APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
-             *click(*DOCK["Notes"]), wait_for("alice: opened", 2),
+APP_STEPS = [*keys("Hi"), *wclick("alice", *CLOSE), wait_for("alice: window closed"),
+             *click(*DOCK["Notes"]), wait_for("alice: opened", 2), pause(0.5), snap("notes-again"),
              *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
              *keys("caps\r"), wait_for("terminal: caps"), *keys("boot\r"), wait_for("terminal: boot"),
              *keys("write hello.txt Hello from Terminal\r"), wait_for("terminal: write"),
-             *keys("ls\r"), wait_for("terminal: ls"),
+             *keys("ls\r"), wait_for("terminal: ls"), *keys("ls -a\r"), wait_for("terminal: ls -a"),
              *click(*DOCK["Settings"]), wait_for("settings: opened"),
-             *click(336, 228), wait_for("settings: background"),
-             *click(563, 332), wait_for("settings: the firmware reports"),
-             *click(527, 466), wait_for("settings: activity light"),
-             *click(154, 127), wait_for("terminal: window closed"),
+             *wclick("Settings", 160, TITLE_H + 62), wait_for("settings: background"),         # Graphite
+             *wclick("Settings", 387, TITLE_H + 166), wait_for("settings: the firmware reports"),   # 600 MHz
+             *wclick("Settings", 351, TITLE_H + 300), wait_for("settings: activity light"),    # on
+             *wclick("Terminal", *CLOSE), wait_for("terminal: window closed"),
              mouse("v", 300, 300), *click(*DOCK["Terminal"]), wait_for("terminal: opened", 2),
              *keys("caps\r"), wait_for("terminal: caps"),
              b"write fast.txt 0123456789abcdefghijklmnopqrstuvwxyz\r", wait_for("terminal: write fast.txt"),
@@ -320,9 +380,9 @@ APP_STEPS = [*keys("Hi"), *click(114, 91), wait_for("alice: window closed"),
              b"run welcome.txt\r", wait_for("terminal: run welcome.txt"),
              b"run hello\r", wait_for("hello: opened"),
              *keys("abc"),
-             *click(150, 400), b"run clock\r", wait_for("clock: ticked 3 times"),
+             *wclick("Terminal", 230, 280), b"run clock\r", wait_for("clock: ticked 3 times"),
              *click(*DOCK["Files"]), wait_for("files: opened"),
-             *[b"\x1b[B"] * 23, wait_for("files: showing hello.txt"),
+             *[b"\x1b[B"] * 13, wait_for("files: showing hello.txt"),
              *click(*DOCK["Security"]), wait_for("security: 13")]
 
 if __name__ == "__main__":

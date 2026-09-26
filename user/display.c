@@ -158,6 +158,8 @@ struct win {
     unsigned close_seq;         /* when the close button was clicked (the event count) */
     struct picture icon;        /* the icon a program from the card lent (OP_ICON), or none */
     char prog[16];              /* and the card file it came from, or "" */
+    int pages;                  /* how many pages its pixels were lent in (for the log) */
+    int unsaid;                 /* its opening is not logged yet: a card program's name comes after */
     u64 hash;                   /* the first word of its slot's measured hash when it opened */
     unsigned queue[QUEUE][4];    /* events waiting for the client (kind, a, b, when), oldest at qhead */
     int qhead, qlen;
@@ -181,7 +183,6 @@ struct state {
     long zone;                  /* the time zone, minutes east of UTC (user/zone.h) */
     int zone_unsaved;           /* Settings changed it, and Apps has not been asked to save it */
     int zone_restore;           /* Apps, started at boot, may give the zone saved on the card */
-    int spread;                 /* until the first click or key: place windows apart, not cascaded */
     /* the background pattern: a color per row, a glow per column, and a 32 x 32 tile */
     unsigned bg_row[H];
     /* the glow, per column, ready to blend: the weight left for the row's color, and the
@@ -236,6 +237,10 @@ COLD static const char *name_of(u64 badge) {
          : badge == BADGE_SECURITY ? "Security" : badge == BADGE_FILES ? "Files"
          : badge >= 10 && badge <= 15 ? "a program from the SD card" : badge == 16 ? "Apps" : "unknown";
 }
+
+/* A window's name in the log: the card file its program came from, once it is known, or
+   its program's (name_of). */
+COLD static const char *win_name(const struct win *w) { return w->prog[0] ? w->prog : name_of(w->badge); }
 
 /* The program slot a badge belongs to: the manifest gives each app its slot's number as its
    badge, except Notes (slot 0, badge 1). */
@@ -1271,7 +1276,6 @@ COLD __attribute__((noinline)) static void on_copy(struct state *st, struct line
 }
 
 COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
-    if (kind == EV_KEY || kind == EV_DOWN) st->spread = 0;   /* from here on, windows cascade */
     if (kind == EV_KEY && (a == KEY_COPY || a == KEY_PASTE)) {
         if (a == KEY_COPY) copy_ask(st, l);
         else paste_to(st, l);
@@ -1377,12 +1381,16 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
         struct win *w = &st->win[st->drag - 1];
         if (w->x != st->drag_x0 || w->y != st->drag_y0) {
             put_s(l, "display: moved ");
-            put_s(l, name_of(w->badge));
+            put_s(l, win_name(w));
             put_s(l, "'s window to (");
             put_dec(l, w->x);
             put_s(l, ", ");
             put_dec(l, w->y);
             put_s(l, ")");
+            if (w->id) {
+                put_s(l, ", its window ");
+                put_dec(l, (u64)w->id);
+            }
             say(l);
             put_s(l, "display: the drag drew ");
             put_dec(l, st->drag_frames);
@@ -1396,6 +1404,164 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
     }
     composite(st, ox, oy, 12, 19);
     composite(st, st->px, st->py, 12, 19);
+}
+
+/* ---- where a new window goes ----
+
+   Where it covers least of what can be seen of the windows already open: each window's
+   title bar counts four times its area, so a new window leaves the others' title bars
+   showing (to click and drag) wherever it can. It stays in the work area, below the menu
+   bar and above the dock, with a margin, if it fits there.
+
+   What shows of the open windows is painted into a coarse map, a cell per 8 x 8 pixels (the
+   weight at the cell's center: 0 the desktop, 1 a window, 4 a title bar), and summed as a
+   table of prefix sums, so what a place covers costs four lookups. The places tried: the
+   work area's edges and corners, a 64-pixel grid, and beside or aligned with each window's
+   edges. Of the places that cover least, one in a corner of the work area is taken first,
+   then one on an edge, then the topmost, then the leftmost: the same windows always go to
+   the same places, which the tests rely on. At first boot Notes takes the top left, Apps
+   the top right, and the tour the bottom left.
+
+   When every place would cover much (more than half again the window's own area), the
+   screen is full: the window cascades from the top left, 32 pixels a step, to the first
+   step no window's corner is at, so every title bar in the cascade shows. */
+#define PLACE_X0 8
+#define PLACE_Y0 (BAR_H + 8)
+#define PLACE_X1 (W - 8)
+#define PLACE_Y1 (DOCK_Y - 8)
+#define PLACE_GAP 8
+#define CELL 8
+#define GX (W / CELL)
+#define GY (H / CELL)
+#define NCAND (2 + 16 + 4 * MAX_WIN)
+/* the map's prefix sums live in the spare run, after the window table (at most 4 x 128 x
+   75 = 38400 in any sum: they fit in 16 bits) */
+_Static_assert(sizeof(struct win) * MAX_WIN + (GY + 1) * (GX + 1) * 2 <= 28 * 4096,
+               "the window table and the placement map must fit in 28 pages");
+_Static_assert(4 * GX * GY < 65536, "a sum of the map must fit in 16 bits");
+
+COLD static int add_cand(int *c, int n, int v, int lo, int hi) {
+    if (v < lo) v = lo;          /* (a window wider or taller than the room: at its start) */
+    if (v > hi) v = hi > lo ? hi : lo;
+    for (int i = 0; i < n; i++) if (c[i] == v) return n;
+    c[n] = v;
+    return n + 1;
+}
+
+COLD static void place(struct state *st, struct win *wn) {
+    int ow = outer_w(wn), oh = outer_h(wn);
+    int xhi = PLACE_X1 - ow, yhi = PLACE_Y1 - oh;
+    unsigned short *sum = (unsigned short *)(st->win + MAX_WIN);   /* (GY + 1) x (GX + 1) */
+    for (int i = 0; i < (GY + 1) * (GX + 1); i++) sum[i] = 0;
+    /* what shows where: the windows bottom to top, each over the ones below */
+    for (int i = 0; i < st->nz; i++) {
+        const struct win *o = &st->win[st->z[i]];
+        for (int j = 0; j < GY; j++) {
+            int cy = j * CELL + CELL / 2;
+            if (cy < o->y || cy >= o->y + outer_h(o)) continue;
+            for (int c = 0; c < GX; c++) {
+                int cx = c * CELL + CELL / 2;
+                if (cx >= o->x && cx < o->x + outer_w(o)) sum[(j + 1) * (GX + 1) + c + 1] = cy < o->y + TITLE_H ? 4 : 1;
+            }
+        }
+    }
+    for (int j = 1; j <= GY; j++)
+        for (int c = 1; c <= GX; c++)
+            sum[j * (GX + 1) + c] += sum[(j - 1) * (GX + 1) + c] + sum[j * (GX + 1) + c - 1] -
+                                     sum[(j - 1) * (GX + 1) + c - 1];
+    int xs[NCAND], ys[NCAND], nx = 0, ny = 0;
+    nx = add_cand(xs, nx, PLACE_X0, PLACE_X0, xhi);
+    nx = add_cand(xs, nx, xhi, PLACE_X0, xhi);
+    ny = add_cand(ys, ny, PLACE_Y0, PLACE_Y0, yhi);
+    ny = add_cand(ys, ny, yhi, PLACE_Y0, yhi);
+    for (int g = 64; g < W; g += 64) {
+        if (PLACE_X0 + g < xhi) nx = add_cand(xs, nx, PLACE_X0 + g, PLACE_X0, xhi);
+        if (PLACE_Y0 + g < yhi) ny = add_cand(ys, ny, PLACE_Y0 + g, PLACE_Y0, yhi);
+    }
+    for (int i = 0; i < st->nz; i++) {
+        const struct win *o = &st->win[st->z[i]];
+        int x0 = o->x, y0 = o->y, x1 = o->x + outer_w(o), y1 = o->y + outer_h(o);
+        int at[8] = {x1 + PLACE_GAP, x0 - PLACE_GAP - ow, x0, x1 - ow, y1 + PLACE_GAP, y0 - PLACE_GAP - oh, y0, y1 - oh};
+        for (int a = 0; a < 4; a++) {
+            if (at[a] >= PLACE_X0 && at[a] <= xhi) nx = add_cand(xs, nx, at[a], PLACE_X0, xhi);
+            if (at[4 + a] >= PLACE_Y0 && at[4 + a] <= yhi) ny = add_cand(ys, ny, at[4 + a], PLACE_Y0, yhi);
+        }
+    }
+    long best = -1;
+    int best_edge = 0, bx = PLACE_X0, by = PLACE_Y0;
+    for (int b = 0; b < ny; b++)
+        for (int a = 0; a < nx; a++) {
+            int x = xs[a], y = ys[b];
+            /* the cells whose centers the place covers */
+            int c0 = (x + CELL / 2 - 1) / CELL, c1 = (x + ow + CELL / 2 - 1) / CELL;
+            int j0 = (y + CELL / 2 - 1) / CELL, j1 = (y + oh + CELL / 2 - 1) / CELL;
+            if (c1 > GX) c1 = GX;
+            if (j1 > GY) j1 = GY;
+            long cost = (long)sum[j1 * (GX + 1) + c1] - sum[j0 * (GX + 1) + c1] - sum[j1 * (GX + 1) + c0] +
+                        sum[j0 * (GX + 1) + c0];
+            int edge = (x != PLACE_X0 && x != xhi) + (y != PLACE_Y0 && y != yhi);
+            if (best < 0 || cost < best || (cost == best && (edge < best_edge || (edge == best_edge &&
+                (y < by || (y == by && x < bx)))))) {
+                best = cost;
+                best_edge = edge;
+                bx = x;
+                by = y;
+            }
+        }
+    if (best * CELL * CELL > 3L * ow * oh / 2) {
+        /* full: cascade */
+        for (int n = 0; n < MAX_WIN; n++) {
+            bx = PLACE_X0 + 32 * n;
+            by = PLACE_Y0 + 32 * n;
+            int taken = 0;
+            for (int i = 0; i < st->nz; i++) {
+                const struct win *o = &st->win[st->z[i]];
+                int dx = o->x - bx, dy = o->y - by;
+                if (dx > -16 && dx < 16 && dy > -16 && dy < 16) taken = 1;
+            }
+            if (!taken) break;
+        }
+    }
+    wn->x = bx;
+    wn->y = by;
+    if (wn->x + ow > W - 8) wn->x = W - 8 - ow;
+    if (wn->y + oh > PLACE_Y1) wn->y = PLACE_Y1 - oh;
+    /* but never over the menu bar, as a drag keeps it: a window taller than the room between
+       them reaches over the dock instead, which is drawn over every window */
+    if (wn->y < PLACE_Y0) wn->y = PLACE_Y0;
+}
+
+/* "display: Terminal opened a 460x272 window at 556,38 from a read-only capability to 123
+   pages": what opened, and where, which the tests read to click inside it. */
+COLD static void say_open(struct line *l, struct win *w) {
+    w->unsaid = 0;
+    put_s(l, "display: ");
+    put_s(l, win_name(w));
+    put_s(l, " opened a ");
+    put_dec(l, (u64)w->content.w);
+    put_s(l, "x");
+    put_dec(l, (u64)w->content.h);
+    put_s(l, " window at ");
+    put_dec(l, (u64)w->x);
+    put_s(l, ",");
+    put_dec(l, (u64)w->y);
+    put_s(l, " from a read-only capability to ");
+    put_dec(l, (u64)w->pages);
+    put_s(l, " pages");
+    if (w->id) {
+        put_s(l, ", its window ");
+        put_dec(l, (u64)w->id);
+    }
+    say(l);
+}
+
+/* A request from `badge` other than ICON: any of its windows whose opening is not logged
+   yet will get no name, so log it now. */
+COLD static void say_unsaid(struct state *st, struct line *l, u64 badge) {
+    for (int k = 0; k < MAX_WIN; k++) {
+        struct win *w = &st->win[k];
+        if (w->used && w->unsaid && w->badge == badge) say_open(l, w);
+    }
 }
 
 COLD static void on_open(struct state *st, struct line *l, struct res *r) {
@@ -1437,31 +1603,7 @@ COLD static void on_open(struct state *st, struct line *l, struct res *r) {
     wn->content = surface_of((unsigned *)PAGE(WIN_PAGE + WIN_MAX_PAGES * (u64)k), (int)w, (int)h);
     for (int i = 0; i < 8; i++) wn->title[i] = (char)(title >> (8 * i));
     wn->title[8] = 0;
-    wn->x = 96 + 40 * k;
-    wn->y = 76 + 36 * k;
-    /* Startup items (before anyone has clicked or typed): where the window covers least of
-       the ones already open, scanning top-left first. Notes keeps its own place. */
-    if (st->spread && badge != 1) {
-        long best = -1;
-        int ow = (int)w, oh = (int)h + TITLE_H;
-        for (int y = BAR_H + 14; y + oh <= DOCK_Y - 12; y += 12)
-            for (int x = 24; x + ow <= W - 24; x += 16) {
-                long cover = 0;
-                for (int i = 0; i < st->nz; i++) {
-                    const struct win *o = &st->win[st->z[i]];
-                    int x0 = x > o->x - 16 ? x : o->x - 16, y0 = y > o->y - 16 ? y : o->y - 16;
-                    int x1 = x + ow < o->x + outer_w(o) + 16 ? x + ow : o->x + outer_w(o) + 16;
-                    int y1 = y + oh < o->y + outer_h(o) + 16 ? y + oh : o->y + outer_h(o) + 16;
-                    if (x1 > x0 && y1 > y0) cover += (long)(x1 - x0) * (y1 - y0);
-                }
-                if (best < 0 || cover < best) { best = cover; wn->x = x; wn->y = y; }
-            }
-    }
-    if (wn->x + (int)w > W - 8) wn->x = W - 8 - (int)w;
-    if (wn->y + (int)h + TITLE_H > DOCK_Y - 8) wn->y = DOCK_Y - 8 - (int)h - TITLE_H;
-    /* but never over the menu bar, as a drag keeps it: a window taller than the room between
-       them reaches over the dock instead, which is drawn over every window */
-    if (wn->y < BAR_H + 2) wn->y = BAR_H + 2;
+    place(st, wn);
     wn->hash = sys1(SYS_BOOTINFO, (u64)slot_of(badge)).x[2];
     wn->closing = 0;
     wn->icon.px = 0;
@@ -1479,20 +1621,11 @@ COLD static void on_open(struct state *st, struct line *l, struct res *r) {
         put_ms(l, micros() - t0);
         say(l);
     }
-    put_s(l, "display: ");
-    put_s(l, name_of(badge));
-    put_s(l, " opened a ");
-    put_dec(l, w);
-    put_s(l, "x");
-    put_dec(l, h);
-    put_s(l, " window from a read-only capability to ");
-    put_dec(l, info.x[3]);
-    put_s(l, " pages");
-    if (id) {
-        put_s(l, ", its window ");
-        put_dec(l, (u64)id);
-    }
-    say(l);
+    wn->pages = (int)info.x[3];
+    /* A program from the card lends its name (ICON) just after: its opening is logged then,
+       with the name (on_icon), or at its next request if it lends none (say_unsaid). */
+    wn->unsaid = badge >= 10 && badge <= 15;
+    if (!wn->unsaid) say_open(l, wn);
     sys(SYS_REPLY, slot - 1, 0, (u64)id, 0, 0);
 }
 
@@ -1598,7 +1731,7 @@ COLD static void on_close(struct state *st, struct line *l, struct res *r) {
    but its icon's (image_marked in elf.h). So the grant must carry the execute right, be
    exactly four pages and start with the marker. It is mapped read-only: a copy without the
    execute right takes the grant's place, so nothing a program lends ever runs here. */
-COLD static void on_icon(struct state *st, struct res *r) {
+COLD static void on_icon(struct state *st, struct line *l, struct res *r) {
     u64 badge = r->x[1], cap = r->x[5], slot = r->x[6];
     u64 ok = 1;
     for (int k = 0; k < MAX_WIN && cap && badge >= 10 && badge <= 15; k++) {
@@ -1621,6 +1754,7 @@ COLD static void on_icon(struct state *st, struct res *r) {
         int n = 0;
         while (n < 15 && name[n] > 32 && name[n] < 127) n++;
         for (int i = 0; i < 16; i++) w->prog[i] = i < n && !name[n] ? (char)name[i] : 0;
+        if (w->unsaid) say_open(l, w);
         if (m[1] && wd > 0 && ht > 0 && wd <= 64 && ht <= 64 && 16 + wd * ht * 4 <= 4 * 4096 - 16) {
             w->icon.w = (int)wd;
             w->icon.h = (int)ht;
@@ -1797,7 +1931,6 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
     put_s(&l, "display: desktop drawn on the 1024x600 framebuffer");
     say(&l);
     /* Startup items: Apps opens what the card's startup.txt lists (nothing, if it has none). */
-    st->spread = 1;
     const char *at = "@startup";
     for (int i = 0; i < 9; i++) st->pending[i] = at[i];
     launch(st, &l, APPS_DOCK);
@@ -1848,6 +1981,7 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
         /* Anything but another drag move draws the one waiting first. */
         if (st->drag_pending && !((badge == BADGE_INPUT || badge == BADGE_USB) && !slot && op == EV_MOVE))
             drag_frame(st);
+        if (slot && !(op == OP_ICON && grant)) say_unsaid(st, &l, badge);
         if ((badge == BADGE_INPUT || badge == BADGE_USB) && !slot) {
             on_input(st, &l, op, r.x[3], r.x[4]);
         } else if (slot && op == OP_OPEN && r.x[5]) {
@@ -1857,7 +1991,7 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
         } else if (slot && op == OP_SET) {
             on_set(st, &l, &r);
         } else if (slot && op == OP_ICON && grant) {
-            on_icon(st, &r);
+            on_icon(st, &l, &r);
         } else if (slot && op == OP_START) {
             on_start(st, &l, &r);
         } else if (slot && op == OP_RAISE) {

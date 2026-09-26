@@ -27,28 +27,31 @@ ntp=$!
 trap 'kill $ntp 2>/dev/null; wait $ntp 2>/dev/null' EXIT
 sleep 1
 
-# Settings is the fourth window (Notes, Terminal, Clock, Settings), at the display's fourth
-# cascade place, pushed up off the dock: its pixels start at (216, 166). The stepper's - and
-# + are at (318 + 17, 62) and (318 + 138 - 17, 62) in them.
+# In Settings' pixels (below its title bar), the stepper's - and + are at (318 + 17, 62) and
+# (318 + 138 - 17, 62), and Indigo at (64, 62). Terminal's date shows the time in the zone
+# and, beside it, in UTC.
 out=$(NTP=$ntp_port python3 - <<'PY'
 import os, sys
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for, DOCK, TEST_CARD
+from run import boot, mouse, wait_for, wclick, TITLE_H, DOCK, TEST_CARD
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [c.encode() for c in s]
-MINUS, PLUS = (216 + 335, 166 + 62), (216 + 439, 166 + 62)
+MINUS, PLUS = wclick("Settings", 335, TITLE_H + 62), wclick("Settings", 439, TITLE_H + 62)
+INDIGO = wclick("Settings", 64, TITLE_H + 62)
 first = [wait_for("usb: network: ", 2), *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *keys(f"ntp 10.0.2.2:{os.environ['NTP']}\r"), wait_for("terminal: ntp"),
          wait_for("display: time zone UTC; the menu bar"),
+         *keys("date\r"), wait_for("terminal: date"),
          *keys("run clock\r"), wait_for("clock: in UTC it is"),
          *click(*DOCK["Settings"]), wait_for("settings: time zone UTC")]
 for i in range(8):                  # UTC+1, +2, +3, +3:30, +4, +4:30, +5, +5:30
-    first += [*click(*PLUS), wait_for("display: time zone UTC+", i + 1)]
+    first += [*PLUS, wait_for("display: time zone UTC+", i + 1)]
 first += [wait_for("clock: in UTC+5:30 it is"), wait_for("apps: saved the time zone, UTC+5:30")]
 for i in range(12):                 # +5, +4:30, +4, +3:30, +3, +2, +1, UTC, -1, -2, -3, -3:30
-    first += [*click(*MINUS), wait_for("settings: time zone set to", 8 + i + 1)]
+    first += [*MINUS, wait_for("settings: time zone set to", 8 + i + 1)]
 first += [wait_for("clock: in UTC-3:30 it is"), wait_for("apps: saved the time zone, UTC-3:30"),
-          *click(216 + 64, 166 + 62)]    # then Indigo, the background already chosen: a last line
+          *click(*DOCK["Terminal"]), *keys("date\r"), wait_for("terminal: date", 2),
+          *click(*DOCK["Settings"]), *INDIGO]    # then Indigo, the background already chosen: a last line
 status = boot(240, net=True, steps=first, until="settings: background set to Indigo", settle=1.5)
 print("--- restart ---", flush=True)
 if status:
@@ -56,13 +59,14 @@ if status:
 # The same card again: the zone comes back from it before anyone touches anything.
 again = [wait_for("usb: network: ", 2), *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *keys(f"ntp 10.0.2.2:{os.environ['NTP']}\r"), wait_for("terminal: ntp"),
+         wait_for("display: time zone UTC-3:30, saved on the card"), *keys("date\r"), wait_for("terminal: date"),
          *keys("run clock\r"), wait_for("clock: in "),
          *click(*DOCK["Settings"]), wait_for("settings: time zone UTC")]
 sys.exit(boot(240, net=True, sd=TEST_CARD, steps=again, until="settings: time zone UTC", settle=1.5))
 PY
 )
 status=$?
-echo "$out" | grep -E "^(--- restart|terminal: ntp|settings: time zone|display: (time zone|start Apps)|apps: (saved|time zone)|clock: in )" \
+echo "$out" | grep -E "^(--- restart|terminal: (ntp|date)|settings: time zone|display: (time zone|start Apps)|apps: (saved|time zone)|clock: in )" \
   | sed "s/:$ntp_port/:NTP/; s/^/  | /"
 [ $status -eq 0 ] || fail "the runs did not finish (status $status)"
 first=$(echo "$out" | sed '/^--- restart ---$/q')
@@ -101,6 +105,18 @@ for text in (first, again):
         assert shown == f"{local(t, z):%Y-%m-%d %H:%M:%S}", (m.group(0), local(t, z))
         checked["clock"] += 1
 assert checked["bar"] >= 22 and checked["clock"] >= 4, checked
+# Terminal's date: in UTC as it always was while the zone is UTC; in the zone, with the time
+# in UTC beside it, once it is not. Both are the same moment, a little after the time server's.
+dates = []
+for text in (first, again):
+    for m in re.finditer(r"^terminal: date -> (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (UTC\S*)(?: \((\d\d:\d\d:\d\d) UTC\))?$", text, re.M):
+        shown, z, utc = datetime.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"), m.group(2), m.group(3)
+        assert (utc is None) == (z == "UTC"), m.group(0)
+        at = shown - datetime.timedelta(minutes=zone(z))
+        assert utc is None or f"{at:%H:%M:%S}" == utc, (m.group(0), at)
+        assert datetime.datetime(2026, 12, 31, 20) <= at < datetime.datetime(2026, 12, 31, 20, 10), m.group(0)
+        dates.append(z)
+assert dates == ["UTC", "UTC-3:30", "UTC-3:30"], dates
 # The time server's time (a moment after 20:00 UTC on December 31): half past one on New
 # Year's Day in UTC+5:30, half past four the afternoon before in UTC-3:30.
 for who, line in (("the menu bar", r"display: time zone UTC\+5:30, as Settings asked; the menu bar shows Fri Jan 1  01:3\d at"),
@@ -108,7 +124,7 @@ for who, line in (("the menu bar", r"display: time zone UTC\+5:30, as Settings a
                   ("Clock", r"clock: in UTC\+5:30 it is 2027-01-01 01:3\d:\d\d "),
                   ("Clock", r"clock: in UTC-3:30 it is 2026-12-31 16:3\d:\d\d ")):
     assert re.search("^" + line, first, re.M), (who, line)
-print(f"ok: {checked['bar']} menu bar times and {checked['clock']} Clock times match their zones")
+print(f"ok: {checked['bar']} menu bar times, {checked['clock']} Clock times and {len(dates)} of Terminal's dates match their zones")
 CHECK
 
 # The last choice was saved on the card, and came back after the restart.

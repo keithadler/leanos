@@ -163,7 +163,7 @@ Things to try once it is up:
 
 - Open **Terminal** and type `help`, then `tour`, `caps`, `ps`, `date` or `ping 10.0.2.2`.
   Tab completes a command or file name, and Up brings back the commands you ran.
-- Pick a time zone in **Settings**: the menu bar and Clock show the time there.
+- Pick a time zone in **Settings**: the menu bar, Clock and Terminal's `date` show the time there.
 - Click the **globe** in the dock and go to `info.cern.ch`.
 - `run edit notes.txt` in Terminal edits that one file, and nothing else.
 - Type in Notes, press Ctrl+C, click Terminal and press Ctrl+V: the text is on its command

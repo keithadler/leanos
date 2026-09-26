@@ -21,6 +21,7 @@ rm -f "$T/screen.ppm" "$T/screen.png" "$T/logo.ppm" "$T/logo.png"
 # title bar, then capture the screen (test/run.py, DEMO_STEPS).
 out=$(python3 test/run.py 40 --demo)
 status=$?
+echo "$out" > "$T/serial.txt"            # where the window opened, for the pixel checks
 echo "$out" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish the interaction (status $status)"
 
@@ -83,15 +84,17 @@ expected_head=$(printf '%s\n' "display: boot checks shown: 6 verified, 0 refused
 [ "$(echo "$display" | head -3)" = "$expected_head" ] || fail "display did not show the boot checks, logo and desktop"
 for line in \
   "display: start Apps -> ok" \
-  "display: alice opened a 300x200 window from a read-only capability to 59 pages" \
+  "display: alice opened a 300x200 window at 8,38 from a read-only capability to 59 pages" \
   "display: mallory sent a copy nobody asked for; refused"; do
   [ "$(echo "$display" | grep -cxF "$line")" = 1 ] || fail "display line missing or repeated: $line"
 done
 # mallory's window without pixels, and her request for the clipboard, which does not exist
 [ "$(echo "$display" | grep -cxF "display: mallory sent a request it cannot make; ignored")" = 2 ] \
   || fail "the display did not refuse mallory's two requests it does not have"
+# the drag (DEMO_STEPS in test/run.py) moves Notes 180 px right and 132 down, from the top
+# left of the desktop, where the first window goes
 expected_tail=$(printf '%s\n' "display: key 'H' to alice" "display: key 'i' to alice" "display: key '!' to alice" \
-  "display: moved alice's window to (276, 208)")
+  "display: moved alice's window to (188, 170)")
 [ "$(echo "$display" | tail -4)" = "$expected_tail" ] || fail "keys or drag not handled"
 [ "$(echo "$display" | wc -l | tr -d ' ')" = 12 ] || fail "display printed unexpected lines"
 # Startup items: the display starts Apps, which finds no startup.txt on this card and leaves.
@@ -138,17 +141,23 @@ for k in range(6):               # a green check beside every program on the boo
     assert sum(1 for y in range(y0, y0 + 14) for x in range(382, 396) if green(*logo(x, y))) > 30, ("check", k)
 
 at = load(os.path.join(sys.argv[1], "screen.ppm"))
+sys.path.insert(0, "test")
+from run import window_pos, OPENED
+log = open(os.path.join(sys.argv[1], "serial.txt")).read().splitlines()
+ox, oy = next((int(m.group(4)), int(m.group(5))) for m in map(OPENED.match, log) if m and m.group(1) == "alice")
+mx, my = window_pos(log, "alice")          # where the drag left it
 # mallory wrote 0xbad over the first two pixels of the menu bar; they match their neighbors
 assert at(0, 0) == at(2, 0) == at(3, 0) and at(1, 0) == at(2, 0), ("menu bar", at(0, 0), at(2, 0))
-assert min(at(500, 214)) > 220, ("title bar after the drag", at(500, 214))
+assert min(at(mx + 224, my + 6)) > 220, ("title bar after the drag", at(mx + 224, my + 6))
 # where the window was: the background pattern again, a dot at every 32 px brighter than
 # the gradient between the dots
-r, g, b = at(150, 150)
+assert not (mx <= ox + 54 < mx + 300), "the window did not move off where it was"
+r, g, b = at(ox + 54, oy + 74)
 assert b > r + 40 and b > 90, ("background between the dots", (r, g, b))
 for x, y in ((144, 144), (16, 48), (976, 560)):
     dot, between = at(x, y), at(x + 8, y + 8)
     assert sum(dot) > sum(between) + 40, ("pattern dot", (x, y), dot, between)
-dark = sum(1 for y in range(292, 314) for x in range(292, 330) if max(at(x, y)) < 100)
+dark = sum(1 for y in range(my + 84, my + 106) for x in range(mx + 16, mx + 54) if max(at(x, y)) < 100)
 assert dark > 20, ("typed text", dark)
 assert max(at(215, 548)) > 120, ("the Notes icon in the dock", at(215, 548))
 print("ok: the boot screen, the desktop, the dock, the typed note and the moved window are on screen; mallory's write never landed")

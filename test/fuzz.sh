@@ -9,11 +9,11 @@ fail() { echo "FAIL: $*"; exit 1; }
 out=$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for, DOCK
+from run import boot, mouse, wait_for, wclick, DOCK
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [c.encode() for c in s]
 # fuzz from the Apps window's grid: the eighth program on the card, second row, third column
-steps = [*click(*DOCK["Apps"]), wait_for("apps: opened"), *click(376, 426), wait_for("fuzz: opened"),
+steps = [*click(*DOCK["Apps"]), wait_for("apps: opened"), *wclick("Apps", 240, 314), wait_for("fuzz: opened"),
          wait_for("fuzz: 20000 calls", 1),
          *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *keys("write after.txt still here\r"), wait_for("terminal: write"),

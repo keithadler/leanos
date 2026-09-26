@@ -31,12 +31,12 @@ out=$(python3 - "$card" <<'PY'
 import os, subprocess, sys, time
 from collections import Counter
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for, pause, DOCK
+from run import boot, mouse, wait_for, pause, wclick, CLOSE, DOCK
 card = sys.argv[1]
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [s.encode()]
 front = click(*DOCK["Terminal"])       # a new window takes the keys: give them back to Terminal
-FILES = (580, 200)                     # in Files' window (the second to open, at 136,112), clear of the rest
+FILES = wclick("Files", 300, 88)       # in Files' window, right of its list, clear of the rest
 seen = Counter({"files: showing": 1})   # Files shows its first file as it opens
 def wait(prefix):
     seen[prefix] += 1
@@ -67,14 +67,14 @@ def on_line(line):
             print(f"freeze: QEMU used {100 * (c1 - c0) / (t1 - t0):.0f}% of a host core for {t1 - t0:.1f} s", flush=True)
 
 IDLE = [*keys("ps\r"), wait("terminal: ps"), pause(6), *keys("ps\r"), wait("terminal: ps")]
-steps = [*click(114, 91), wait("alice: window closed"),
+steps = [*wclick("alice", *CLOSE), wait("alice: window closed"),
          *click(*DOCK["Terminal"]), wait("terminal: opened"),
          *click(*DOCK["Files"]), wait("files: opened"), *front, *IDLE]
 # 1. eight windows wait, then Notes asks for one
 for k in range(10, 16): steps += run("hog", f"chaos: hog in slot {k}:")
 steps += [*click(*DOCK["Notes"]), wait("alice: opened"), *keys("Hi"), wait("display: key 'i' to alice"),
           *front, *keys("cat notes.txt\r"), wait("terminal: cat notes.txt"),
-          *click(*FILES), wait("files: showing"), *front]
+          *FILES, wait("files: showing"), *front]
 # 2. twelve windows, eleven waiting
 steps += [*keys("kill 15\r"), wait("terminal: kill 15"),
           *click(*DOCK["Security"]), wait("security: opened"),
@@ -83,7 +83,7 @@ steps += [*keys("kill 15\r"), wait("terminal: kill 15"),
           *run("wins", "chaos: wins in slot 15:"),
           *click(*DOCK["Notes"]), *keys("!"), wait("display: key '!' to alice"), pause(0.5),
           *front, *keys("cat notes.txt\r"), wait("terminal: cat notes.txt"),
-          *click(*DOCK["Files"]), *click(*FILES), wait("files: showing"), *front, pause(1)]
+          *click(*DOCK["Files"]), *FILES, wait("files: showing"), *front, pause(1)]
 # 3. idle with eleven waiting, then switch off
 steps += [*IDLE, *click(40, 15), *click(60, 80), wait("leanos: switched off")]
 sys.exit(boot(90, steps=steps, sd=card, on_line=on_line))

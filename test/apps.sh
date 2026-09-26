@@ -11,9 +11,10 @@ mkdir -p "$T"
 
 fail() { echo "FAIL: $*"; exit 1; }
 
-rm -f "$T/screen.ppm" "$T/screen.png"
+rm -f "$T/screen.ppm" "$T/screen.png" "$T/notes-again.ppm"
 out=$(python3 test/run.py 120 --apps)
 status=$?
+echo "$out" > "$T/serial.txt"            # where each window opened, for the pixel checks
 echo "$out" | grep -vE "^(mallory|carol): " | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish the interaction (status $status)"
 
@@ -39,7 +40,8 @@ check_order terminal \
   "terminal: caps -> 14 capabilities" \
   "terminal: boot -> 8 verified" \
   "terminal: write hello.txt -> ok" \
-  "terminal: ls -> 24 files" \
+  "terminal: ls -> 14 files" \
+  "terminal: ls -a -> 24 files" \
   "terminal: window closed, exiting" \
   "terminal: opened a window -> ok" \
   "terminal: caps -> 14 capabilities" \
@@ -74,9 +76,10 @@ check_order settings \
   "settings: the firmware reports the CPU at 600 MHz" \
   "settings: activity light on -> ok"
 
-# Files: the list, then the down arrow through every file, past the 12 rows it shows at once
-echo "$out" | grep -qx "files: listed 26 files" || fail "files did not list the card"
-[ "$(echo "$out" | grep -c "^files: showing ")" = 24 ] || fail "the down arrow did not walk the list"
+# Files: the list (the programs' ten icons left out), then the down arrow through the files,
+# past the 12 rows it shows at once, to hello.txt
+echo "$out" | grep -qx "files: listed 16 files" || fail "files did not list the card"
+[ "$(echo "$out" | grep -c "^files: showing ")" = 14 ] || fail "the down arrow did not walk the list"
 echo "$out" | grep -E "^files: showing " | tail -1 | grep -qx "files: showing hello.txt (19 bytes)" || fail "files did not reach hello.txt"
 
 check_order security \
@@ -109,21 +112,29 @@ echo "ok: apps start from the dock, are checked on every start, stop when closed
 
 python3 - "$T" <<'PY' || fail "the screen is not what the apps drew"
 import os, sys
-data = open(os.path.join(sys.argv[1], "screen.ppm"), "rb").read()
-_, dims, _, px = data.split(b"\n", 3)
-w, h = map(int, dims.split())
-at = lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
+sys.path.insert(0, "test")
+from run import window_pos, TITLE_H
+def load(name):
+    data = open(os.path.join(sys.argv[1], name + ".ppm"), "rb").read()
+    _, dims, _, px = data.split(b"\n", 3)
+    w, h = map(int, dims.split())
+    return lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
+at = load("screen")
+log = open(os.path.join(sys.argv[1], "serial.txt")).read()
+sx, sy = window_pos(log, "Security")
+nx, ny = window_pos(log, "alice")
+tx, ty = window_pos(log, "Terminal")
 
-# Graphite: gray, not the default indigo
-r, g, b = at(1000, 300)
+# Graphite: gray, not the default indigo (the desktop left of the dock, where no window goes)
+r, g, b = at(100, 560)
 assert b - r < 20 and max(r, g, b) < 90, ("graphite background", (r, g, b))
 # Security's report: a green check beside each of the ten manifest programs, a blue one
 # beside hello and clock (slots 10 and 11, from the SD card), nothing for the empty open slots
 green = lambda r, g, b: g > 150 and r < 120 and b < 140
 blue = lambda r, g, b: b > 180 and r < 100
 def count(k, pred):
-    y0 = 116 + 40 + 14 * k
-    return sum(1 for y in range(y0 + 2, y0 + 14) for x in range(356, 372) if pred(*at(x, y)))
+    y0 = sy + 72 + 14 * k
+    return sum(1 for y in range(y0 + 2, y0 + 14) for x in range(sx + 20, sx + 36) if pred(*at(x, y)))
 for k in range(10):
     assert count(k, green) > 60, ("check", k)
 for k in (10, 11):
@@ -132,9 +143,12 @@ for k in (12, 13, 14, 15):   # (the edge of Apps' check, just below slot 15, may
     assert count(k, blue) == 0 and count(k, green) < 12, ("empty open slot", k, count(k, green))
 assert count(16, green) > 60, ("Apps, started at boot for the startup items", count(16, green))
 # the note came back after Notes started again: dark text where "Hi" is
-assert sum(1 for y in range(160, 180) for x in range(114, 132) if max(at(x, y)) < 100) > 20, "the saved note"
-# Terminal's dark window, below Security's
-assert max(at(170, 400)) < 60, ("terminal", at(170, 400))
+notes = load("notes-again")
+assert sum(1 for y in range(ny + 84, ny + 104) for x in range(nx + 18, nx + 36) if max(notes(x, y)) < 100) > 20, \
+    "the saved note"
+# Terminal's dark window, below Security's: its left edge, beside Security
+assert tx + 6 < sx and ty < sy, ("Terminal is not beside Security", (tx, ty), (sx, sy))
+assert max(at(tx + 6, sy + 100)) < 60, ("terminal", at(tx + 6, sy + 100))
 print("ok: the Graphite background, Security's ten checks, Terminal and the saved note are on screen")
 PY
 

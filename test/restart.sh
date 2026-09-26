@@ -34,34 +34,35 @@ python3 tools/mksd.py "$card" alpha=$p beta=$p blip=$p gamma=$p >/dev/null || fa
 out=$(python3 - "$card" <<'PY'
 import sys
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for, DOCK
+from run import boot, mouse, wait_for, wmouse, wclick, CLOSE, DOCK
 card = sys.argv[1]
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [s.encode()]
-TERM = (700, 250)            # in Terminal's window, once it is moved to the right
-BETA = (150, 160)            # in the window at (136, 112): slot 10's
-GAMMA = (250, 225)           # in the window at (176, 148): slot 11's
-GAMMA_CLOSE = (194, 163)     # that window's close button
-steps = [*click(114, 91), wait_for("alice: window closed"),
+TERM = wclick("Terminal", 164, 174)     # in Terminal's window, once it is moved to the right
+BETA = wclick("beta", 14, 48)           # in slot 10's window: (14, 18) in its pixels
+GAMMA = wclick("gamma", 74, 77)         # in slot 11's window: (74, 47) in its pixels
+GAMMA_CLOSE = wclick("gamma", *CLOSE)   # that window's close button
+steps = [*wclick("alice", *CLOSE), wait_for("alice: window closed"),
          *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
-         mouse("d", 300, 88), mouse("v", 520, 88), mouse("v", 740, 88), mouse("u", 740, 88),
+         wmouse("d", "Terminal", 164, 12), wmouse("v", "Terminal", 164 + 220, 12),
+         wmouse("v", "Terminal", 164 + 440, 12), wmouse("u", "Terminal", 164 + 440, 12),
          wait_for("display: moved Terminal's window"),
          # 1. kill + run into the slot of a program the display holds a call for
-         *keys("run alpha\r"), wait_for("restart: alpha in slot 10: opened"), *click(*TERM),
+         *keys("run alpha\r"), wait_for("restart: alpha in slot 10: opened"), *TERM,
          *keys("kill 10\r"), wait_for("terminal: kill 10"),
          *keys("run beta\r"), wait_for("restart: beta in slot 10: opened"),
          *keys("b"), wait_for("restart: beta in slot 10: event 1 "),
-         *click(*BETA), wait_for("restart: beta in slot 10: event 2 "),
+         *BETA, wait_for("restart: beta in slot 10: event 2 "),
          # 2. a program that stops by itself between Terminal's question and its start
-         *click(*TERM), *keys("run blip\r"), wait_for("restart: blip in slot 11: ready"), *click(*TERM),
+         *TERM, *keys("run blip\r"), wait_for("restart: blip in slot 11: ready"), *TERM,
          *keys("run gamma\r"), wait_for("terminal: run gamma"), wait_for("restart: gamma in slot 11: opened"),
          # 3. every app gets its own events, and only those
          *keys("g"), wait_for("restart: gamma in slot 11: event 1 "),
-         *click(*BETA), wait_for("restart: beta in slot 10: event 2 ", 2),
-         *click(*GAMMA), wait_for("restart: gamma in slot 11: event 2 "),
-         *click(*TERM), *keys("ps\r"), wait_for("terminal: ps"),
-         *click(*GAMMA_CLOSE), wait_for("restart: gamma in slot 11: event 5 "),
-         *click(*TERM), *keys("ps\r"), wait_for("terminal: ps", 2),
+         *BETA, wait_for("restart: beta in slot 10: event 2 ", 2),
+         *GAMMA, wait_for("restart: gamma in slot 11: event 2 "),
+         *TERM, *keys("ps\r"), wait_for("terminal: ps"),
+         *GAMMA_CLOSE, wait_for("restart: gamma in slot 11: event 5 "),
+         *TERM, *keys("ps\r"), wait_for("terminal: ps", 2),
          *click(40, 15), *click(60, 80), wait_for("leanos: switched off")]
 sys.exit(boot(120, steps=steps, sd=card))
 PY
