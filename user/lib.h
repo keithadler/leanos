@@ -90,8 +90,14 @@ static inline void spin(u64 n) { for (volatile u64 i = 0; i < n; i++) {} }
 /* The time: the processor's virtual counter and how fast it counts. */
 static inline u64 ticks(void) { u64 v; __asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(v)); return v; }
 static inline u64 tick_rate(void) { u64 v; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(v)); return v ? v : 54000000; }
-static inline u64 millis(void) { return ticks() * 1000 / tick_rate(); }
-static inline u64 micros(void) { return ticks() * 1000000 / tick_rate(); }
+/* Whole seconds, then the rest: ticks() * 1000000 alone would overflow 64 bits after about
+   3.9 days at a Pi 4's 54 MHz. */
+static inline u64 ticks_scaled(u64 per_second) {
+    u64 t = ticks(), r = tick_rate();
+    return t / r * per_second + t % r * per_second / r;
+}
+static inline u64 millis(void) { return ticks_scaled(1000); }
+static inline u64 micros(void) { return ticks_scaled(1000000); }
 /* Sleep at least `ms` milliseconds (whole 10 ms timer ticks), letting other tasks run. */
 static inline void sleep_ms(u64 ms) { sys1(SYS_SLEEP, ms); }
 
