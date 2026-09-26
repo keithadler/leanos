@@ -415,6 +415,21 @@ program is killed, so one `run` naming many files cannot leave a later program w
 folder (`test/grants.sh`). TRUST.md says what the file server is trusted to do and what the
 fuzzer checks.
 
+Done too: the display server under a fuzzer. `test/dfuzz.sh` runs `dfuzz` from the open
+slots, two at once: fixed requests for every op and every limit, requests near the limits
+checked against the display's rule, floods, random requests, windows until the table is
+full; then programs killed while the display holds their call and in the middle, one that
+exits and one that faults, with the kernel heap the same after each start; copy and paste
+by hand past the clipboard's size, late and after the close button; and screenshots, where
+the menu bar and the dock's icons must be untouched with every window up. It found five bugs
+in `user/display.c`, fixed and kept as regressions: a window's grant longer than its slot
+was mapped over the next window's (its pixels showed in another program's window), and an
+icon's over the next icons'; refused windows and raises were logged every time, each line
+holding the kernel; a tall window opened over the menu bar; and a narrow window drew its
+buttons and title past its frame. One it found is left for the protocol: a program can take
+another's name through a made-up icon. TRUST.md says what the display is trusted to do and
+what the fuzzer checks.
+
 Next: the first boot on real Pi 4 hardware (EMMC2, colors, timings), the USB-A ports
 (xHCI on PCIe), the Pi 4's own Ethernet (GENET), a kernel lock finer than the whole kernel
 (disk and USB transfers hold it today), and the Pi 5.

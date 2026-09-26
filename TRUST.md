@@ -284,6 +284,59 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   Terminal was loading another left its window behind: the next program started in its
   slot had its wait held on the dead window, and the display stopped when it drew the old
   pixels (`test/restart.sh`).
+- What else the display server is trusted to do, tested by `test/dfuzz.sh`, not proved. It
+  cannot be restarted, so a crash freezes the machine, and it holds every window's pixels.
+  It must answer every message, whatever its op, words and grant hold, with an answer the
+  protocol (`user/app.h`) allows, and never stop or hang; map a window's grant only into that
+  window's own slot of its address space, and an icon's only into that icon's, so it never
+  draws one program's memory as another's window; draw a window, its title bar and its
+  title (the program's words) only inside its frame, below the menu bar, with the dock and
+  the menu bar on top, as a drag keeps them; drop every grant it does not use; forget a
+  stopped program's windows; and log a few lines of any flood, not each request, since a
+  line holds the kernel while the serial port takes it. The test runs a fuzzer from the open
+  slots (`user/progs/dfuzz.c`), two at once: fixed requests for every op (sizes 0, huge and
+  past 16 bits, too few pages and more than a window's slot, no grant, the code run and the
+  stack as pixels, an endpoint as the grant, a window taller than the room, one a pixel wide;
+  icons with bad markers, sizes and page counts; SET, START, RAISE and PENDING a card
+  program may not make; ZONE; unknown ops; grants by plain send), without a window and with
+  one; windows and icons near every limit checked against the rule; floods; thousands of
+  random requests, calls and plain sends; windows until the table is full. Then one is
+  killed while the display holds its call, one killed in the middle, one exits and one
+  faults just after grants sent by plain send, and the kernel heap after each start of the
+  slot must be the same; and copy and paste by hand into one window: an answer past the
+  clipboard's 4 KiB, a late one and one after the close button must be refused, and the
+  paste must be exactly what was taken. The screen is checked too: with every fuzzer window
+  up, the menu bar and the dock's opaque icon pixels are as at the end, and a window a pixel
+  wide changes nothing past its frame and shadow. The seed is printed, so a run can be
+  repeated. What it does not show: that its requests reach every path through the code,
+  events from the input and USB drivers other than a few keys and clicks (`test/restart.sh`
+  and `test/freeze.sh` check which window gets them), or a display that holds a program's
+  pixels and draws them wrongly without drawing past its frame. It found five bugs, now
+  fixed and kept in its fixed requests:
+  - A window took a grant of any size and the display mapped all of it at the window's
+    slot, so a small window from a grant of 200 pages reached 16 pages into the next
+    window's slot: that window then showed this program's pixels (a red band over the top of
+    Terminal, in the test's first form). A grant longer than a window's slot is refused.
+  - An icon took a grant of four pages or more, and a longer one reached over the next
+    windows' icons the same way. An icon's grant must be its four pages.
+  - A window the display refused, and a RAISE that found its window, were each logged every
+    time: 601 and 400 lines in one run, each holding the kernel while the serial port took
+    it. Each program's are now logged three times at most, as its other refusals are.
+  - A window taller than the room between the menu bar and the dock was placed with its
+    title bar, and the title its program chose, over the menu bar. It now opens below the
+    menu bar, where a drag keeps it, and reaches under the dock instead.
+  - A window narrower than its buttons and title drew them past its frame, over whatever
+    was beside it, where a click reaches another window. They are now drawn only inside the
+    frame (a window 12 pixels wide or less has no close button to click; `kill` stops it).
+  Found and not fixed, since the fix is the protocol's, not the display's: the name a
+  window takes from its icon (which RAISE, `run` and the dock's pinned programs look for) is
+  whatever name any four pages with the icon's marker hold, not only the name the
+  loader wrote into the program's code run. So a program can take another's name (a
+  `clock` that is not Clock), and then clicking Clock in the dock, or `run clock`, brings its
+  window forward instead of starting Clock. The display cannot tell a program's code pages
+  from its other pages by the grant alone; lending the icon with its execute right
+  (`app_open` in `user/app.h`), which only the code run has, would let it. And a program
+  with several windows hears only its first window's events (WAIT and POLL name no window).
 - The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
   then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.

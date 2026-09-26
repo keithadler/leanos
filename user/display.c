@@ -162,6 +162,7 @@ struct win {
    globals. */
 struct state {
     unsigned char ignored[32];   /* requests not understood, per badge, so a flood logs once */
+    unsigned char said[32];      /* refused windows and raises logged, per badge: a few, not a flood */
     struct surface screen;
     struct font ui, ui_bold, small, huge, medium;
     struct picture icons[DOCK_ALL];
@@ -381,15 +382,29 @@ static void draw_window(struct state *st, int k) {
     int focus = focused(st) == k;
     shadow(s, x, y, ow, oh, RADIUS, 0);
     if (focus) shadow(s, x, y, ow, oh, RADIUS, 2);
-    round_gradient(s, x, y, ow, TITLE_H + RADIUS, RADIUS, rgb(248, 248, 250), rgb(234, 234, 238));
-    fill(s, x, y + TITLE_H - 1, ow, 1, rgb(214, 214, 220));
-    traffic_lights(s, x + 12, y + 9, focus);
-    int tw = text_w(&st->ui_bold, w->title);
-    const struct picture *ic = win_icon(st, k);
-    int tx = x + ow / 2 - tw / 2 + (ic ? 11 : 0);
-    if (ic) icon_scaled(s, tx - 24, y + 5, 20, ic);
-    font_text(s, &st->ui_bold, tx, y + 20, w->title, focus ? rgb(40, 40, 46) : rgb(150, 150, 158));
-    blit_rounded(s, x, y + TITLE_H, &w->content, x, y, ow, oh, RADIUS);
+    /* The rest only inside the window's frame: its buttons and its title (the program's
+       words) must not reach past a narrow window onto what is beside it, where clicks go to
+       another window. */
+    int cx0 = s->cx0, cy0 = s->cy0, cx1 = s->cx1, cy1 = s->cy1;
+    if (s->cx0 < x) s->cx0 = x;
+    if (s->cy0 < y) s->cy0 = y;
+    if (s->cx1 > x + ow) s->cx1 = x + ow;
+    if (s->cy1 > y + oh) s->cy1 = y + oh;
+    if (s->cx0 < s->cx1 && s->cy0 < s->cy1) {
+        round_gradient(s, x, y, ow, TITLE_H + RADIUS, RADIUS, rgb(248, 248, 250), rgb(234, 234, 238));
+        fill(s, x, y + TITLE_H - 1, ow, 1, rgb(214, 214, 220));
+        traffic_lights(s, x + 12, y + 9, focus);
+        int tw = text_w(&st->ui_bold, w->title);
+        const struct picture *ic = win_icon(st, k);
+        int tx = x + ow / 2 - tw / 2 + (ic ? 11 : 0);
+        if (ic) icon_scaled(s, tx - 24, y + 5, 20, ic);
+        font_text(s, &st->ui_bold, tx, y + 20, w->title, focus ? rgb(40, 40, 46) : rgb(150, 150, 158));
+        blit_rounded(s, x, y + TITLE_H, &w->content, x, y, ow, oh, RADIUS);
+    }
+    s->cx0 = cx0;
+    s->cy0 = cy0;
+    s->cx1 = cx1;
+    s->cy1 = cy1;
 }
 
 /* The Edit menu's name in the menu bar, after the name of the window in front (-1: no window). */
@@ -1312,13 +1327,17 @@ COLD static void on_open(struct state *st, struct line *l, struct res *r) {
     for (int i = 0; i < MAX_WIN; i++) if (!st->win[i].used) { k = i; break; }
     struct res info = sys1(SYS_CAPINFO, cap - 1);
     u64 need = (w * h * 4 + 4095) / 4096;
+    /* The map takes the whole granted run, so a run longer than a window's slot would reach
+       into the next window's slot and show this program's pixels there: refused. */
     if (k < 0 || slot_of(badge) < 0 || w == 0 || h == 0 || w > 900 || h > 480 || info.x[2] != 0 ||
-        info.x[3] < need || need > WIN_MAX_PAGES ||
+        info.x[3] < need || info.x[3] > WIN_MAX_PAGES ||
         sys2(SYS_MAP, cap - 1, WIN_PAGE + WIN_MAX_PAGES * (u64)k).status != OK) {
-        put_s(l, "display: ");
-        put_s(l, name_of(badge));
-        put_s(l, " sent a window that does not fit its pixels; refused");
-        say(l);
+        /* Every line holds the kernel while the serial port takes it: a program asking again
+           and again must not keep the display (and every core) busy logging. */
+        if (st->said[badge & 31] < 3) {
+            st->said[badge & 31]++;
+            say3(l, name_of(badge), " sent a window that does not fit its pixels; refused", "");
+        }
         sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
         return;
     }
@@ -1350,6 +1369,9 @@ COLD static void on_open(struct state *st, struct line *l, struct res *r) {
     }
     if (wn->x + (int)w > W - 8) wn->x = W - 8 - (int)w;
     if (wn->y + (int)h + TITLE_H > DOCK_Y - 8) wn->y = DOCK_Y - 8 - (int)h - TITLE_H;
+    /* but never over the menu bar, as a drag keeps it: a window taller than the room between
+       them reaches over the dock instead, which is drawn over every window */
+    if (wn->y < BAR_H + 2) wn->y = BAR_H + 2;
     wn->slot = 0;
     wn->hash = sys1(SYS_BOOTINFO, (u64)slot_of(badge)).x[2];
     wn->parked = 0;
@@ -1450,7 +1472,8 @@ COLD static void on_icon(struct state *st, struct res *r) {
         struct win *w = &st->win[k];
         if (!w->used || w->closing || w->badge != badge || w->icon.px) continue;
         struct res info = sys1(SYS_CAPINFO, cap - 1);
-        if (info.x[2] != 0 || info.x[3] < 4 || sys2(SYS_MAP, cap - 1, ICON_PAGE + 4 * (u64)k).status != OK) break;
+        /* exactly its four pages: a longer run would be mapped over the next window's icon */
+        if (info.x[2] != 0 || info.x[3] != 4 || sys2(SYS_MAP, cap - 1, ICON_PAGE + 4 * (u64)k).status != OK) break;
         const unsigned *m = (const unsigned *)PAGE(ICON_PAGE + 4 * (u64)k);
         unsigned wd = m[2], ht = m[3];
         if (m[0] != 0x43494e4cu) break;
@@ -1480,7 +1503,8 @@ COLD static void on_icon(struct state *st, struct res *r) {
 /* RAISE: bring forward the window of the program from card file w1 w2 (up to 15 bytes), if
    one is open. Answers 0 if it did, 1 if there is none (always, for no name: a launcher
    about to start a slot asks that, app_before_start). Anyone may ask: it only moves a
-   window up, and the name is what the loader wrote into the image, not the program's say. */
+   window up. The name is the one its icon brought (ICON): the loader writes it into the
+   image, but any four pages with the icon's marker can bring one (TRUST.md). */
 COLD static void on_raise(struct state *st, struct line *l, struct res *r) {
     char want[17];
     for (int i = 0; i < 16; i++) want[i] = (char)(r->x[3 + i / 8] >> (8 * (i % 8)));
@@ -1493,10 +1517,10 @@ COLD static void on_raise(struct state *st, struct line *l, struct res *r) {
         while (i < 16 && w->prog[i] == want[i] && want[i]) i++;
         if (i < 16 && w->prog[i] == want[i]) {
             bring_to_front(st, k);
-            put_s(l, "display: ");
-            put_s(l, want);
-            put_s(l, " is already open; brought it to the front");
-            say(l);
+            if (st->said[r->x[1] & 31] < 3) {    /* a program may name its own window and ask again */
+                st->said[r->x[1] & 31]++;
+                say3(l, want, " is already open; brought it to the front", "");
+            }
             found = 0;
             break;
         }
