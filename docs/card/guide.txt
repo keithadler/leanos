@@ -87,6 +87,18 @@ Terminal
   whoami, caps, boot, uptime                what the kernel says about this program
   tour                                      why leanos is harder to attack than Linux
 
+  CMD > FILE    what CMD prints goes into FILE instead of the screen (echo TEXT > FILE
+                makes a small file). The old FILE stays until the new one is whole: if
+                the command fails or prints more than 64 KiB, nothing is written
+  CMD >> FILE   the same, added at the end of FILE
+  CMD | CMD2    what CMD prints becomes CMD2's input: grep, head, tail, wc and cat read
+                it when they are given no file (ls | grep txt, cat big | grep x | wc,
+                history | tail -n 5). As many | as fit on the line, and > at the end
+  > and | work with spaces around them or not, and there are no quotes, so echo cannot
+  print them. Errors, and notes such as "no match", still go to the screen. run, tour,
+  kill, cd, exit and clear cannot be piped or redirected. Tab completes a command's name
+  after a | too.
+
   Up, Down      the commands you ran before (the last 32; history lists them), and back to
                 the line you were typing
   Left, Right   move along the command line; what you type goes in at the cursor
