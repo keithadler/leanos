@@ -116,7 +116,12 @@ Programs on the card
   snake   the arrow keys steer; space plays again
   life    Conway's Game of Life; space pauses, a click adds a cell, r reseeds
   tiles   2048: the arrow keys slide the tiles
-  clock   the time in your time zone (until a time server answers, how long the Pi has been up)
+  clock   the time in your time zone (until a time server answers, how long the Pi has been
+          up), a stopwatch and a timer: click a tab at the top, or press C, S or T.
+          Stopwatch: space starts and stops it, L takes a lap, R resets it.
+          Timer: type the time as on a microwave (1 3 0 is 1:30), or + and - for a minute
+          more or less; space starts and pauses it, R resets it. At zero it flashes until a
+          key or a click. Both keep going on the other tabs, and each has buttons too.
   hello   the smallest program
   fuzz    20,000 system calls with made-up arguments, each answer checked
   edit    a text editor: run edit FILE gives it that file; it saves by itself

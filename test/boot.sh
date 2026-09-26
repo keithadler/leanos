@@ -47,7 +47,7 @@ check_order alice \
 
 check_order fs \
   "fs: ready, 22 files on the SD card" \
-  "fs: checked: 22 files in 1 folder, 6668 KiB free of 6968, journal 128 KiB"
+  "fs: checked: 22 files in 1 folder, 6660 KiB free of 6968, journal 128 KiB"
 
 check_order mallory \
   "mallory: I am task 2" \
