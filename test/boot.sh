@@ -112,7 +112,9 @@ echo "ok: boot transcript matches"
 
 # The boot steps (arch/bootcon.c): each announced before it runs, its results after it, and
 # nothing else of the kernel's in between; the last before any task runs.
-boot_head=$(echo "$out" | sed -n '1,/^leanos: \[13\/13\]/p' | sed 's/sha256 0x[0-9a-f]*\.\.\.$/sha256 .../')
+# the hashes change with every build, and the card's power-up time with the host's load
+boot_head=$(echo "$out" | sed -n '1,/^leanos: \[13\/13\]/p' | sed 's/sha256 0x[0-9a-f]*\.\.\.$/sha256 .../' \
+  | sed 's/powered up after [0-9]* ms$/powered up after N ms/')
 expected_boot=$(printf '%s\n' "leanos © 2026 Keith Adler" \
   "leanos: [1/13] serial console: PL011 on GPIO 14/15, 115200 8N1" \
   "leanos: Raspberry Pi 4, booting on EL1" \
@@ -135,7 +137,7 @@ expected_boot=$(printf '%s\n' "leanos © 2026 Keith Adler" \
   "leanos: SD: EMMC2: no card answered CMD8 or ACMD41" \
   "leanos: SD: EMMC: SDHCI 3.0, base clock 50000 kHz (the firmware's)" \
   "leanos: SD: EMMC: identification clock 396 kHz" \
-  "leanos: SD: EMMC: a standard-capacity card, powered up after 0 ms" \
+  "leanos: SD: EMMC: a standard-capacity card, powered up after N ms" \
   "leanos: SD: EMMC: ready, transfer clock 25000 kHz" \
   "leanos: SD card ready, data partition of 7 MiB" \
   "leanos: [7/13] Lean kernel: the first state, from the boot manifest" \
