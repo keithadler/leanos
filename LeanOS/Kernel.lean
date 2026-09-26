@@ -668,10 +668,12 @@ structure Reply where
   /-- load the program for slot `load - 1` into its frames, measure it and verify it; every
   task's page tables must be rebuilt (0 = none) -/
   load : Nat
-  /-- block I/O on the SD card: 1 = read block `ioBlock` into the calling task's 512 bytes at
-  user address `outVa`, 2 = write those bytes to it (0 = none). Only returned after checking
-  the block is in a block capability the task holds with that right, and the bytes lie in a
-  page it has mapped writable (for a read) or readable (for a write). -/
+  /-- block I/O on the SD card (0 = none): a run of `ioCount io` blocks (1 to `maxRun`) from
+  block `ioBlock`, read into the calling task's memory at user address `outVa`, 512 bytes a
+  block, if `io` is odd, or written from it if `io` is even (`ioWrites`): 1 reads one block,
+  2 writes one, 3 reads two, and so on. Only returned after checking every block of the run
+  is in a block capability the task holds with that right, and every byte lies in a page it
+  has mapped writable (for a read) or readable (for a write). -/
   io : Nat
   ioBlock : Nat
   /-- with `load`: copy the `loadLen` bytes at the calling task's user address `outVa` into
@@ -946,22 +948,48 @@ def ioCode : Bool → Nat
   | true => 2
   | false => 1
 
-/-- The 512 bytes at `va` may be filled from the disk (`write = false`: the page must be
-writable) or sent to it (`write = true`: readable). -/
-def ioPageOk (ms : List Mapping) (va : Nat) (write : Bool) : Bool :=
-  va % 512 == 0 && Nat.ble userBase va && pageRightFor write ms ((va - userBase) / pageSize)
+/-- The most blocks one `blockread` or `blockwrite` moves: 32, 16 KiB. The machine layer
+holds the kernel lock while it moves them. -/
+def maxRun : Nat := 32
 
-/-- Read block `idx` of block capability `ci` into the task's memory at `va`, or write it
-from there (`write`). The machine layer moves the bytes, and reports a hardware failure
-with `ioFailed`. -/
-def sysBlock (s : KState) (t : Task) (ci idx va : Nat) (write : Bool) : Reply :=
+/-- The blocks a call asks for: `count`, where 0 means one, so a caller that leaves the
+register at 0 moves one block. -/
+def runLen (count : Nat) : Nat := if count = 0 then 1 else count
+
+/-- A run of `k` blocks from block `idx` is at most `maxRun` long and ends inside a block
+capability of `n` blocks. -/
+def runFits (k idx n : Nat) : Bool := Nat.ble k maxRun && Nat.ble (idx + k) n
+
+/-- What the machine layer is asked for: a run of `k` blocks, read (odd) or written (even). -/
+def ioRun (write : Bool) (k : Nat) : Nat := 2 * (k - 1) + ioCode write
+
+/-- How many blocks block I/O request `io` moves, and whether it writes them to the disk. -/
+def ioCount (io : Nat) : Nat := (io + 1) / 2
+def ioWrites (io : Nat) : Bool := io % 2 == 0
+
+/-- Pages `first` to `first + count - 1` all have the page right block I/O needs. -/
+def allRightFor (write : Bool) (ms : List Mapping) (first : Nat) : Nat → Bool
+  | 0 => true
+  | k + 1 => pageRightFor write ms first && allRightFor write ms (first + 1) k
+
+/-- The `k` blocks at `va`, 512 bytes each, may be filled from the disk (`write = false`:
+every page they touch must be writable) or sent to it (`write = true`: readable). -/
+def runPageOk (ms : List Mapping) (va k : Nat) (write : Bool) : Bool :=
+  va % 512 == 0 && Nat.ble userBase va &&
+    allRightFor write ms ((va - userBase) / pageSize)
+      ((va + 512 * k - 1 - userBase) / pageSize + 1 - (va - userBase) / pageSize)
+
+/-- Read `count` blocks (0 means one) from block `idx` of block capability `ci` into the
+task's memory at `va`, or write them from there (`write`). The machine layer moves the
+bytes, and reports a hardware failure with `ioFailed`. -/
+def sysBlock (s : KState) (t : Task) (ci idx va count : Nat) (write : Bool) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
   | some c =>
     match c.obj with
     | .blocks b n =>
-      if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then
-        ⟨setTask s s.cur { t with result := 0 :: .nil }, va, 0, false, 0, 0, ioCode write, b + idx, 0, 0, 0, 0, 0, 0, 0, 0⟩
+      if runFits (runLen count) idx n && capRightFor write c.rights && runPageOk t.maps va (runLen count) write then
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, va, 0, false, 0, 0, ioRun write (runLen count), b + idx, 0, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -1450,8 +1478,8 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 14 => sysBootInfo s t a0
   | 15 => sysStart s t a0 0 0
   | 16 => sysDrop s t a0
-  | 17 => sysBlock s t a0 a1 a2 false
-  | 18 => sysBlock s t a0 a1 a2 true
+  | 17 => sysBlock s t a0 a1 a2 a3 false
+  | 18 => sysBlock s t a0 a1 a2 a3 true
   | 19 => sysStart s t a0 a1 a2
   | 20 => sysSleep s t a0
   | 21 => sysPower s t a0 a1
@@ -1468,7 +1496,8 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   4 derive(cap, rights, offset, count) · 5 exit · 6 capinfo(cap) · 7 whoami
   8 send(cap, w0, w1, w2, grant) · 9 recv(cap) · 10 call(cap, w0, w1, w2, grant)
   11 reply(slot, w0, w1, w2) · 12 irqwait(cap) · 13 irqack(cap) · 14 bootinfo(task)
-  15 start(cap) · 16 drop(cap) · 17 blockread(cap, index, va) · 18 blockwrite(cap, index, va)
+  15 start(cap) · 16 drop(cap)
+  17 blockread(cap, index, va, count) · 18 blockwrite(cap, index, va, count): 1 to 32 blocks (0: one)
   19 exec(cap, va, len): start an open slot with the program at va · 20 sleep(ms)
   21 power(cap, action): 0 switch off, 1 restart · 22 time
   23 board(cap, what, value): read the board or its sensors, set the CPU clock or the light

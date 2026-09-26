@@ -33,7 +33,7 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `mapping_flow` | A page a task can see belongs, at boot, to a task that can reach it along grant edges. |
 | `file_server_knows_the_sender` | Every capability to the file server's endpoint that a task holds with the send right carries that task's own badge, and the kernel delivers the badge with every message: a program in open slot k arrives as k, and cannot pass for Terminal, Files, Apps or Notes. |
 | `blocks_fixed`, `disk_only_file_server` | Block capabilities never move and never gain rights: only the file server ever holds one, for the manifest's 1,048,576 blocks (512 MiB; the machine layer keeps every access inside the card's data partition). |
-| `block_io_confined` | When a call asks the machine layer for block I/O, the block is inside a block capability the caller holds with the right it needs, and the 512 bytes are in the user window, in one page the caller has mapped writable (a read fills it) or readable (a write sends it). |
+| `block_io_confined`, `block_run_confined` | When a call asks the machine layer for block I/O, it asks for a run of 1 to 32 blocks (`maxRun`), and every block of the run is inside one block capability the caller holds with the right it needs; every byte the run moves, 512 a block, is in the user window, in a page the caller has mapped writable (a read fills it) or readable (a write sends it). `block_io_confined` says the same of the run's first block, as it did when a call moved one block. |
 | `drop_only_shrinks` | After `drop`, every task holds a subset of the capabilities and mappings it held before. |
 | `maps_backed` | Every page a task can see comes from one of its own capabilities, with that capability's rights. |
 | `no_write_execute` | No page is ever both writable and executable. |
@@ -123,7 +123,7 @@ MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 124 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 133 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a level-3 table that keeps the
@@ -132,7 +132,9 @@ mappings, capabilities, waiting grants or reply slots, a `map` that keeps the ol
 it maps, a `derive`, a grant or a call past its limit, a receive that searches from task 0 again, from the
 task it served last, or one task short, or forgets whom it served, a scheduler that ignores whom a wake-up
 chose or keeps choosing it, a timer that follows a wake-up's choice, a round robin that forgets where it is,
-an interrupt that waits for its holder's turn or runs it on a core already running it, and so on) and
+an interrupt that waits for its holder's turn or runs it on a core already running it, a block run
+that checks its capability or its memory for the first block or page only, one block short or long, or
+without the right, and so on) and
 checks that the proofs reject every one.
 
 `make test` checks that each theorem rests only on Lean's standard axioms (`propext`,
@@ -509,7 +511,9 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   Device interrupts go to core 0 only; timer ticks from cores 1-3 only move the round robin
   on (`exRotate`), so `now` counts core 0's ticks. `timer_bounded_wait` counts timer
   interrupts; that each core takes one every 10 ms is this layer's timer programming. Disk, USB and board requests run with the lock held, so
-  while one is in progress the other cores wait to enter the kernel.
+  while one is in progress the other cores wait to enter the kernel. A disk request is a
+  run of up to 32 blocks (16 KiB): on the Pi's card, at 25 MHz on one data line, about 6 ms
+  of transfer and whatever the card takes to start and to finish writing.
 - Interrupt routing: `irq_init` enables exactly the lines Lean lists (`irqLines`); when one
   fires, `handle_irq` masks it before telling Lean, and unmasks it only when a Reply says
   so (an acknowledge from the capability's holder).
@@ -554,20 +558,33 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   registers, and measure it, before any task runs again. `start_revokes` says no other
   task can reach those frames once the tables are rebuilt; that the clearing and loading
   touch only the slot's frames is this code's job.
-- The SD card (`arch/sd.c`, ~360 lines): an SDHCI driver by programmed I/O only, never
+- The SD card (`arch/sd.c`, ~400 lines): an SDHCI driver by programmed I/O only, never
   DMA, because the controller can be told to write anywhere in physical memory. It must
-  move exactly the 512 bytes at the address a Reply names, to or from exactly the block it
-  names, while the calling task's address space is live; block numbers are inside the
-  card's data partition (type 0xDA, found in the partition table at boot), and a block past
-  its end fails, so the boot partition a real Pi starts from is never read or written; `block_io_confined` says those
-  are allowed, this code must do nothing else. A failed transfer is reported to Lean
-  (`ioFailed`, a reachable transition), which gives the caller an I/O error. Tested only on
-  QEMU, where the card sits on the older EMMC controller; the Pi 4's slot is on EMMC2. The
-  setup follows what runs on that chip (Linux's `sdhci-iproc`, Circle's EMMC driver): 32-bit
-  register access, a short wait after each write while the card clock is slow, the
-  firmware's base clock, an identification clock between 200 and 400 kHz, the card's I/O at
-  3.3 V (the firmware's GPIO expander) and never 1.8 V, 25 MHz on one data line, and waits
-  bounded in time. Each step's result is printed.
+  move exactly the 512 bytes a block at the address a Reply names, to or from exactly the
+  run of blocks it names ((io + 1) / 2 blocks from `ioBlock`, read if `io` is odd, written
+  if even: the C decodes `ioCount` and `ioWrites` itself), while the calling task's address
+  space is live; block numbers are inside the card's data partition (type 0xDA, found in
+  the partition table at boot), and a run that does not fit in it fails whole, so the boot
+  partition a real Pi starts from is never read or written; `block_run_confined` says those
+  are allowed, this code must do nothing else. One block is one command (CMD17, CMD24); a
+  run of more is one multi-block command (CMD18, CMD25) with the block count register set
+  and auto CMD12 (the controller sends the stop itself after the last block; in SDHCI since
+  1.0), word by word through the data port, waiting for the controller's buffer-ready flag
+  before each block and at most a second for each. A write is complete only once the card
+  is no longer busy after the stop, so no later command overtakes it. A failed transfer is
+  logged (the command, the blocks, the interrupt status), the controller's lines are reset,
+  a multi-block one is stopped with an explicit CMD12, and Lean is told (`ioFailed`, a
+  reachable transition), which gives the caller an I/O error. Tested only on QEMU, where the
+  card sits on the older EMMC controller; the Pi 4's slot is on EMMC2, and multi-block
+  transfers have not run on the Pi yet. (QEMU's card model moves a multi-block transfer a
+  byte at a time, so there runs cost more host time per block than single blocks do; on a
+  card, the command and the card's own start-up per command dominate.) The setup follows
+  what runs on that chip (Linux's `sdhci-iproc`, Circle's EMMC driver): 32-bit register
+  access, a short wait after each write while the card clock is slow, the firmware's base
+  clock, an identification clock between 200 and 400 kHz, the card's I/O at 3.3 V (the
+  firmware's GPIO expander) and never 1.8 V, 25 MHz on one data line, and waits bounded in
+  time. Each step's result is printed, and the report at switch-off counts the block I/O
+  calls, the commands sent to the card and the blocks moved.
 - The kernel stack: 64 KiB per core. The Lean kernel's walks over a task's mappings and
   capabilities (`dropRange`, `runMaps`, `app`, `snoc`, `len`, `removeNth`, `keepBacked`,
   `dropCaps`, `dropMaps`) run as loops, each proved equal to its definition, so how deep
@@ -719,7 +736,20 @@ the kernel.
   repaired, if it ever needs it) at every start. The protocol is proved atomic for a model
   (`LeanOS/Journal.lean`: `crash_atomic`); that `user/fs.c` follows the model is tested
   (`test/crash.sh`), not proved; and both assume the card writes a 512-byte block whole and in the order asked,
-  which SD cards generally do but do not promise.
+  which SD cards generally do but do not promise. The file server writes in runs of up to
+  32 blocks, one system call and one command each: the journal's blocks in runs, then the
+  commit, a single block on its own, then the blocks' places in runs, then the clear. A
+  power cut in the middle of a run can leave any of its blocks written and the rest not, in
+  whatever order the card took them, but never a block of a later write, since each write
+  completes before the next command. That is no worse than a cut between single-block
+  writes: the order that matters is between the phases, never inside one. Before the commit
+  no place has been touched and recovery ignores the journal (its header is clear, or its
+  checksum does not match what is there), so whichever journal blocks made it does not
+  matter; after the commit, recovery writes every place again from the journal, so
+  whichever places made it does not matter either. Recovery itself reads the journal whole
+  and writes the places in runs; cut there, it runs again at the next start. The model in
+  `LeanOS/JournalModel.lean` writes one block at a time, in order, so `crash_atomic` covers a
+  torn run only through this argument, not by proof.
 - What else the file server is trusted to do, tested by `test/fsfuzz.sh`, not proved: answer
   every request, whatever its words, path, offset and buffer hold, and never stop, since
   nothing can restart it; answer each with the result the protocol (`user/fs.h`) allows;

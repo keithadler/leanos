@@ -147,7 +147,7 @@ each test's output stays in `build/test/NAME/output.txt`:
 make test
 ```
 
-The mutation check: breaks the kernel in 124 ways and checks the proofs reject every one
+The mutation check: breaks the kernel in 133 ways and checks the proofs reject every one
 (about 3 minutes on a 10-core Mac):
 
 ```bash

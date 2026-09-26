@@ -295,11 +295,34 @@ display server, clients to the file server) and the proofs show memory moves at 
 step. Notes keeps its note across restarts, Terminal has `ls`, `cat`, `write` and `rm`,
 and the Files app browses and deletes.
 
-Done too: the SD card. A small SDHCI driver in the machine layer moves one block at a time
-by programmed I/O (never DMA, which could write anywhere), and only what the Lean kernel
-approved: block capabilities, held only by the file server, name the blocks it may use,
-and `block_io_confined` proves every transfer is inside one, into or out of memory the
-caller has mapped with the right permission.
+Done too: the SD card. A small SDHCI driver in the machine layer moves blocks by programmed
+I/O (never DMA, which could write anywhere), and only what the Lean kernel approved: block
+capabilities, held only by the file server, name the blocks it may use, and
+`block_io_confined` proves every transfer is inside one, into or out of memory the caller
+has mapped with the right permission.
+
+Done too: runs of blocks. `blockread` and `blockwrite` take a count, 1 to 32 blocks (16 KiB)
+in one call, and the machine layer moves a run with one multi-block command (CMD18, CMD25,
+the block count register and auto CMD12) instead of one command per block.
+`block_run_confined` proves every block of the run is inside the capability, with the right,
+and every byte in pages the caller mapped with the right permission; `block_io_confined`
+holds as stated, for the run's first block. Nine new mutants are caught (the capability
+checked for the first block only, one block past its end, a machine layer asked for one block
+more than was checked, a count of 0, the pages checked for the first page only or one page
+short, the wrong right, more than 32 blocks). The file server reads a cluster in one call,
+writes the journal and the places in runs of blocks side by side, reads its metadata and
+replays the journal in runs; the commit stays a block of its own, between the journal and
+the places, so a run cut short is no worse than a cut between single blocks (TRUST.md). On
+QEMU, writing a 250 KiB file and reading it back (as `test/bigprog.sh` does): the write went
+from 2,096 block I/O calls and 2,096 commands to the card to 244 calls and 384 commands (with
+the CMD12s), 2,526 system calls in all to 674; the read from 984 calls and 984 commands to
+123 and 246, 1,336 system calls to 475. Per MiB the card moves: 2,048 commands before, 375
+(writing) and 512 (reading) after. QEMU's card model moves a multi-block transfer a byte at a
+time, so there it took longer in host time (0.25 s to 0.40 s writing, 0.14 s to 0.17 s
+reading). On a card, where each command costs a start-up (say 0.25 ms to start a read, 1 ms
+to finish a write) on top of 0.17 ms a block on one data line at 25 MHz, that is an estimate
+of about 2.1 s to 0.5 s for the write and 0.4 s to 0.2 s for the read, not yet measured on
+the Pi. Next here: the card's four data lines and high speed (50 MHz).
 
 Done too: a real file system on the card (`user/fs.c`, and `tools/mksd.py` writes the same
 format): a superblock, a write-ahead journal, a bitmap of 4 KiB clusters, inodes with

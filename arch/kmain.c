@@ -57,8 +57,9 @@ lean_object *leanos_board_done(lean_object *s, lean_object *a, lean_object *b, l
                                lean_object *d, lean_object *e);
 int sd_init(void);
 uint64_t sd_partition(void);
-int sd_part_read(uint64_t block, void *dst);
-int sd_part_write(uint64_t block, const void *src);
+int sd_part_read(uint64_t block, uint64_t n, void *dst);
+int sd_part_write(uint64_t block, uint64_t n, const void *src);
+extern uint64_t sd_commands, sd_blocks;
 uint8_t leanos_autostart(lean_object *i);
 lean_object *leanos_reply_state(lean_object *r);
 lean_object *leanos_reply_unmask(lean_object *r);
@@ -771,7 +772,7 @@ static struct frame saved[MAX_TASKS];
 static uint64_t code_len[MAX_TASKS], asset_len[MAX_TASKS];
 static int started[MAX_TASKS];      /* loaded at least once */
 static uint64_t ntasks;
-static uint64_t syscalls, ticks, device_irqs;
+static uint64_t syscalls, ticks, device_irqs, block_calls;
 
 /* ---- the cores ----
  * All four cores run tasks. The Lean kernel is one state, so one core at a time is in it:
@@ -991,10 +992,14 @@ static void do_syscall(uint64_t cur) {
         if (c == '\n') kputc('\r');
         kputc(c);
     }
-    /* Block I/O, still in `cur`'s address space: the kernel checked the 512 bytes at out_va
-       are in a page `cur` has mapped writable (read) or readable (write). */
+    /* Block I/O, still in `cur`'s address space: a run of (io + 1) / 2 blocks from io_block,
+       read if io is odd, written if it is even (`ioCount`, `ioWrites`). The kernel checked
+       every block is in `cur`'s block capability, and the 512 bytes a block from out_va are
+       in pages `cur` has mapped writable (read) or readable (write) (`block_run_confined`). */
     if (io) {
-        int ok = io == 1 ? sd_part_read(io_block, (void *)out_va) : sd_part_write(io_block, (const void *)out_va);
+        uint64_t n = (io + 1) / 2;
+        block_calls++;
+        int ok = io % 2 ? sd_part_read(io_block, n, (void *)out_va) : sd_part_write(io_block, n, (const void *)out_va);
         if (!ok) K = leanos_io_failed(K);
     }
     /* Settings asked (only it can: `only_settings_touches_board`), for one of the listed
@@ -1114,7 +1119,13 @@ static void report(const char *what) {
     kputdec(rt_heap_peak());
     kputs(" peak, stack ");
     kputdec(stack_peak());
-    kputs(" bytes peak; tasks ran on ");
+    kputs(" bytes peak; SD card: ");
+    kputdec(block_calls);
+    kputs(" block I/O calls, ");
+    kputdec(sd_commands);
+    kputs(" commands, ");
+    kputdec(sd_blocks);
+    kputs(" blocks; tasks ran on ");
     uint64_t used = 0;
     for (uint64_t c = 0; c < NCORES; c++) used += core_runs[c] != 0;
     kputdec(used);

@@ -213,7 +213,7 @@ theorem sysDrop_served (ci : Nat) : (sysDrop s t ci).state.served = s.served := 
   unfold sysDrop; split
   all_goals served_leaf
 
-theorem sysBlock_served (ci idx va : Nat) (w : Bool) : (sysBlock s t ci idx va w).state.served = s.served := by
+theorem sysBlock_served (ci idx va k : Nat) (w : Bool) : (sysBlock s t ci idx va k w).state.served = s.served := by
   unfold sysBlock; repeat' split
   all_goals served_leaf
 

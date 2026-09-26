@@ -77,7 +77,7 @@ This is the start. The next steps, in order:
 
 ## What is proved
 
-89 theorems in [`LeanOS/Proofs.lean`](LeanOS/Proofs.lean), [`LeanOS/Tables.lean`](LeanOS/Tables.lean),
+90 theorems in [`LeanOS/Proofs.lean`](LeanOS/Proofs.lean), [`LeanOS/Tables.lean`](LeanOS/Tables.lean),
 [`LeanOS/Bounds.lean`](LeanOS/Bounds.lean), [`LeanOS/Fair.lean`](LeanOS/Fair.lean) and [`LeanOS/Journal.lean`](LeanOS/Journal.lean), for every state the kernel can reach,
 under any sequence of system calls with any arguments. Among them:
 
@@ -122,7 +122,7 @@ declarations, 0 rejected). Start with
 or [`crash_atomic`](https://keithadler.github.io/leanviz/?p=leanos#/d/LeanOS.Journal.crash_atomic).
 
 Every theorem rests only on Lean's standard axioms (checked by `make test`), and
-`make mutants` breaks the kernel in 124 specific ways and checks that the proofs reject every
+`make mutants` breaks the kernel in 133 specific ways and checks that the proofs reject every
 one. [TRUST.md](TRUST.md) says exactly what is proved and what is trusted: the Lean
 compiler, a small runtime shim, the machine layer, the MMU model, and the hardware.
 
@@ -160,7 +160,7 @@ make test     # 37 tests: proofs, axioms, boot transcript and boot steps, pixels
 ```
 
 ```bash
-make mutants  # break the kernel 124 ways; the proofs must reject each (about 3 minutes)
+make mutants  # break the kernel 133 ways; the proofs must reject each (about 3 minutes)
 ```
 
 Things to try once it is up:
@@ -269,8 +269,8 @@ core is running.
 | 14 | `bootinfo(task)` | whether a task's code matched the manifest, the start of its hash, and whether it runs |
 | 15 | `start(cap)` | starts the program slot a launch capability names, taking back what its last run shared |
 | 16 | `drop(cap)` | lets go of a capability, and of every page seen only through it |
-| 17 | `blockread(cap, index, va)` | reads one 512-byte block of the SD card through a block capability |
-| 18 | `blockwrite(cap, index, va)` | writes one block |
+| 17 | `blockread(cap, index, va, count)` | reads a run of 1 to 32 512-byte blocks of the SD card (count 0 is one) through a block capability, in one command to the card |
+| 18 | `blockwrite(cap, index, va, count)` | writes a run of 1 to 32 blocks |
 | 19 | `exec(cap, va, len)` | starts an open slot with the program image at `va` |
 | 20 | `sleep(ms)` | sleeps at least that long |
 | 21 | `power(cap, action)` | switches the machine off or restarts it, through the power capability |

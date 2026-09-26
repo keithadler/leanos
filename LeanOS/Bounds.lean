@@ -386,7 +386,7 @@ theorem small_sysDrop {ci : Nat} : Small hp lp (sysDrop s t ci).state := by
   · exact small_setTask hs ⟨Nat.le_trans (len_le_of_sublist (removeNth_sublist _ _)) ht.caps,
       ht.maps.sublist (keepBacked_sublist _ _), ht.callers, by len_le, ht.hash⟩
 
-theorem small_sysBlock {ci idx va : Nat} {w : Bool} : Small hp lp (sysBlock s t ci idx va w).state := by
+theorem small_sysBlock {ci idx va k : Nat} {w : Bool} : Small hp lp (sysBlock s t ci idx va k w).state := by
   unfold sysBlock
   repeat' split
   all_goals first

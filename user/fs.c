@@ -51,6 +51,7 @@
 #define PTRS 1024                     /* cluster numbers in a cluster */
 #define NDIRECT 12
 #define JMAX 124                      /* blocks in one transaction */
+_Static_assert(JMAX * 512 <= STAGES * CLUSTER, "replay reads the journal whole into the stage pages");
 
 static const char MAGIC[8] = {'L', 'E', 'A', 'N', 'O', 'S', 'F', '2'};
 static const char JMAGIC[4] = {'L', 'J', 'N', 'L'};
@@ -119,25 +120,37 @@ static char *ram_block(u64 b) { return (char *)PAGE(RAMDISK_PAGE) + 512 * b; }
 static void copy(char *d, const char *s, u64 n) { for (u64 i = 0; i < n; i++) d[i] = s[i]; }
 static void zero(char *d, u64 n) { for (u64 i = 0; i < n; i++) d[i] = 0; }
 
-/* ---- blocks ---- */
+/* ---- blocks ----
 
-static int bread(u64 b, void *dst) {
+   A run of blocks next to each other on the card, and in memory, moves in one system call
+   of up to RUN blocks (the kernel's `maxRun`), which the machine layer carries out as one
+   command to the card. */
+
+#define RUN 32
+
+/* `n` blocks from block `b`, into memory at `p` (or from it, if `write`); 1 if every call
+   went through. A run that fails stops there. */
+static int blocks(int write, u64 b, u64 n, char *p) {
     if (S->ram) {
-        if (b >= RAM_BLOCKS) return 0;
-        copy(dst, ram_block(b), 512);
+        if (b >= RAM_BLOCKS || n > RAM_BLOCKS - b) return 0;
+        if (write) copy(ram_block(b), p, 512 * n);
+        else copy(p, ram_block(b), 512 * n);
         return 1;
     }
-    return sys(SYS_BLOCKREAD, DISK, b, (u64)dst, 0, 0).status == OK;
+    while (n) {
+        u64 k = n < RUN ? n : RUN;
+        if (sys(write ? SYS_BLOCKWRITE : SYS_BLOCKREAD, DISK, b, (u64)p, k, 0).status != OK) return 0;
+        b += k;
+        p += 512 * k;
+        n -= k;
+    }
+    return 1;
 }
 
-static int bwrite(u64 b, const void *src) {
-    if (S->ram) {
-        if (b >= RAM_BLOCKS) return 0;
-        copy(ram_block(b), src, 512);
-        return 1;
-    }
-    return sys(SYS_BLOCKWRITE, DISK, b, (u64)src, 0, 0).status == OK;
-}
+static int bread_n(u64 b, u64 n, void *dst) { return blocks(0, b, n, dst); }
+static int bwrite_n(u64 b, u64 n, const void *src) { return blocks(1, b, n, (char *)src); }
+static int bread(u64 b, void *dst) { return bread_n(b, 1, dst); }
+static int bwrite(u64 b, const void *src) { return bwrite_n(b, 1, src); }
 
 static u64 cluster_block(unsigned cl) { return S->sb.data_start + (u64)cl * PER_CLUSTER; }
 
@@ -196,7 +209,21 @@ static unsigned tx_sum(const struct jhead *h, const char *const *src, int from_j
     return s;
 }
 
-/* Write the transaction: journal, commit, home, clear. 1 if every write went through. */
+/* How many of the transaction's blocks from `i` on are next to each other in memory (and,
+   if `home`, have places next to each other on the card), up to RUN: one write each. */
+static int run_from(int i, int home) {
+    int k = 1;
+    while (i + k < S->ntx && k < RUN && S->tx_src[i + k] == S->tx_src[i] + 512 * k &&
+           (!home || S->tx_target[i + k] == S->tx_target[i] + (unsigned)k))
+        k++;
+    return k;
+}
+
+/* Write the transaction: journal, commit, home, clear. 1 if every write went through.
+   The journal's blocks and their places go in runs (`run_from`), and a run cut short by a
+   power cut is the same as a cut between single-block writes: every journal block is
+   written before the commit, which is one block of its own, and every place after it; which
+   blocks of one side reached the card first does not matter (TRUST.md). */
 static int commit(void) {
     /* what changed in the metadata */
     for (unsigned b = 0; b < S->sb.bitmap_blocks && b < 32 * 8; b++)
@@ -216,15 +243,21 @@ static int commit(void) {
     h->n = (unsigned)S->ntx;
     for (int i = 0; i < S->ntx; i++) h->target[i] = S->tx_target[i];
     int ok = 1;
-    for (int i = 0; i < S->ntx; i++) ok &= bwrite(S->sb.journal_start + 1 + (u64)i, S->tx_src[i]);
+    for (int i = 0, k; i < S->ntx; i += k) {
+        k = run_from(i, 0);
+        ok &= bwrite_n(S->sb.journal_start + 1 + (u64)i, (u64)k, S->tx_src[i]);
+    }
     h->sum = tx_sum(h, S->tx_src, 0);
     if (ok) ok &= bwrite(S->sb.journal_start, h);             /* the commit */
     if (ok)
-        for (int i = 0; i < S->ntx; i++) {
-            int w = bwrite(S->tx_target[i], S->tx_src[i]);
-            char *sh = meta_at(SHADOW, S->tx_target[i]);
-            if (sh && w) copy(sh, S->tx_src[i], 512);         /* the card has it now */
-            else if (sh) S->shadow_ok = 0;                    /* the card has who knows what */
+        for (int i = 0, k; i < S->ntx; i += k) {
+            k = run_from(i, 1);
+            int w = bwrite_n(S->tx_target[i], (u64)k, S->tx_src[i]);
+            for (int j = i; j < i + k; j++) {
+                char *sh = meta_at(SHADOW, S->tx_target[j]);
+                if (sh && w) copy(sh, S->tx_src[j], 512);     /* the card has it now */
+                else if (sh) S->shadow_ok = 0;                /* the card has who knows what */
+            }
             ok &= w;
         }
     h->n = 0;
@@ -241,17 +274,18 @@ static int replay(struct line *l) {
     int valid = 1;
     for (int i = 0; i < 4; i++) valid &= h->magic[i] == JMAGIC[i];
     if (!valid || h->n == 0 || h->n > JMAX || h->n >= S->sb.journal_blocks) return 1;
-    char *blk = stage_page(0);
+    char *blk = stage_page(0);                                /* the journal, whole */
     unsigned s = tx_sum(h, 0, 1);
-    for (unsigned i = 0; i < h->n; i++) {
-        if (!bread(S->sb.journal_start + 1 + i, blk)) return 0;
-        s = fnv(s, blk, 512);
-    }
+    if (!bread_n(S->sb.journal_start + 1, h->n, blk)) return 0;
+    for (unsigned i = 0; i < h->n; i++) s = fnv(s, blk + 512 * i, 512);
     unsigned n = h->n;
     if (s == h->sum) {
-        for (unsigned i = 0; i < n; i++) {
-            bread(S->sb.journal_start + 1 + i, blk);
-            if (h->target[i] < S->sb.total) bwrite(h->target[i], blk);
+        for (unsigned i = 0, k; i < n; i += k) {             /* runs of places side by side */
+            k = 1;
+            if (h->target[i] >= S->sb.total) continue;
+            while (i + k < n && k < RUN && h->target[i + k] == h->target[i] + k && h->target[i + k] < S->sb.total)
+                k++;
+            bwrite_n(h->target[i], k, blk + 512 * i);
         }
         put_s(l, "fs: finished a change a power cut interrupted (");
         put_dec(l, n);
@@ -286,8 +320,7 @@ static char *cluster(unsigned cl, int load) {
     S->st[slot].live = 1;
     char *p = stage_page(slot);
     if (load) {
-        for (unsigned k = 0; k < PER_CLUSTER; k++)
-            if (!bread(cluster_block(cl) + k, p + 512 * k)) { S->errors++; zero(p, CLUSTER); break; }
+        if (!bread_n(cluster_block(cl), PER_CLUSTER, p)) { S->errors++; zero(p, CLUSTER); }
     } else zero(p, CLUSTER);
     return p;
 }
@@ -633,10 +666,8 @@ static unsigned count_free(void) {
 /* Everything from the card: the bitmap, the inodes, and the shadow with them. */
 static int load_metadata(void) {
     S->shadow_ok = 0;
-    for (unsigned b = 0; b < S->sb.bitmap_blocks; b++)
-        if (!bread(S->sb.bitmap_start + b, (char *)BITMAP + 512 * b)) return 0;
-    for (unsigned b = 0; b < S->sb.inode_count / 8; b++)
-        if (!bread(S->sb.inode_start + b, (char *)INODES + 512 * b)) return 0;
+    if (!bread_n(S->sb.bitmap_start, S->sb.bitmap_blocks, BITMAP)) return 0;
+    if (!bread_n(S->sb.inode_start, S->sb.inode_count / 8, INODES)) return 0;
     S->free_clusters = count_free();
     meta_copy(SHADOW, (const char *)BITMAP);
     S->shadow_ok = 1;
@@ -1046,8 +1077,8 @@ static int format(unsigned total) {
     char *z = stage_page(0);
     zero(z, 512);
     int ok = bwrite(sb->journal_start, z);           /* an empty journal */
-    for (unsigned b = 0; b < sb->bitmap_blocks && ok; b++) ok &= bwrite(sb->bitmap_start + b, (char *)BITMAP + 512 * b);
-    for (unsigned b = 0; b < sb->inode_count / 8 && ok; b++) ok &= bwrite(sb->inode_start + b, (char *)INODES + 512 * b);
+    if (ok) ok &= bwrite_n(sb->bitmap_start, sb->bitmap_blocks, BITMAP);
+    if (ok) ok &= bwrite_n(sb->inode_start, sb->inode_count / 8, INODES);
     zero(z, 512);
     copy(z, (const char *)sb, sizeof *sb);
     if (ok) ok &= bwrite(0, z);                      /* last: the superblock makes it real */

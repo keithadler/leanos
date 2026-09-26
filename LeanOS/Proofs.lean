@@ -1200,8 +1200,8 @@ theorem inv_sysDrop {s : KState} {t : Task} {ci : Nat} (hs : Inv s)
     · intro c hc; exact ht.caps c (mem_removeNth hc)
     · intro m hm; exact ht.fbMaps m (mem_keepBacked hm).1
 
-theorem inv_sysBlock {s : KState} {t : Task} {ci idx va : Nat} {w : Bool} (hs : Inv s)
-    (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysBlock s t ci idx va w).state := by
+theorem inv_sysBlock {s : KState} {t : Task} {ci idx va k : Nat} {w : Bool} (hs : Inv s)
+    (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysBlock s t ci idx va k w).state := by
   unfold sysBlock
   repeat' split
   all_goals first
@@ -2148,12 +2148,12 @@ local macro "calm_leaf" : tactic => `(tactic| first
   all_goals (subst hr; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩)
 
 /-- `blockread` and `blockwrite` ask only for block I/O. -/
-@[simp] theorem sysBlock_asks (s : KState) (t : Task) (ci idx va : Nat) (w : Bool) :
-    (sysBlock s t ci idx va w).outLen = 0 ∧ (sysBlock s t ci idx va w).loadLen = 0 ∧
-      (sysBlock s t ci idx va w).power = 0 ∧ (sysBlock s t ci idx va w).board = 0 ∧
-      (sysBlock s t ci idx va w).usbOp = 0 ∧ (sysBlock s t ci idx va w).state.now = s.now ∧
-      (sysBlock s t ci idx va w).state.wall = s.wall := by
-  generalize hr : sysBlock s t ci idx va w = r
+@[simp] theorem sysBlock_asks (s : KState) (t : Task) (ci idx va k : Nat) (w : Bool) :
+    (sysBlock s t ci idx va k w).outLen = 0 ∧ (sysBlock s t ci idx va k w).loadLen = 0 ∧
+      (sysBlock s t ci idx va k w).power = 0 ∧ (sysBlock s t ci idx va k w).board = 0 ∧
+      (sysBlock s t ci idx va k w).usbOp = 0 ∧ (sysBlock s t ci idx va k w).state.now = s.now ∧
+      (sysBlock s t ci idx va k w).state.wall = s.wall := by
+  generalize hr : sysBlock s t ci idx va k w = r
   unfold sysBlock at hr; repeat' split at hr
   all_goals (subst hr; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩)
 
@@ -2221,7 +2221,7 @@ or it is one of the calls that ask for something: `write`, `blockread` or `block
 theorem runCall_cases (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) :
     Calm s (runCall s t num a0 a1 a2 a3 a4) ∨
       runCall s t num a0 a1 a2 a3 a4 = sysWrite s t a0 a1 ∨
-      (∃ w, runCall s t num a0 a1 a2 a3 a4 = sysBlock s t a0 a1 a2 w) ∨
+      (∃ w, runCall s t num a0 a1 a2 a3 a4 = sysBlock s t a0 a1 a2 a3 w) ∨
       (∃ ci src len, runCall s t num a0 a1 a2 a3 a4 = sysStart s t ci src len) ∨
       (∃ ci a, runCall s t num a0 a1 a2 a3 a4 = sysPower s t ci a) ∨
       (∃ ci w v, runCall s t num a0 a1 a2 a3 a4 = sysBoard s t ci w v) ∨
@@ -2320,7 +2320,7 @@ theorem writableAt_spec : ∀ {ms : List Mapping} {p : Nat},
 `blockwrite`. -/
 theorem io_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
     (h : (syscall s num a0 a1 a2 a3 a4).io ≠ 0) :
-    ∃ t, nth? s.tasks s.cur = some t ∧ ∃ w, syscall s num a0 a1 a2 a3 a4 = sysBlock s t a0 a1 a2 w := by
+    ∃ t, nth? s.tasks s.cur = some t ∧ ∃ w, syscall s num a0 a1 a2 a3 a4 = sysBlock s t a0 a1 a2 a3 w := by
   unfold syscall at *
   split at *
   · simp at h
@@ -2334,12 +2334,12 @@ theorem io_pos {s : KState} {num a0 a1 a2 a3 a4 : Nat}
       first | exact ⟨_, hr⟩ | simp [hr] at h
 
 /-- What a `blockread` or `blockwrite` that asks for I/O checked. -/
-theorem sysBlock_io {s : KState} {t : Task} {ci idx va : Nat} {w : Bool}
-    (h : (sysBlock s t ci idx va w).io ≠ 0) :
-    ∃ c b n, nth? t.caps ci = some c ∧ c.obj = .blocks b n ∧ idx + 1 ≤ n ∧
-      capRightFor w c.rights = true ∧ ioPageOk t.maps va w = true ∧
-      (sysBlock s t ci idx va w).io = ioCode w ∧
-      (sysBlock s t ci idx va w).ioBlock = b + idx ∧ (sysBlock s t ci idx va w).outVa = va := by
+theorem sysBlock_io {s : KState} {t : Task} {ci idx va k : Nat} {w : Bool}
+    (h : (sysBlock s t ci idx va k w).io ≠ 0) :
+    ∃ c b n, nth? t.caps ci = some c ∧ c.obj = .blocks b n ∧ runFits (runLen k) idx n = true ∧
+      capRightFor w c.rights = true ∧ runPageOk t.maps va (runLen k) w = true ∧
+      (sysBlock s t ci idx va k w).io = ioRun w (runLen k) ∧
+      (sysBlock s t ci idx va k w).ioBlock = b + idx ∧ (sysBlock s t ci idx va k w).outVa = va := by
   unfold sysBlock at *
   split at h
   · simp at h
@@ -2349,17 +2349,79 @@ theorem sysBlock_io {s : KState} {t : Task} {ci idx va : Nat} {w : Bool}
       split at h
       · rename_i hcond
         have hc' := hcond
-        simp only [Bool.and_eq_true, Nat.ble_eq] at hc'
+        simp only [Bool.and_eq_true] at hc'
         refine ⟨c, b, n, hc, hb, hc'.1.1, hc'.1.2, hc'.2, ?_⟩
         simp only [if_pos hcond, and_self]
       · simp at h
     · simp at h
 
+theorem runLen_pos (k : Nat) : 1 ≤ runLen k := by
+  unfold runLen; split <;> omega
+
+theorem ioCount_ioRun (w : Bool) {k : Nat} (hk : 1 ≤ k) : ioCount (ioRun w k) = k := by
+  cases w <;> simp only [ioCount, ioRun, ioCode] <;> omega
+
+theorem ioWrites_ioRun (w : Bool) (k : Nat) : ioWrites (ioRun w k) = w := by
+  cases w <;> simp only [ioWrites, ioRun, ioCode, beq_iff_eq, beq_eq_false_iff_ne] <;> omega
+
+theorem allRightFor_spec {w : Bool} : ∀ {ms : List Mapping} {first count p : Nat},
+    allRightFor w ms first count = true → first ≤ p → p < first + count → pageRightFor w ms p = true
+  | ms, first, 0, p, _, h1, h2 => by omega
+  | ms, first, k + 1, p, h, h1, h2 => by
+    simp only [allRightFor, Bool.and_eq_true] at h
+    by_cases hp : p = first
+    · subst hp; exact h.1
+    · exact allRightFor_spec h.2 (by omega) (by omega)
+
+/-- **A run of block I/O touches only what the caller may touch.** When a system call asks
+the machine layer for block I/O, it asks for a run of 1 to `maxRun` blocks (`ioCount`),
+read or written (`ioWrites`). Every block of the run is inside one block capability the
+caller holds, with the read right (to read the disk) or the write right (to write it); and
+every byte of memory the run moves, 512 a block from `outVa` on, is in the user window, in a
+page the caller has mapped writable (the disk writes into it) or readable (the disk reads
+from it). -/
+theorem block_run_confined (s : KState) (num a0 a1 a2 a3 a4 : Nat)
+    (hio : (syscall s num a0 a1 a2 a3 a4).io ≠ 0) :
+    1 ≤ ioCount (syscall s num a0 a1 a2 a3 a4).io ∧ ioCount (syscall s num a0 a1 a2 a3 a4).io ≤ maxRun ∧
+    ∃ t, nth? s.tasks s.cur = some t ∧ ∃ c ∈ t.caps, ∃ b n, c.obj = .blocks b n ∧
+      b ≤ (syscall s num a0 a1 a2 a3 a4).ioBlock ∧
+      (syscall s num a0 a1 a2 a3 a4).ioBlock + ioCount (syscall s num a0 a1 a2 a3 a4).io ≤ b + n ∧
+      (ioWrites (syscall s num a0 a1 a2 a3 a4).io = false → c.rights.r = true) ∧
+      (ioWrites (syscall s num a0 a1 a2 a3 a4).io = true → c.rights.w = true) ∧
+      ∀ a, (syscall s num a0 a1 a2 a3 a4).outVa ≤ a →
+        a < (syscall s num a0 a1 a2 a3 a4).outVa + 512 * ioCount (syscall s num a0 a1 a2 a3 a4).io →
+        userBase ≤ a ∧ ∃ m ∈ t.maps, m.vpn = (a - userBase) / pageSize ∧
+          (ioWrites (syscall s num a0 a1 a2 a3 a4).io = false → m.rights.w = true) ∧
+          (ioWrites (syscall s num a0 a1 a2 a3 a4).io = true → m.rights.r = true) := by
+  obtain ⟨t, ht, w, heq⟩ := io_pos hio
+  rw [heq] at hio ⊢
+  obtain ⟨c, b, n, hc, hb, hfit, hr, hpage, hop, hblk, hva⟩ := sysBlock_io hio
+  have hk := runLen_pos a3
+  rw [hop, hblk, hva, ioCount_ioRun w hk, ioWrites_ioRun]
+  simp only [runFits, Bool.and_eq_true, Nat.ble_eq] at hfit
+  simp only [runPageOk, Bool.and_eq_true, beq_iff_eq, Nat.ble_eq] at hpage
+  obtain ⟨⟨hal, hub⟩, hpg⟩ := hpage
+  refine ⟨hk, hfit.1, t, ht, c, nth?_mem hc, b, n, hb, by omega, by omega, ?_, ?_, ?_⟩
+  · intro h; subst h; simpa [capRightFor] using hr
+  · intro h; subst h; simpa [capRightFor] using hr
+  · intro a h1 h2
+    have hlo : (a2 - userBase) / pageSize ≤ (a - userBase) / pageSize := Nat.div_le_div_right (by omega)
+    have hhi : (a - userBase) / pageSize ≤ (a2 + 512 * runLen a3 - 1 - userBase) / pageSize :=
+      Nat.div_le_div_right (by omega)
+    have hp := allRightFor_spec hpg hlo (by omega)
+    refine ⟨by omega, ?_⟩
+    cases w
+    · obtain ⟨m, hm, hv, hw⟩ := writableAt_spec (by simpa [pageRightFor] using hp)
+      exact ⟨m, hm, hv, fun _ => hw, fun h => by simp at h⟩
+    · obtain ⟨m, hm, hv, hr'⟩ := readableAt_spec (by simpa [pageRightFor] using hp)
+      exact ⟨m, hm, hv, fun h => by simp at h, fun _ => hr'⟩
+
 /-- **Block I/O touches only what the caller may touch.** When a system call asks the
 machine layer to read or write a block, the block is inside a block capability the caller
 holds, with the read right (for `blockread`) or the write right (for `blockwrite`); and all
 512 bytes of memory are in the user window, in one page the caller has mapped writable
-(the disk writes into it) or readable (the disk reads from it). -/
+(the disk writes into it) or readable (the disk reads from it). The first block of a run,
+from `block_run_confined`. -/
 theorem block_io_confined (s : KState) (num a0 a1 a2 a3 a4 : Nat)
     (hio : (syscall s num a0 a1 a2 a3 a4).io ≠ 0) :
     ∃ t, nth? s.tasks s.cur = some t ∧ ∃ c ∈ t.caps, ∃ b n, c.obj = .blocks b n ∧
@@ -2370,25 +2432,12 @@ theorem block_io_confined (s : KState) (num a0 a1 a2 a3 a4 : Nat)
         userBase ≤ a ∧ ∃ m ∈ t.maps, m.vpn = (a - userBase) / pageSize ∧
           ((syscall s num a0 a1 a2 a3 a4).io = 1 → m.rights.w = true) ∧
           ((syscall s num a0 a1 a2 a3 a4).io = 2 → m.rights.r = true) := by
-  obtain ⟨t, ht, w, heq⟩ := io_pos hio
-  refine ⟨t, ht, ?_⟩
-  rw [heq] at hio ⊢
-  obtain ⟨c, b, n, hc, hb, hidx, hr, hpage, hop, hblk, hva⟩ := sysBlock_io hio
-  rw [hop, hblk, hva]
-  simp only [ioPageOk, Bool.and_eq_true, beq_iff_eq, Nat.ble_eq] at hpage
-  obtain ⟨⟨hal, hub⟩, hpg⟩ := hpage
-  refine ⟨c, nth?_mem hc, b, n, hb, by omega, by omega, ?_, ?_, ?_⟩
-  · intro h; cases w <;> simp_all [ioCode, capRightFor]
-  · intro h; cases w <;> simp_all [ioCode, capRightFor]
-  · intro a h1 h2
-    have hsame : (a - userBase) / pageSize = (a2 - userBase) / pageSize := by
-      simp only [userBase, pageSize] at hub hal ⊢; omega
-    refine ⟨by omega, ?_⟩
-    cases w
-    · obtain ⟨m, hm, hv, hw⟩ := writableAt_spec (by simpa [pageRightFor] using hpg)
-      exact ⟨m, hm, by rw [hsame, hv], fun _ => hw, fun h => by simp [ioCode] at h⟩
-    · obtain ⟨m, hm, hv, hr'⟩ := readableAt_spec (by simpa [pageRightFor] using hpg)
-      exact ⟨m, hm, by rw [hsame, hv], fun h => by simp [ioCode] at h, fun _ => hr'⟩
+  obtain ⟨h1, -, t, ht, c, hc, b, n, hb, hlo, hhi, hr, hw, hmem⟩ := block_run_confined s num a0 a1 a2 a3 a4 hio
+  refine ⟨t, ht, c, hc, b, n, hb, hlo, by omega, fun h => hr (by simp [h, ioWrites]),
+    fun h => hw (by simp [h, ioWrites]), ?_⟩
+  intro a ha1 ha2
+  obtain ⟨hu, m, hm, hv, hmw, hmr⟩ := hmem a ha1 (by omega)
+  exact ⟨hu, m, hm, hv, fun h => hmw (by simp [h, ioWrites]), fun h => hmr (by simp [h, ioWrites])⟩
 
 /-! ## Time -/
 

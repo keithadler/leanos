@@ -57,6 +57,7 @@ open LeanOS
 #print axioms blocks_fixed
 #print axioms disk_only_file_server
 #print axioms block_io_confined
+#print axioms block_run_confined
 #print axioms exec_reads_only_readable
 #print axioms tick_wakes_only_sleepers
 #print axioms only_display_powers

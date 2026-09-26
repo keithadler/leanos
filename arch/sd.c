@@ -1,8 +1,12 @@
-/* The SD card, through the SDHCI controller, one 512-byte block at a time, by programmed
- * I/O. Never DMA: the controller can be told to write anywhere in physical memory, so it
- * stays here in the machine layer, which only ever asks it to move the bytes the Lean
- * kernel approved (a block in the caller's block capability, 512 bytes in a page the
- * caller has mapped with the right permission) through the data port, word by word.
+/* The SD card, through the SDHCI controller, a run of 1 to 32 blocks of 512 bytes at a
+ * time, by programmed I/O. Never DMA: the controller can be told to write anywhere in
+ * physical memory, so it stays here in the machine layer, which only ever asks it to move
+ * the bytes the Lean kernel approved (a run of blocks in the caller's block capability,
+ * 512 bytes a block in pages the caller has mapped with the right permission) through the
+ * data port, word by word. One block is one command (CMD17, CMD24); a longer run is one
+ * multi-block command (CMD18, CMD25) with the block count register set, which the
+ * controller ends itself with CMD12 after the last block (auto CMD12, in SDHCI since 1.0),
+ * so a run costs the card one command and one start-up, not one per block.
  *
  * The Pi 4's SD slot is on EMMC2; QEMU's raspi4b puts the card on the older EMMC
  * controller. EMMC2 is tried first, then EMMC. QEMU accepts almost anything here, so the
@@ -57,7 +61,9 @@ enum {
 #define INDEX_CHECK (1u << 20)
 #define HAS_DATA (1u << 21)
 #define TM_BLOCK_COUNT (1u << 1)
+#define TM_AUTO_CMD12 (1u << 2)
 #define TM_READ (1u << 4)
+#define TM_MULTI (1u << 5)
 #define R1 (RESP_48 | CRC_CHECK | INDEX_CHECK)
 #define R1B (RESP_48_BUSY | CRC_CHECK | INDEX_CHECK)
 #define R2 (RESP_136 | CRC_CHECK)
@@ -125,7 +131,13 @@ static void reset_lines(void) {
     wait_clear(CONTROL1, 3u << 25, 100000);
 }
 
+/* What the controller was asked for since boot, for the report at switch-off: commands
+   sent (each costs the card a command and response, and a data command its start-up
+   time), and blocks moved. */
+uint64_t sd_commands, sd_blocks;
+
 static int cmd(uint32_t index, uint32_t arg, uint32_t flags) {
+    sd_commands++;
     /* Command inhibit (CMD), and for a command with data or busy, (DAT) too: SDHCI 3.7.1 */
     uint32_t inhibit = (flags & HAS_DATA) || (flags & RESP_48_BUSY) == RESP_48_BUSY ? 3u : 1u;
     if (!wait_clear(STATUS, inhibit, 1000000)) reset_lines();
@@ -283,43 +295,75 @@ int sd_init(void) {
 
 int sd_present(void) { return base != 0; }
 
-/* After a failed transfer: say what the controller reported, and reset its lines. */
-static int transfer_failed(const char *what, uint64_t block) {
+/* The most blocks one transfer moves: the Lean kernel's `maxRun`. */
+#define SD_MAX_RUN 32
+
+/* After a failed transfer of `n` blocks from `block`: say what the controller reported,
+   and reset its lines. A multi-block transfer may have left the card sending or taking
+   data, so it is told to stop (CMD12); if it had stopped already, it refuses, which does
+   no harm. */
+static int transfer_failed(const char *what, uint64_t block, uint64_t n) {
+    uint32_t status = last_int;
     kputs("leanos: SD: ");
     kputs(what);
-    kputs(" of block ");
+    kputs(n > 1 ? " of blocks " : " of block ");
     kputdec(block);
+    if (n > 1) {
+        kputs(" to ");
+        kputdec(block + n - 1);
+    }
     kputs(" failed, interrupt status ");
-    kputhex(last_int);
+    kputhex(status);
     kputs("\n");
     reset_lines();
+    if (n > 1) cmd(12, 0, R1B);
     return 0;
 }
 
-/* Read block `block` into the 512 bytes at `dst`. The waits: a card may take 100 ms to
-   start sending a block and 250 ms (500 ms for SDXC) to finish writing one (SD Physical
-   Layer spec, 4.6.2); these allow a second. */
-int sd_read(uint64_t block, void *dst) {
-    if (!base) return 0;
-    wr(BLKSIZECNT, (1u << 16) | 512);
-    if (!cmd(17, (uint32_t)(high_capacity ? block : block * 512), R1 | HAS_DATA | TM_READ | TM_BLOCK_COUNT))
-        return transfer_failed("read (CMD17)", block);
-    if (!wait_int(INT_READ_READY, 1000000)) return transfer_failed("read", block);
+/* The command argument for block `block`: its number, or on a standard-capacity card its
+   byte address. */
+static uint32_t block_arg(uint64_t block) { return (uint32_t)(high_capacity ? block : block * 512); }
+
+/* Read `n` blocks (1 to SD_MAX_RUN) from block `block` into the 512 * n bytes at `dst`. The
+   waits: a card may take 100 ms to start sending a block and 250 ms (500 ms for SDXC) to
+   finish writing one (SD Physical Layer spec, 4.6.2); these allow a second for each. */
+int sd_read(uint64_t block, uint64_t n, void *dst) {
+    if (!base || n == 0 || n > SD_MAX_RUN) return 0;
+    int multi = n > 1;
+    wr(BLKSIZECNT, ((uint32_t)n << 16) | 512);
+    if (!cmd(multi ? 18 : 17, block_arg(block),
+             R1 | HAS_DATA | TM_READ | TM_BLOCK_COUNT | (multi ? TM_MULTI | TM_AUTO_CMD12 : 0)))
+        return transfer_failed(multi ? "read (CMD18)" : "read (CMD17)", block, n);
     uint32_t *p = dst;
-    for (int i = 0; i < 128; i++) p[i] = rd(DATA);
-    return wait_int(INT_DATA_DONE, 1000000) || transfer_failed("read (end)", block);
+    for (uint64_t k = 0; k < n; k++, p += 128) {
+        if (!wait_int(INT_READ_READY, 1000000)) return transfer_failed("read", block, n);
+        for (int i = 0; i < 128; i++) p[i] = rd(DATA);
+        sd_blocks++;
+    }
+    if (!wait_int(INT_DATA_DONE, 1000000)) return transfer_failed("read (end)", block, n);
+    sd_commands += multi;                           /* the controller's CMD12 */
+    return 1;
 }
 
-/* Write the 512 bytes at `src` to block `block`. */
-int sd_write(uint64_t block, const void *src) {
-    if (!base) return 0;
-    wr(BLKSIZECNT, (1u << 16) | 512);
-    if (!cmd(24, (uint32_t)(high_capacity ? block : block * 512), R1 | HAS_DATA | TM_BLOCK_COUNT))
-        return transfer_failed("write (CMD24)", block);
-    if (!wait_int(INT_WRITE_READY, 1000000)) return transfer_failed("write", block);
+/* Write the 512 * n bytes at `src` to `n` blocks (1 to SD_MAX_RUN) from block `block`. The
+   transfer is complete once the card is no longer busy (after the CMD12 of a multi-block
+   write): it has taken every block, so a later write cannot overtake it. */
+int sd_write(uint64_t block, uint64_t n, const void *src) {
+    if (!base || n == 0 || n > SD_MAX_RUN) return 0;
+    int multi = n > 1;
+    wr(BLKSIZECNT, ((uint32_t)n << 16) | 512);
+    if (!cmd(multi ? 25 : 24, block_arg(block),
+             R1 | HAS_DATA | TM_BLOCK_COUNT | (multi ? TM_MULTI | TM_AUTO_CMD12 : 0)))
+        return transfer_failed(multi ? "write (CMD25)" : "write (CMD24)", block, n);
     const uint32_t *p = src;
-    for (int i = 0; i < 128; i++) wr(DATA, p[i]);
-    return wait_int(INT_DATA_DONE, 1000000) || transfer_failed("write (end)", block);
+    for (uint64_t k = 0; k < n; k++, p += 128) {
+        if (!wait_int(INT_WRITE_READY, 1000000)) return transfer_failed("write", block, n);
+        for (int i = 0; i < 128; i++) wr(DATA, p[i]);
+        sd_blocks++;
+    }
+    if (!wait_int(INT_DATA_DONE, 1000000)) return transfer_failed("write (end)", block, n);
+    sd_commands += multi;                           /* the controller's CMD12 */
+    return 1;
 }
 
 /* ---- the data partition ----
@@ -335,7 +379,7 @@ static uint64_t part_start, part_blocks;
 uint64_t sd_partition(void) {
     static uint8_t mbr[512] __attribute__((aligned(8)));
     part_start = part_blocks = 0;
-    if (!base || !sd_read(0, mbr)) return 0;
+    if (!base || !sd_read(0, 1, mbr)) return 0;
     if (mbr[510] != 0x55 || mbr[511] != 0xAA) return 0;
     for (int i = 0; i < 4; i++) {
         const uint8_t *e = mbr + 446 + 16 * i;
@@ -350,11 +394,11 @@ uint64_t sd_partition(void) {
     return 0;
 }
 
-/* Block `block` of the data partition. */
-int sd_part_read(uint64_t block, void *dst) {
-    return block < part_blocks && sd_read(part_start + block, dst);
+/* `n` blocks of the data partition from block `block`: all inside it, or none is moved. */
+int sd_part_read(uint64_t block, uint64_t n, void *dst) {
+    return block < part_blocks && n <= part_blocks - block && sd_read(part_start + block, n, dst);
 }
 
-int sd_part_write(uint64_t block, const void *src) {
-    return block < part_blocks && sd_write(part_start + block, src);
+int sd_part_write(uint64_t block, uint64_t n, const void *src) {
+    return block < part_blocks && n <= part_blocks - block && sd_write(part_start + block, n, src);
 }

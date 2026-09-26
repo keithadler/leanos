@@ -119,11 +119,29 @@ mutant "manifest lets the file server grant to the display" \
 mutant "manifest lets Settings receive the file server's mail" \
   "| 6 => snoc (snoc (frameCaps 6) (epCap 0 false true true 6)) boardCap" "| 6 => snoc (snoc (snoc (frameCaps 6) (epCap 0 false true true 6)) boardCap) (epCap 1 true false false 6)"
 mutant "block I/O skips the memory check" \
-  "if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then" "if Nat.ble (idx + 1) n && capRightFor write c.rights then"
+  "if runFits (runLen count) idx n && capRightFor write c.rights && runPageOk t.maps va (runLen count) write then" "if runFits (runLen count) idx n && capRightFor write c.rights then"
 mutant "block I/O without the capability's right" \
-  "if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then" "if Nat.ble (idx + 1) n && ioPageOk t.maps va write then"
+  "if runFits (runLen count) idx n && capRightFor write c.rights && runPageOk t.maps va (runLen count) write then" "if runFits (runLen count) idx n && runPageOk t.maps va (runLen count) write then"
 mutant "block I/O past the end of the capability" \
-  "if Nat.ble (idx + 1) n && capRightFor write c.rights && ioPageOk t.maps va write then" "if capRightFor write c.rights && ioPageOk t.maps va write then"
+  "if runFits (runLen count) idx n && capRightFor write c.rights && runPageOk t.maps va (runLen count) write then" "if capRightFor write c.rights && runPageOk t.maps va (runLen count) write then"
+mutant "block run checks the read right for a write" \
+  "if runFits (runLen count) idx n && capRightFor write c.rights && runPageOk t.maps va (runLen count) write then" "if runFits (runLen count) idx n && capRightFor false c.rights && runPageOk t.maps va (runLen count) write then"
+mutant "block run checks the capability for its first block only" \
+  "def runFits (k idx n : Nat) : Bool := Nat.ble k maxRun && Nat.ble (idx + k) n" "def runFits (k idx n : Nat) : Bool := Nat.ble k maxRun && Nat.ble (idx + 1) n"
+mutant "block run may end one block past the capability" \
+  "def runFits (k idx n : Nat) : Bool := Nat.ble k maxRun && Nat.ble (idx + k) n" "def runFits (k idx n : Nat) : Bool := Nat.ble k maxRun && Nat.ble (idx + k) (n + 1)"
+mutant "block run longer than 32 blocks" \
+  "def runFits (k idx n : Nat) : Bool := Nat.ble k maxRun && Nat.ble (idx + k) n" "def runFits (k idx n : Nat) : Bool := Nat.ble (idx + k) n"
+mutant "block run asks the machine layer for one block more than it checked" \
+  "ioRun write (runLen count), b + idx" "ioRun write (runLen count + 1), b + idx"
+mutant "block run of count 0 moves a block it did not check" \
+  "def runLen (count : Nat) : Nat := if count = 0 then 1 else count" "def runLen (count : Nat) : Nat := count"
+mutant "block run checks only the first page" \
+  "      ((va + 512 * k - 1 - userBase) / pageSize + 1 - (va - userBase) / pageSize)" "      1"
+mutant "block run checks one page too few" \
+  "      ((va + 512 * k - 1 - userBase) / pageSize + 1 - (va - userBase) / pageSize)" "      ((va + 512 * k - 1 - userBase) / pageSize - (va - userBase) / pageSize)"
+mutant "block run checks writable pages for a disk write" \
+  "  | k + 1 => pageRightFor write ms first && allRightFor write ms (first + 1) k" "  | k + 1 => pageRightFor false ms first && allRightFor write ms (first + 1) k"
 mutant "a disk read may land in a read-only page" \
   "  | false => writableAt" "  | false => readableAt"
 mutant "manifest gives mallory the disk" \
