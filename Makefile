@@ -57,8 +57,15 @@ MANIFEST_INPUTS := build/user/alice.bin+build/assets/alice.bin build/user/displa
   build/user/security.bin+build/assets/security.bin build/user/fs.bin \
   build/user/files.bin+build/assets/files.bin \
   "" "" "" "" "" "" build/user/launcher.bin+build/assets/launcher.bin build/user/usb.bin
-LeanOS/Manifest.lean: tools/mkmanifest.py $(USER_BINS) $(ASSET_BLOBS)
+# Always rerun: every target here is secondary (.SECONDARY, below), and with a programs'
+# binaries missing (a fresh tree) make would take the manifest in git as up to date, even
+# when a program's source changed, and link a kernel that refuses that program at boot.
+# mkmanifest.py rewrites the file only when a hash changed, so nothing after it rebuilds
+# for nothing.
+LeanOS/Manifest.lean: tools/mkmanifest.py $(USER_BINS) $(ASSET_BLOBS) FORCE
 	python3 tools/mkmanifest.py $@ $(MANIFEST_INPUTS)
+.PHONY: FORCE
+FORCE:
 
 $(KERNEL_LEAN_C): LeanOS/Kernel.lean LeanOS/Manifest.lean
 	lake build LeanOS.Kernel:c
