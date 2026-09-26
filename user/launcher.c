@@ -179,8 +179,10 @@ static void draw(struct launcher *st) {
              running(p), st->pressed == 10 + i);
     }
     if (st->n == 0) font_text(s, &st->ui, GRID_X, CARD_Y + 30, "No programs on the SD card.", rgb(120, 120, 130));
-    const char *hint = "Each program from the card gets its own memory and a window, nothing else.";
-    font_text(s, &st->small, AW / 2 - font_width(&st->small, hint) / 2, AH - 12, hint, rgb(130, 130, 145));
+    /* On the heading's line, not under the grid: with two full rows of programs, the last
+       row's names reach the bottom of the window. */
+    const char *hint = "each gets its own memory and a window, nothing else";
+    font_text(s, &st->small, AW - GRID_X - font_width(&st->small, hint), CARD_Y - 10, hint, rgb(130, 130, 145));
 }
 
 /* Read the program (and its icon), make its image, and start it in a free open slot. */
