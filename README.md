@@ -152,7 +152,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 31 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, windows, USB, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 32 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, windows, USB, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
