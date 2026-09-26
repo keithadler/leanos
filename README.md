@@ -8,7 +8,7 @@ and proved correct.**
 Who may touch which memory, which device, which file, which task runs next: every one of
 those decisions is Lean code, compiled into the kernel image. The theorems are about that
 same code, not about a separate specification that could drift from what runs. Underneath,
-about 1,600 lines of C and assembly boot the board, write page tables and switch tasks,
+about 2,100 lines of C and assembly boot the board, write page tables and switch tasks,
 but decide nothing.
 
 On top of it is a small but real desktop system: windows, a dock, a file system with a

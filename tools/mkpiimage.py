@@ -31,20 +31,65 @@ CARD_SECTORS = 128 * 2048            # 128 MiB in all (a power of two, which QEM
 SECTORS_PER_CLUSTER = 4              # 2 KiB clusters: 32 K clusters, so FAT16
 RESERVED, FATS, ROOT_ENTRIES = 4, 2, 512
 
-CONFIG = b"""# leanos on a Raspberry Pi 4 (the firmware reads this; see
-# https://www.raspberrypi.com/documentation/computers/config_txt.html)
+CONFIG = b"""# leanos on a Raspberry Pi 4. The firmware (start4.elf) reads this before it starts the
+# kernel. The options: https://www.raspberrypi.com/documentation/computers/config_txt.html
+# and, for the older ones used here, .../computers/legacy_config_txt.html. leanos loads no
+# device tree and no overlays: the kernel sets up what it needs itself (arch/), and this
+# file only makes the firmware leave the board the way the kernel expects.
+
+# The kernel: 64-bit, kernel8.img, loaded at 0x80000, where arch/kernel.ld links it. The
+# firmware's default for a 64-bit kernel is 0x200000 (kernel_address), where it cannot run;
+# if it ever finds itself anywhere else it lights the green light and stops (arch/boot.S).
 arm_64bit=1
 kernel=kernel8.img
-# the PL011 UART at 115200 baud on GPIO 14/15 (header pins 8, 10): leanos's console and,
-# until there is a USB driver, its keyboard and mouse (the browser console's protocol)
-enable_uart=1
-# the interrupt controller leanos uses (the GIC-400), not the legacy one
-enable_gic=1
-# leanos reads no device tree
+kernel_address=0x80000
+
+# No device tree ("Disable Device Tree usage": device_tree=), so the peripherals stay at
+# 0xFE000000, where the kernel reaches them (arm_peri_high=0, the default without a device
+# tree). Without a device tree the firmware would write ATAGs from 0x100; this stops that,
+# so the kernel's first page holds only the boot stub and its spin table.
 device_tree=
-# the whole screen, and a picture even if the monitor is plugged in after power-on
+arm_peri_high=0
+disable_commandline_tags=1
+
+# Interrupts through the GIC-400, the only controller the kernel drives (enable_gic, Pi 4
+# only; 1 is the default). The firmware's boot stub then puts every interrupt in group 1,
+# which the kernel, running non-secure, can use.
+enable_gic=1
+
+# The serial console on GPIO 14 and 15 (header pins 8 and 10): enable_uart=1 is the
+# documented switch for it. The kernel drives the PL011 (UART0) there at 115200 baud and
+# routes the pins itself (arch/kmain.c, uart_pins): on a Pi 4 the PL011 is otherwise the
+# Bluetooth chip's, and dtoverlay=disable-bt, which would move it, edits a device tree,
+# which leanos does not load. The PL011's clock: 48 MHz (init_uart_clock, the default,
+# set because the kernel's divisor depends on it; the kernel also asks the firmware).
+enable_uart=1
+init_uart_clock=48000000
+# The firmware's own log on the same pins, before leanos's first line (uart_2ndstage): on a
+# first boot it shows whether the firmware found config.txt and kernel8.img, and where it
+# put the kernel. Set it to 0 for a quieter boot.
+uart_2ndstage=1
+
+# The screen. The kernel asks the firmware for a 1024x600, 32-bit framebuffer through the
+# mailbox and checks what it gets; these make the firmware's own framebuffer the same from
+# the start: no overscan border, 1024x600, 32 bits with the alpha byte ignored (leanos
+# writes 0 there), and HDMI 0 (the micro-HDMI port next to the USB-C power port) in use
+# even if the monitor is not detected at power-on (hdmi_force_hotplug). The monitor keeps
+# its own mode, from its EDID, and the firmware scales 1024x600 to it. No rainbow splash.
 disable_overscan=1
+framebuffer_width=1024
+framebuffer_height=600
+framebuffer_depth=32
+framebuffer_ignore_alpha=1
 hdmi_force_hotplug=1
+disable_splash=1
+
+# Left at their defaults, on purpose:
+#   gpu_mem     76 MB on every Pi 4 (all have 1 GB or more): room for the 2.4 MB
+#               framebuffer, and the ARM keeps the first 948 MiB, far past the 84 MiB the
+#               kernel uses (its image, heap and frame pool; the kernel checks at boot)
+#   otg_mode    0: the DWC2 controller, which leanos's USB driver drives, stays on USB-C
+#   boot_delay  0
 """
 
 

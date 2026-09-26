@@ -188,9 +188,9 @@ be in its table with a bound (the task list, 19 calls deep with the empty tail, 
 `state_bounded` and `task_bounded`. Indirect calls are traced to the addresses loaded
 before them: the runtime's one-time initializers at each of their calls, and `trap`'s
 conversion of message words; a call through a pointer from memory, a jump that is not a
-jump table, or a frame of variable size fails. The worst case is 6,048 bytes: 3,024 for
+jump table, or a frame of variable size fails. The worst case is 5,824 bytes: 2,912 for
 the deepest system call (`start` taking back a slot's memory from every task), and a kernel
-exception on top of it. That is 2.8 times the deepest measured (2,144) and under a tenth
+exception on top of it. That is 2.7 times the deepest measured (2,144) and under a tenth
 of the 64 KiB stack. It rests on clang's frame sizes (checked against each function's
 own stack adjustments), on the call graph read from the image, and on each walk running
 over the list its bound is about, which is read from the code, not proved (TRUST.md).
@@ -391,6 +391,20 @@ the programs; the machine layer keeps all block I/O inside the data partition, f
 partition table, and routes the UART to the header pins itself. `make test` checks the FAT
 file system is clean and that leanos, booted from the image, reads the data partition and
 leaves the boot partition alone. It has not run on a Pi yet.
+
+Ready for that first boot: the machine layer was gone over for what works on QEMU only
+because QEMU is lenient, and fixed. `config.txt` now loads the kernel where it is linked
+(the firmware's default for a 64-bit kernel is 0x200000, not 0x80000), skips the device
+tree and ATAGs, fixes the UART's clock, and sets up the screen, each line explained. The
+cores leave EL2 with every EL2 register EL1 relies on set, not left at reset values, and
+cores 1-3 turn on their caches before touching their stacks. Every firmware answer is
+checked and printed: the framebuffer's size, pitch, pixel order and alpha (one the display
+cannot draw on stops the machine with the reason on the screen), the UART's clock, the
+counter's rate, the ARM's RAM. The mailbox buffer has its cache lines to itself, the USB
+controller's power domain is switched on, and the SD driver follows Linux's and Circle's
+setup for EMMC2 (3.3 V I/O, 200 to 400 kHz to identify, 25 MHz after, waits bounded in
+time), printing each step. `docs/SETUP.md` lists what a first boot prints at each step and
+what to try where it stops.
 
 More on the card: a guided tour (`tour` in Terminal) that really tries a desktop attack on
 each page and compares the kernel's answer with a typical Linux desktop; `calc`, `snake`,

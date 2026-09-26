@@ -64,3 +64,23 @@ int memcmp(const void *a, const void *b, size_t n);
 static inline void mmio_w32(uint64_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
 static inline uint32_t mmio_r32(uint64_t a) { return *(volatile uint32_t *)a; }
 static inline void mmio_w8(uint64_t a, uint8_t v) { *(volatile uint8_t *)a = v; }
+
+/* Time, for delays and timeouts: the system counter, at the rate CNTFRQ_EL0 says. On a Pi 4
+   the firmware's boot stub sets it to 54 MHz (the crystal); QEMU sets its own. Never a
+   count of loop turns: how long a turn takes differs between QEMU and the chip. */
+#define TIMER_HZ_UNSET 54000000UL   /* the Pi 4's crystal, if nothing set CNTFRQ_EL0 */
+static inline uint64_t timer_hz(void) {
+    uint64_t f = SYSREG_READ(cntfrq_el0);
+    return f ? f : TIMER_HZ_UNSET;
+}
+static inline uint64_t timer_now(void) {
+    ISB();
+    return SYSREG_READ(cntpct_el0);
+}
+/* The counter's value `us` microseconds from now (`us` up to a few minutes). */
+static inline uint64_t deadline_us(uint64_t us) { return timer_now() + us * timer_hz() / 1000000; }
+static inline int passed(uint64_t deadline) { return timer_now() >= deadline; }
+static inline void delay_us(uint64_t us) {
+    uint64_t d = deadline_us(us);
+    while (!passed(d)) {}
+}

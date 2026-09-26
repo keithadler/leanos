@@ -187,7 +187,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   constants built once at boot) come on top. If the heap runs out anyway, the kernel
   panics, which denies service but never breaks isolation.
 
-**`arch/boot.S` and `arch/kmain.c` (~1,400 lines)**
+**`arch/boot.S` and `arch/kmain.c` (~1,600 lines)**
 - Storing the tables: `mmu_init`, `tables_init` and `build_user_pages` must store each
   word Lean computes at its index, in the page-aligned arrays whose addresses they pass to
   Lean (a level-1 table, a level-2 table, and 16 level-3 tables in one array). For level 3,
@@ -411,10 +411,19 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.
 - Four cores (`arch/kmain.c`, "the cores"; `arch/boot.S`, `secondary`). Core 0 boots, then
-  hands cores 1-3 their entry through the boot stub's spin table; each turns on its own
-  MMU with the same kernel tables, its own timer and its own part of the interrupt
-  controller, and has its own 64 KiB kernel stack, painted and checked like core 0's. The
-  machine layer must:
+  hands cores 1-3 their entry through the boot stub's spin table (on a Pi 4 the firmware's
+  armstub parks them at EL2, reading 0xe0, 0xe8 and 0xf0 with their caches off, so the
+  entries are cleaned to memory before the SEV that wakes them). Every core drops from EL2
+  to EL1 in `arch/boot.S`, which sets what EL1 relies on rather than leave it at reset
+  values the architecture calls UNKNOWN (the armstub sets none of it): HCR_EL2 (EL1 is
+  AArch64, nothing trapped), CNTHCTL_EL2 (EL1 uses the physical timer and counter),
+  CPTR_EL2 and HSTR_EL2 (no traps to EL2), and VPIDR_EL2 and VMPIDR_EL2 (so each core reads
+  its own number). Each core turns on its own MMU and caches with the same kernel tables:
+  core 0 in `mmu_enable_this_core`, cores 1-3 in `secondary`, with core 0's register
+  values (`mmu_regs`, cleaned to memory), before they touch their stacks, since until then
+  their accesses bypass the caches core 0 runs with. Each has its own timer, its own part
+  of the interrupt controller, and its own 64 KiB kernel stack, painted and checked like
+  core 0's. The machine layer must:
   - take the kernel lock (`lock`, an exclusive-access spin lock with acquire and release
     semantics) before any Lean call or runtime use, and let go only just before returning
     to user mode, so the Lean kernel's state is never touched by two cores at once;
@@ -446,8 +455,23 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   no power switch the kernel can reach, so it stops). Restarting writes the power-management
   block's watchdog for a full reset (`restart()`); both only when a Reply says so, and
   `only_display_powers` says only the display server's calls can.
-- The UART's pins: `uart_pins` routes the PL011 to GPIO 14 and 15, as a Pi 4 needs (its
-  firmware gives the PL011 to Bluetooth), with no device tree involved.
+- The UART: `uart_pins` routes the PL011 to GPIO 14 and 15, as a Pi 4 needs (its firmware
+  gives the PL011 to Bluetooth, on GPIO 30-33), with no device tree involved, and takes
+  30-33 off the PL011 so its receive line has one source. `uart_init` divides the clock the
+  firmware says the UART has (48 MHz on a Pi 4, `init_uart_clock` in `config.txt`), or
+  48 MHz if it does not say. `kputc` writes 32 bits at a time, and its wait for room is
+  bounded, so a UART that takes nothing cannot stop the boot.
+- The firmware's mailbox (`mbox_call`): a request buffer with its cache lines to itself,
+  cleaned before the request and invalidated after, given to the firmware at its
+  VideoCore address (0xC0000000 + physical), with every wait bounded in time. At boot,
+  `board_check` asks for and prints the board and firmware revisions, the UART's clock,
+  the system counter's rate, and the RAM the firmware left the ARM (it stops the machine if
+  that does not cover the kernel, its heap and the frame pool), and switches on the USB
+  controller's power domain. Every delay and timeout in this layer is measured with the
+  system counter at the rate CNTFRQ_EL0 gives (`arch/arch.h`), never in loop turns.
+- The load address: the kernel runs only at 0x80000, where `arch/kernel.ld` links it and
+  `config.txt` (`kernel_address`) has the firmware load it; `_start` checks, and anywhere
+  else lights the activity light and stops, since nothing else can run there.
 - Programs from the SD card: for an open slot the machine layer copies the image from the
   starting task's memory (the Reply's `outVa` and `loadLen`, which
   `exec_reads_only_readable` bounds) into the slot's code frames, after rebuilding the
@@ -460,7 +484,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   registers, and measure it, before any task runs again. `start_revokes` says no other
   task can reach those frames once the tables are rebuilt; that the clearing and loading
   touch only the slot's frames is this code's job.
-- The SD card (`arch/sd.c`, ~210 lines): an SDHCI driver by programmed I/O only, never
+- The SD card (`arch/sd.c`, ~360 lines): an SDHCI driver by programmed I/O only, never
   DMA, because the controller can be told to write anywhere in physical memory. It must
   move exactly the 512 bytes at the address a Reply names, to or from exactly the block it
   names, while the calling task's address space is live; block numbers are inside the
@@ -468,8 +492,12 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   its end fails, so the boot partition a real Pi starts from is never read or written; `block_io_confined` says those
   are allowed, this code must do nothing else. A failed transfer is reported to Lean
   (`ioFailed`, a reachable transition), which gives the caller an I/O error. Tested only on
-  QEMU, where the card sits on the older EMMC controller; the Pi 4's slot is on EMMC2, which
-  may need more setup (clock, 1.8 V signaling) than this does.
+  QEMU, where the card sits on the older EMMC controller; the Pi 4's slot is on EMMC2. The
+  setup follows what runs on that chip (Linux's `sdhci-iproc`, Circle's EMMC driver): 32-bit
+  register access, a short wait after each write while the card clock is slow, the
+  firmware's base clock, an identification clock between 200 and 400 kHz, the card's I/O at
+  3.3 V (the firmware's GPIO expander) and never 1.8 V, 25 MHz on one data line, and waits
+  bounded in time. Each step's result is printed.
 - The kernel stack: 64 KiB per core. The Lean kernel's walks over a task's mappings and
   capabilities (`dropRange`, `runMaps`, `app`, `snoc`, `len`, `removeNth`, `keepBacked`,
   `dropCaps`, `dropMaps`) run as loops, each proved equal to its definition, so how deep
@@ -489,9 +517,10 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   tail), `placeCaller` and `forgetCaller` a task's reply slots (9), `dropLine` the pending
   lines (3). Recursion not in the table, an indirect call it cannot resolve, a frame of
   variable size (alloca, a variable-length array) or a worst case over 32 KiB, half the
-  stack, fails the check. The worst case is 6,048 bytes: 3,024 for a system call (`start`
+  stack, fails the check. The worst case is 5,824 bytes: 2,912 for a system call (`start`
   taking back a slot's memory: `revokeAll` over the tasks, then `forgetCaller` over one
-  task's reply slots, then an allocation that can fail into `kpanic`), and a kernel
+  task's reply slots, then an allocation that can fail into `kpanic`, which draws the panic
+  screen), and a kernel
   exception on top of that. What it trusts:
   - clang's frame sizes. Each C file of the kernel (`arch/`, `rt/`, the Lean kernel's and
     the standard library's generated C) is compiled a second time into `build/stack/`, with
@@ -512,10 +541,8 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
     18 tasks, at most two pending lines, eight USB shadows, three last-served entries;
     `task_bounded`: at most 8 reply
     slots), but that each walk runs over such a list, or over one no longer, is read from
-    `Kernel.lean`, not proved. One cycle is in the call graph only: `kpanic` draws the panic
-    screen, which asks `leanos_fb_width` and `leanos_fb_height` for its size, and they could
-    free their argument (`lean_dec_ref_cold`, which can panic), but `kpanic` passes a
-    scalar, which is never freed.
+    `Kernel.lean`, not proved. The panic screen draws with the geometry the firmware
+    returned (`fb_alloc` keeps it), so `kpanic` calls nothing in the Lean kernel.
   - Exceptions do not nest further. Every exception entry masks interrupts, SError and FIQ,
     and no code in the image unmasks them (the tool checks nothing writes DAIF), so only a
     synchronous exception can come in the kernel; it goes straight to `kpanic`, whose own
@@ -529,7 +556,15 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   counting loops. Timing side channels remain out of scope.
 
 - The framebuffer: `fb_alloc` asks the firmware for 1024 x 600 x 32 through the mailbox,
-  once at boot, and passes the address to Lean only if the reply matches the request.
+  once at boot (pixel order BGR, alpha ignored, no virtual offset, page-aligned), prints
+  what the firmware returned, and passes the address (the bus address's low 30 bits) to
+  Lean only if the reply matches the request: the virtual size, the depth, a row pitch of
+  exactly 4096 bytes (the display server draws 1024 x 4 bytes per row into consecutive
+  pages), the size, and an address page-aligned, past the frame pool and below 1 GiB. A
+  framebuffer that does not match but can be drawn on stops the machine, with the reason on
+  it (the panic screen draws at the pitch the firmware returned); none at all leaves leanos
+  running without a screen. A pixel order or alpha mode the firmware did not honor is
+  reported, not refused.
   The mailbox is a DMA path, so it never leaves this layer. Lean checks the address is
   aligned and past the frame pool before any framebuffer page can be mapped (proved), but
   that the firmware really reserved those pages for the screen, and nothing else uses
@@ -541,7 +576,14 @@ it claims more access for user mode than the hardware gives, never less, so the 
 bounds still hold on the real MMU.
 
 **Hardware**: the MMU, GIC and timer behave as the Arm architecture says. So far that means
-QEMU's model of them, because leanos has only run under QEMU.
+QEMU's model of them, because leanos has only run under QEMU. QEMU does not model caches,
+so the cache maintenance this layer does around DMA (the mailbox, the USB controller), the
+framebuffer and the cores' start has never been exercised; nor does it model the SD
+controller's timing, row padding in a framebuffer, or the firmware's choices.
+`docs/SETUP.md` ("First boot on a real Pi 4") lists what the first boot on a board prints
+at each step. Also trusted: the Raspberry Pi firmware and its boot stub, and the
+`config.txt` that `tools/mkpiimage.py` writes, which sets how the firmware loads and starts
+the kernel.
 
 ## Known gaps
 

@@ -104,11 +104,13 @@ static int ready(uint64_t i) { return leanos_ready(K1, lean_box(i)); }
 
 /* ---- console ---- */
 
-/* PL011 at 115200 8N1. The Pi 4 feeds the UART a 48 MHz clock: 48e6 / (16 * 115200)
-   = 26.0417, so the divisor is 26 + 3/64. */
 /* Route the PL011 to the header's pins 8 and 10 (GPIO 14 TXD, 15 RXD): function ALT0, no
-   pull on TX, a pull-up on RX so an unconnected line reads idle. On a Pi 4 the firmware
-   gives the PL011 to Bluetooth otherwise; doing it here needs no device-tree overlay. */
+   pull on TX, a pull-up on RX so an unconnected line reads idle (BCM2711 datasheet, 5.3:
+   GPFSEL1, GPIO_PUP_PDN_CNTRL_REG0). A Pi 4's firmware wires the PL011 to the Bluetooth
+   chip on GPIO 30-33 (ALT3) and the mini UART to 14 and 15; leanos loads no device tree,
+   so the disable-bt overlay that would move it cannot, and this does it instead. Pins 30-33
+   are also taken off the PL011 (made inputs), so its receive line has one source, the
+   header, and not the Bluetooth chip's transmit line too. */
 #define GPIO_BASE (PERIPHERAL_BASE + 0x200000)
 static void uart_pins(void) {
     uint32_t sel = mmio_r32(GPIO_BASE + 0x04);                 /* GPFSEL1: pins 10-19 */
@@ -119,21 +121,57 @@ static void uart_pins(void) {
     pull &= ~((3u << 28) | (3u << 30));
     pull |= 1u << 30;                                          /* 15: pull-up */
     mmio_w32(GPIO_BASE + 0xe4, pull);
+    uint32_t sel3 = mmio_r32(GPIO_BASE + 0x0c);                /* GPFSEL3: pins 30-39 */
+    for (uint32_t k = 0; k < 4; k++)                           /* 30-33: ALT3 is the PL011 */
+        if (((sel3 >> (3 * k)) & 7u) == 7u) sel3 &= ~(7u << (3 * k));
+    mmio_w32(GPIO_BASE + 0x0c, sel3);
 }
+
+/* PL011 at 115200 8N1. Its clock is the firmware's UART clock (clock 2 in the mailbox's
+   property interface): 48 MHz on a Pi 4 (config.txt: init_uart_clock=48000000), 3 MHz on
+   QEMU, which ignores the divisor anyway. The divisor is clock / (16 x 115200), in 1/64ths:
+   at 48 MHz, 26 + 3/64 (PL011 TRM, 3.3.6). If the firmware does not say, 48 MHz. */
+#define UART_BAUD 115200
+#define UART_CLOCK_DEFAULT 48000000u
+static uint32_t uart_clock;
+static int uart_clock_asked;        /* 1 if the firmware said what the clock is */
 
 static void uart_init(void) {
+    const uint32_t uart_clock_id = 2;
+    uint32_t o[2] = {0, 0};
+    uart_clock = UART_CLOCK_DEFAULT;
+    if (mbox_tag(0x00030002, &uart_clock_id, 1, o, 2) && o[1] >= 1843200 && o[1] <= 200000000) {
+        uart_clock = o[1];
+        uart_clock_asked = 1;
+    }
+    uint32_t div64 = (uint32_t)(((uint64_t)uart_clock * 4 + UART_BAUD / 2) / UART_BAUD);
+    /* PL011 TRM 3.3.8: disable, let the character being sent finish, flush the FIFOs (FEN
+       off), then program. The divisor takes effect with the LCRH write after it. */
+    mmio_w32(UART0 + 0x30, 0);                  /* CR: off while configuring */
+    for (uint64_t d = deadline_us(10000); (mmio_r32(UART0 + 0x18) & (1u << 3)) && !passed(d);) {}
+    mmio_w32(UART0 + 0x2c, 0);                  /* LCRH: FIFOs off, which empties them */
+    mmio_w32(UART0 + 0x44, 0x7ff);              /* ICR: clear pending interrupts */
+    mmio_w32(UART0 + 0x24, div64 >> 6);         /* IBRD */
+    mmio_w32(UART0 + 0x28, div64 & 63);         /* FBRD */
+    mmio_w32(UART0 + 0x2c, 0x70);               /* LCRH: 8 bits, FIFOs on */
     uart_pins();
-    mmio_w32(UART0 + 0x30, 0);          /* CR: off while configuring */
-    mmio_w32(UART0 + 0x44, 0x7ff);      /* ICR: clear pending interrupts */
-    mmio_w32(UART0 + 0x24, 26);         /* IBRD */
-    mmio_w32(UART0 + 0x28, 3);          /* FBRD */
-    mmio_w32(UART0 + 0x2c, 0x70);       /* LCRH: 8 bits, FIFOs on */
-    mmio_w32(UART0 + 0x30, 0x301);      /* CR: UART, transmit, receive on */
+    mmio_w32(UART0 + 0x30, 0x301);              /* CR: UART, transmit, receive on */
 }
 
+/* One character out. 32-bit writes only, as Linux's earlycon uses on the BCM2711 PL011
+   (pl011,mmio32). The wait for room is bounded (at 115200 baud the 16-deep FIFO drains in
+   under 2 ms): a UART that never takes a character (its clock off, say) drops the text
+   instead of stopping the boot, so the screen can still say what happened; after one such
+   drop it no longer waits at all. */
+static int uart_stuck;
 void kputc(char c) {
-    while (mmio_r32(UART0 + 0x18) & (1 << 5)) {}
-    mmio_w8(UART0, (uint8_t)c);
+    for (uint64_t d = deadline_us(20000); mmio_r32(UART0 + 0x18) & (1 << 5);)
+        if (uart_stuck || passed(d)) {
+            uart_stuck = 1;
+            return;
+        }
+    uart_stuck = 0;
+    mmio_w32(UART0, (uint8_t)c);
 }
 void kputs(const char *s) {
     while (*s) {
@@ -184,36 +222,39 @@ static void restart(void) {
 /* ---- the panic screen ----
  * A Pi on a desk has a monitor, not a serial cable: when the kernel stops, it says why on
  * the screen too, in the same 5x7 font the programs use, drawn straight into the
- * framebuffer. Nothing else runs by then, so nothing else is drawing. */
+ * framebuffer. Nothing else runs by then, so nothing else is drawing. It draws with the
+ * geometry the firmware returned (`fb_alloc`), row pitch included, so it can also say why
+ * a framebuffer that is not the one asked for was refused. */
 #include "font.h"
 
 static uint32_t *panic_fb;
+static uint32_t panic_w, panic_h, panic_stride;     /* pixels; the stride is the pitch / 4 */
 
-static void panic_text(uint32_t w, uint32_t x, uint32_t y, uint32_t scale, const char *t, uint32_t c) {
+static void panic_text(uint32_t x, uint32_t y, uint32_t scale, const char *t, uint32_t c) {
     for (; *t; t++, x += 6 * scale) {
         unsigned ch = (unsigned char)*t;
         if (ch < 32 || ch > 126) ch = '?';
-        if (x + 6 * scale > w - 40) { x = 40; y += 10 * scale; }
+        if (x + 6 * scale > panic_w - 40) { x = 40; y += 10 * scale; }
+        if (y + 7 * scale > panic_h) return;
         const unsigned char *g = font5x7[ch - 32];
         for (uint32_t r = 0; r < 7 * scale; r++)
             for (uint32_t k = 0; k < 5 * scale; k++)
-                if (g[r / scale] & (16 >> (k / scale))) panic_fb[(y + r) * w + x + k] = c;
+                if (g[r / scale] & (16 >> (k / scale))) panic_fb[(y + r) * panic_stride + x + k] = c;
     }
 }
 
 static void panic_screen(const char *msg) {
     if (!panic_fb) return;
-    const uint32_t w = (uint32_t)nat(leanos_fb_width(lean_box(0)));
-    const uint32_t h = (uint32_t)nat(leanos_fb_height(lean_box(0)));
-    for (uint32_t i = 0; i < w * h; i++) panic_fb[i] = 0x1a1c26;
-    for (uint32_t i = 0; i < w * 6; i++) panic_fb[i] = 0xe0483e;
-    panic_text(w, 40, 60, 4, "leanos stopped", 0xffffff);
-    panic_text(w, 40, 120, 2, msg, 0xffb4a8);
-    panic_text(w, 40, 160, 2, "The kernel met something it cannot safely go on from,", 0xc8cad4);
-    panic_text(w, 40, 184, 2, "and stopped rather than guess. It wrote nothing after this.", 0xc8cad4);
-    panic_text(w, 40, 208, 2, "Switch the Pi off and on to start again.", 0xc8cad4);
-    /* The framebuffer is cached memory: push the picture out to where the GPU reads it. */
-    for (uint64_t a = (uint64_t)panic_fb; a < (uint64_t)(panic_fb + w * h); a += 64)
+    for (uint32_t y = 0; y < panic_h; y++)
+        for (uint32_t x = 0; x < panic_w; x++) panic_fb[y * panic_stride + x] = y < 6 ? 0xe0483e : 0x1a1c26;
+    panic_text(40, 60, 4, "leanos stopped", 0xffffff);
+    panic_text(40, 120, 2, msg, 0xffb4a8);
+    panic_text(40, 200, 2, "The kernel met something it cannot safely go on from,", 0xc8cad4);
+    panic_text(40, 224, 2, "and stopped rather than guess. It wrote nothing after this.", 0xc8cad4);
+    panic_text(40, 248, 2, "Switch the Pi off and on to start again.", 0xc8cad4);
+    /* The kernel maps the framebuffer as cached memory: push the picture out to where the
+       GPU reads it. */
+    for (uint64_t a = (uint64_t)panic_fb & ~63UL; a < (uint64_t)(panic_fb + panic_stride * panic_h); a += 64)
         __asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
     __asm__ volatile("dsb sy" ::: "memory");
 }
@@ -226,52 +267,235 @@ void kpanic(const char *msg) {
     poweroff();
 }
 
+/* ---- the firmware's mailbox ----
+ * The VideoCore firmware's property interface (github.com/raspberrypi/firmware, wiki
+ * "Mailbox property interface"): a buffer of tags in RAM, its address written to mailbox 1
+ * on channel 8, the same word read back from mailbox 0 when the firmware has answered in
+ * place. The firmware reads and writes RAM behind the ARM's caches, so the buffer is
+ * cleaned out before and invalidated after, and it has 64-byte cache lines to itself (its
+ * own alignment and size): a line shared with other data could be written back over the
+ * answer. The address is given as the VideoCore sees RAM, through its uncached alias at
+ * 0xC0000000, as Linux's firmware driver gives it (its dma-ranges on a Pi 4). Waits are
+ * bounded in time: a firmware that never answers is reported, not waited for forever. */
+#define MBOX (PERIPHERAL_BASE + 0xB880)
+#define MBOX_WORDS 48
+
+static volatile uint32_t mbox_buf[MBOX_WORDS] __attribute__((aligned(64)));
+
+static void mbox_cache(void) {
+    for (uint64_t a = (uint64_t)mbox_buf; a < (uint64_t)(mbox_buf + MBOX_WORDS); a += 64)
+        __asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+
+/* Send what is in mbox_buf and wait for the answer: 1 if the firmware answered and says
+   the request as a whole succeeded. */
+static int mbox_call(void) {
+    mbox_cache();
+    uint32_t msg = (0xC0000000u | (uint32_t)(uint64_t)mbox_buf) | 8;   /* channel 8: properties */
+    uint64_t d = deadline_us(100000);
+    while (mmio_r32(MBOX + 0x38) & 0x80000000)                          /* mailbox 1 full */
+        if (passed(d)) return 0;
+    mmio_w32(MBOX + 0x20, msg);
+    d = deadline_us(1000000);
+    for (;;) {
+        if (passed(d)) return 0;
+        if (mmio_r32(MBOX + 0x18) & 0x40000000) continue;               /* mailbox 0 empty */
+        if (mmio_r32(MBOX) == msg) break;
+    }
+    mbox_cache();
+    return mbox_buf[1] == 0x80000000;
+}
+
+/* Append a tag with up to two value words at word i of mbox_buf; returns the index of its
+   first value word. The tag's response code is the word before it. */
+static int mbox_put(int *i, uint32_t tag, uint32_t nwords, uint32_t a, uint32_t b) {
+    int at = *i;
+    mbox_buf[at] = tag;
+    mbox_buf[at + 1] = nwords * 4;
+    mbox_buf[at + 2] = 0;
+    mbox_buf[at + 3] = a;
+    if (nwords > 1) mbox_buf[at + 4] = b;
+    *i = at + 3 + (int)nwords;
+    return at + 3;
+}
+static int mbox_answered(int v) { return (mbox_buf[v - 1] & 0x80000000u) != 0; }
+
+/* One property tag: `in` words go in, up to `nout` words come back in `out`. 1 if the
+   firmware answered it. */
+int mbox_tag(uint32_t tag, const uint32_t *in, int nin, uint32_t *out, int nout) {
+    int n = nin > nout ? nin : nout, i = 0;
+    if (n > MBOX_WORDS - 6) return 0;
+    mbox_buf[i++] = 0;
+    mbox_buf[i++] = 0;
+    mbox_buf[i++] = tag;
+    mbox_buf[i++] = (uint32_t)n * 4;
+    mbox_buf[i++] = 0;
+    for (int k = 0; k < n; k++) mbox_buf[i++] = k < nin ? in[k] : 0;
+    mbox_buf[i++] = 0;
+    mbox_buf[0] = (uint32_t)i * 4;
+    if (!mbox_call() || !(mbox_buf[4] & 0x80000000)) return 0;
+    for (int k = 0; k < nout; k++) out[k] = mbox_buf[5 + k];
+    return 1;
+}
+
 /* ---- framebuffer ----
  * Asked of the VideoCore firmware through the mailbox, once, at boot, before anything
  * else runs. The mailbox is a DMA path (the firmware writes wherever the request says), so
  * it never leaves this layer: user space only ever sees the resulting pages, as frame
  * capabilities the Lean kernel hands out. The request is fixed: `fbWidth` x `fbHeight`,
- * 32 bits per pixel, from LeanOS/Kernel.lean. */
-
-#define MBOX (PERIPHERAL_BASE + 0xB880)
-
-static volatile uint32_t mbox_buf[36] __attribute__((aligned(16)));
+ * 32 bits per pixel, from LeanOS/Kernel.lean.
+ *
+ * The display server draws `fbWidth` x 4 bytes per row into `fbPages` contiguous pages, so
+ * the firmware's answer is checked, not assumed: the virtual size, the depth, a row pitch
+ * of exactly `fbWidth` x 4 bytes (the firmware may pad rows; QEMU never does), the size,
+ * and the address. What it returned is printed either way. If it gave a framebuffer that
+ * is not the one asked for, but that can be drawn on, the machine stops with the reason on
+ * the serial console and on that screen, drawn at the pitch the firmware gave; if it gave
+ * none, leanos runs without a screen and says why. Also asked, and only reported if not
+ * honored: pixel order BGR (tag 0x48006: 0), which is what makes a word 0x00RRGGBB, and
+ * the alpha channel ignored (tag 0x48007: 2), since the display writes 0 in the top byte,
+ * which with alpha in use could mean transparent. The address comes back as a VideoCore
+ * bus address (0xC0000000 alias on a Pi 4): its low 30 bits are the ARM physical address,
+ * in the first GiB, where the firmware keeps its own memory (gpu_mem). */
+static char why_buf[160];
+static int why_n;
+static void why_s(const char *s) { while (*s && why_n < (int)sizeof why_buf - 1) why_buf[why_n++] = *s++; }
+static void why_d(uint64_t v) {
+    char b[21];
+    int i = 20;
+    b[i] = 0;
+    do { b[--i] = (char)('0' + v % 10); v /= 10; } while (v);
+    why_s(b + i);
+}
+static void why_x(uint64_t v) {
+    char b[19];
+    int i = 18;
+    b[i] = 0;
+    do { b[--i] = "0123456789abcdef"[v & 15]; v >>= 4; } while (v);
+    b[--i] = 'x';
+    b[--i] = '0';
+    why_s(b + i);
+}
 
 static uint64_t fb_alloc(void) {
     const uint32_t FB_W = (uint32_t)nat(leanos_fb_width(lean_box(0)));
     const uint32_t FB_H = (uint32_t)nat(leanos_fb_height(lean_box(0)));
     const uint64_t FB_PAGES = nat(leanos_fb_pages(lean_box(0)));
-    int i = 0;
-    mbox_buf[i++] = 0;                  /* size, set below */
-    mbox_buf[i++] = 0;                  /* request */
-    mbox_buf[i++] = 0x48003; mbox_buf[i++] = 8; mbox_buf[i++] = 0;  /* physical size */
-    mbox_buf[i++] = FB_W; mbox_buf[i++] = FB_H;
-    mbox_buf[i++] = 0x48004; mbox_buf[i++] = 8; mbox_buf[i++] = 0;  /* virtual size */
-    mbox_buf[i++] = FB_W; mbox_buf[i++] = FB_H;
-    mbox_buf[i++] = 0x48005; mbox_buf[i++] = 4; mbox_buf[i++] = 0;  /* depth */
-    mbox_buf[i++] = 32;
-    mbox_buf[i++] = 0x48006; mbox_buf[i++] = 4; mbox_buf[i++] = 0;  /* pixel order: BGR, */
-    mbox_buf[i++] = 0;                                              /* so 0x00RRGGBB words */
-    mbox_buf[i++] = 0x40001; mbox_buf[i++] = 8; mbox_buf[i++] = 0;  /* allocate */
-    mbox_buf[i++] = 4096; mbox_buf[i++] = 0;
-    mbox_buf[i++] = 0x40008; mbox_buf[i++] = 4; mbox_buf[i++] = 0;  /* pitch */
-    mbox_buf[i++] = 0;
-    mbox_buf[i++] = 0;                  /* end tag */
-    mbox_buf[0] = i * 4;
-
-    uint32_t msg = (uint32_t)(uint64_t)mbox_buf | 8; /* channel 8: properties */
-    while (mmio_r32(MBOX + 0x38) & 0x80000000) {}    /* write mailbox full */
-    mmio_w32(MBOX + 0x20, msg);
-    for (;;) {
-        while (mmio_r32(MBOX + 0x18) & 0x40000000) {} /* read mailbox empty */
-        if (mmio_r32(MBOX) == msg) break;
-    }
-    uint64_t base = mbox_buf[23] & 0x3FFFFFFF;       /* bus address to physical */
-    if (mbox_buf[1] != 0x80000000 || mbox_buf[5] != FB_W || mbox_buf[6] != FB_H ||
-        mbox_buf[15] != 32 || mbox_buf[24] < FB_PAGES * PAGE_SIZE || mbox_buf[28] != FB_W * 4 ||
-        base == 0 || (base & (PAGE_SIZE - 1)))
+    int i = 2;
+    const int phys = mbox_put(&i, 0x48003, 2, FB_W, FB_H);     /* physical (screen) size */
+    const int virt = mbox_put(&i, 0x48004, 2, FB_W, FB_H);     /* virtual size: what is drawn */
+    const int offs = mbox_put(&i, 0x48009, 2, 0, 0);           /* virtual offset: none */
+    const int depth = mbox_put(&i, 0x48005, 1, 32, 0);         /* bits per pixel */
+    const int order = mbox_put(&i, 0x48006, 1, 0, 0);          /* pixel order: BGR */
+    const int alpha = mbox_put(&i, 0x48007, 1, 2, 0);          /* alpha channel ignored */
+    const int alloc = mbox_put(&i, 0x40001, 2, PAGE_SIZE, 0);  /* allocate, page-aligned */
+    const int pitch = mbox_put(&i, 0x40008, 1, 0, 0);          /* bytes per row */
+    mbox_buf[i++] = 0;                                          /* end tag */
+    mbox_buf[0] = (uint32_t)i * 4;
+    mbox_buf[1] = 0;
+    if (!mbox_call() || !mbox_answered(alloc)) {
+        kputs("leanos: no framebuffer: the firmware did not answer the request for one\n");
         return 0;
+    }
+    const uint32_t vw = mbox_buf[virt], vh = mbox_buf[virt + 1], bpp = mbox_buf[depth];
+    const uint32_t bus = mbox_buf[alloc], size = mbox_buf[alloc + 1], row = mbox_buf[pitch];
+    const uint64_t base = bus & 0x3FFFFFFF;                     /* bus address to ARM physical */
+    kputs("leanos: the firmware's framebuffer: ");
+    kputdec(vw); kputs("x"); kputdec(vh);
+    kputs(" (screen "); kputdec(mbox_buf[phys]); kputs("x"); kputdec(mbox_buf[phys + 1]);
+    kputs("), "); kputdec(bpp); kputs(" bits, pitch "); kputdec(row);
+    kputs(mbox_buf[order] == 0 ? ", BGR" : ", RGB");
+    kputs(", alpha mode "); kputdec(mbox_buf[alpha]);
+    kputs(", "); kputdec(size); kputs(" bytes at bus address "); kputhex(bus); kputs("\n");
+    if (bus == 0 || bpp != 32 || !mbox_answered(pitch)) {
+        kputs("leanos: no framebuffer: the firmware did not give a 32-bit framebuffer\n");
+        return 0;
+    }
+    /* Can it be drawn on (for the panic screen), whatever else is wrong with it? */
+    if (vw >= 320 && vh >= 240 && row % 4 == 0 && row >= vw * 4 && (uint64_t)row * vh <= size &&
+        base + size <= 0x40000000) {
+        panic_fb = (uint32_t *)base;
+        panic_w = vw;
+        panic_h = vh;
+        panic_stride = row / 4;
+    }
+    why_n = 0;
+    if (vw != FB_W || vh != FB_H) {
+        why_s("the firmware gave a ");
+        why_d(vw); why_s("x"); why_d(vh); why_s(" framebuffer, not ");
+        why_d(FB_W); why_s("x"); why_d(FB_H);
+    } else if (row != FB_W * 4) {
+        why_s("the firmware's framebuffer has rows of "); why_d(row);
+        why_s(" bytes, not "); why_d(FB_W * 4); why_s(" (padding the display cannot draw with)");
+    } else if (size < FB_PAGES * PAGE_SIZE) {
+        why_s("the firmware's framebuffer is "); why_d(size); why_s(" bytes, not ");
+        why_d(FB_PAGES * PAGE_SIZE);
+    } else if (base & (PAGE_SIZE - 1)) {
+        why_s("the firmware's framebuffer at "); why_x(base); why_s(" is not page-aligned");
+    } else if (base < FRAME_BASE + NFRAMES * PAGE_SIZE || base + FB_PAGES * PAGE_SIZE > 0x40000000) {
+        why_s("the firmware's framebuffer at "); why_x(base);
+        why_s(" is not between the frame pool's end ("); why_x(FRAME_BASE + NFRAMES * PAGE_SIZE);
+        why_s(") and 1 GiB");
+    }
+    if (why_n) {
+        why_buf[why_n] = 0;
+        kpanic(why_buf);
+    }
+    if (mbox_buf[order] != 0)
+        kputs("leanos: the firmware kept RGB pixel order: red and blue will look swapped\n");
+    if (mbox_answered(alpha) && mbox_buf[alpha] == 1)
+        kputs("leanos: the firmware kept alpha reversed: leanos's pixels may be transparent, the screen black\n");
+    if (mbox_buf[offs] != 0 || mbox_buf[offs + 1] != 0)
+        kputs("leanos: the firmware kept a virtual offset: the picture may be shifted\n");
+    panic_fb = (uint32_t *)base;
     return base;
+}
+
+/* ---- the board, checked at boot ----
+ * What the rest of this layer relies on and QEMU would never show wrong, asked of the
+ * firmware and printed, so a first boot on a real Pi says what it found: the board and
+ * firmware (and that the mailbox answers at all), the UART's clock, the system counter's
+ * rate, the RAM the firmware left the ARM (the kernel, its heap and the frame pool must
+ * fit in it), and the USB controller's power. The DWC2 is in a power domain the firmware
+ * controls (Linux's bcm2711 device tree: power-domains = <&power RPI_POWER_DOMAIN_USB>),
+ * so it is switched on here (tag 0x28001, device 3, "on" and "wait"), before the USB
+ * driver touches its registers. */
+static void board_check(void) {
+    uint32_t o[2] = {0, 0};
+    if (mbox_tag(0x00010002, 0, 0, o, 1)) {
+        kputs("leanos: board revision ");
+        kputhex(o[0]);
+        if (mbox_tag(0x00000001, 0, 0, o, 1)) { kputs(", firmware "); kputhex(o[0]); }
+        kputs("\n");
+    } else kputs("leanos: the firmware does not answer the mailbox\n");
+    kputs("leanos: serial console: PL011, 115200 baud from a ");
+    kputdec(uart_clock);
+    kputs(uart_clock_asked ? " Hz clock (the firmware's)\n" : " Hz clock (assumed: the firmware did not say)\n");
+    kputs("leanos: system counter: ");
+    kputdec(timer_hz());
+    kputs(SYSREG_READ(cntfrq_el0) ? " Hz\n" : " Hz (assumed: CNTFRQ_EL0 was not set)\n");
+    if (mbox_tag(0x00010005, 0, 0, o, 2)) {
+        kputs("leanos: RAM for the ARM: ");
+        kputhex(o[0]);
+        kputs(" to ");
+        kputhex((uint64_t)o[0] + o[1]);
+        kputs("\n");
+        if (o[0] != 0 || o[1] < FRAME_BASE + NFRAMES * PAGE_SIZE) {
+            why_n = 0;
+            why_s("the firmware left the ARM RAM from ");
+            why_x(o[0]);
+            why_s(" to ");
+            why_x((uint64_t)o[0] + o[1]);
+            why_s("; leanos needs 0x0 to ");
+            why_x(FRAME_BASE + NFRAMES * PAGE_SIZE);
+            why_buf[why_n] = 0;
+            kpanic(why_buf);
+        }
+    }
+    const uint32_t usb_on[2] = {3, 3};
+    if (mbox_tag(0x00028001, usb_on, 2, o, 2) && (o[1] & 3) == 1) kputs("leanos: USB controller powered on\n");
+    else kputs("leanos: the firmware did not power the USB controller on; USB will not work\n");
 }
 
 /* ---- the board's settings ----
@@ -281,37 +505,6 @@ static uint64_t fb_alloc(void) {
  * 1000 or 1500 MHz. Everything but the light goes through the firmware's mailbox, one tag
  * at a time; the light is GPIO 42 on a Pi 4. */
 
-/* One property tag: `in` words go in, up to `nout` words come back in `out`. With the MMU
-   on the buffer is cached memory, and the firmware reads and writes RAM behind the cache:
-   clean it out before, drop it after. 1 if the firmware answered. */
-int mbox_tag(uint32_t tag, const uint32_t *in, int nin, uint32_t *out, int nout) {
-    int n = nin > nout ? nin : nout, i = 0;
-    mbox_buf[i++] = 0;
-    mbox_buf[i++] = 0;
-    mbox_buf[i++] = tag;
-    mbox_buf[i++] = (uint32_t)n * 4;
-    mbox_buf[i++] = 0;
-    for (int k = 0; k < n; k++) mbox_buf[i++] = k < nin ? in[k] : 0;
-    mbox_buf[i++] = 0;
-    mbox_buf[0] = (uint32_t)i * 4;
-    for (uint64_t a = (uint64_t)mbox_buf & ~63UL; a < (uint64_t)(mbox_buf + 36); a += 64)
-        __asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
-    __asm__ volatile("dsb sy" ::: "memory");
-    uint32_t msg = (uint32_t)(uint64_t)mbox_buf | 8;
-    for (int t = 0; mmio_r32(MBOX + 0x38) & 0x80000000; t++) if (t > 1000000) return 0;
-    mmio_w32(MBOX + 0x20, msg);
-    for (int t = 0;; t++) {
-        if (t > 10000000) return 0;
-        if (mmio_r32(MBOX + 0x18) & 0x40000000) continue;
-        if (mmio_r32(MBOX) == msg) break;
-    }
-    for (uint64_t a = (uint64_t)mbox_buf & ~63UL; a < (uint64_t)(mbox_buf + 36); a += 64)
-        __asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
-    __asm__ volatile("dsb sy" ::: "memory");
-    if (mbox_buf[1] != 0x80000000 || !(mbox_buf[4] & 0x80000000)) return 0;
-    for (int k = 0; k < nout; k++) out[k] = mbox_buf[5 + k];
-    return 1;
-}
 
 #define GPFSEL4 (PERIPHERAL_BASE + 0x200010)
 #define GPSET1 (PERIPHERAL_BASE + 0x200020)
@@ -364,8 +557,8 @@ static int board_request(uint64_t req, uint64_t v[5]) {
  *     with that offset;
  *   - the frames are cached memory, and the controller reads and writes RAM behind the
  *     cache: a started range is cleaned and invalidated before the start, and invalidated
- *     again when the driver next reads that channel's interrupt register (which it does to
- *     learn the transfer is done, before it looks at the data). */
+ *     again just after the driver next reads that channel's interrupt register (which it
+ *     does to learn the transfer is done, before it looks at the data). */
 #define USB_BASE (PERIPHERAL_BASE + 0x980000)
 #define USB_BUS 0xC0000000u
 
@@ -390,11 +583,15 @@ static void usb_request(uint64_t op, uint64_t a, uint64_t b, uint64_t c, uint64_
         mmio_w32(USB_BASE + 0x510 + 0x20 * a, (uint32_t)c);
         mmio_w32(USB_BASE + 0x500 + 0x20 * a, (uint32_t)d);
     } else if (op == 3) {
+        /* The register first, then the invalidate: lines the CPU fetched (speculatively)
+           while the transfer ran are dropped only after the register says it is done, so
+           the driver cannot read data older than what the register told it. */
+        uint32_t v = mmio_r32(USB_BASE + a);
         if (a >= 0x508 && a < 0x600 && (a - 0x508) % 0x20 == 0) {
             uint64_t n = (a - 0x508) / 0x20;
+            DSB(sy);
             if (usb_last[n].len) cache_range(usb_last[n].pa, usb_last[n].len);
         }
-        uint32_t v = mmio_r32(USB_BASE + a);
         K = leanos_usb_done(K, lean_box(v));
     }
 }
@@ -426,11 +623,17 @@ static void tlb_flush_all(void) {
     ISB();
 }
 
-/* Every core turns its own MMU on, with the same kernel tables. A core that has just
-   started runs this with its caches off, so it reads no data core 0 wrote. */
+/* Every core turns its own MMU on, with the same kernel tables. Core 0 does it here;
+   cores 1-3 do it in arch/boot.S (`secondary`), with the values this leaves in `mmu_regs`
+   (MAIR, TCR, TTBR0, SCTLR), before they touch their stacks: until its MMU is on, a core's
+   loads and stores bypass the caches, and core 0 has been running with them on, so a
+   line of a new core's stack could be in a cache, older than what that core stored. */
+uint64_t mmu_regs[8] __attribute__((aligned(64)));
+
 static void mmu_enable_this_core(void) {
     /* Memory attribute 0: device nGnRE. 1: normal, write-back. 2: normal, not cached. */
-    SYSREG_WRITE(mair_el1, (0x04UL << 0) | (0xffUL << 8) | (0x44UL << 16));
+    const uint64_t mair = (0x04UL << 0) | (0xffUL << 8) | (0x44UL << 16);
+    SYSREG_WRITE(mair_el1, mair);
     uint64_t tcr = 25                /* T0SZ: 39-bit addresses */
                  | (1UL << 8)        /* inner write-back walks */
                  | (1UL << 10)       /* outer write-back walks */
@@ -445,7 +648,16 @@ static void mmu_enable_this_core(void) {
     uint64_t sctlr = SYSREG_READ(sctlr_el1);
     sctlr &= ~(1UL << 19);                    /* WXN off, as the model assumes */
     sctlr |= (1 << 0) | (1 << 2) | (1 << 12); /* MMU, data cache, instruction cache */
+    mmu_regs[0] = mair;
+    mmu_regs[1] = tcr;
+    mmu_regs[2] = (uint64_t)kl1;
+    mmu_regs[3] = sctlr;
     SYSREG_WRITE(sctlr_el1, sctlr);
+    ISB();
+    /* Instructions fetched before, from memory, are dropped (as Linux does after turning
+       the MMU on). */
+    __asm__ volatile("ic iallu" ::: "memory");
+    DSB(nsh);
     ISB();
 }
 
@@ -519,9 +731,7 @@ static void irq_init(void) {
         gic_enable(id);
     }
     gic_this_core();
-    uint64_t freq = SYSREG_READ(cntfrq_el0);
-    if (freq == 0) freq = 54000000;                     /* the Pi 4's crystal, if firmware left it unset */
-    timer_interval = freq / 100;                        /* 10 ms time slice */
+    timer_interval = timer_hz() / 100;                  /* 10 ms time slice, from CNTFRQ_EL0 */
     timer_rearm();
 }
 
@@ -818,7 +1028,7 @@ static void load_result(uint64_t j) {
  * stack goes no longer depends on how many a task holds. What recursion is left walks short
  * lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines (at most
  * one of each). tools/stackcheck.py computes the worst case from the code (clang's frame
- * sizes, the calls in the linked image, and a bound for each of those recursions): 6,048
+ * sizes, the calls in the linked image, and a bound for each of those recursions): 5,824
  * bytes, with a kernel exception on top of the deepest system call, and `make test` fails if
  * it passes half the stack. The deepest measured, with a task holding all 8192 mappings, is
  * 2,144 bytes (test/stack.sh). The computation trusts clang, the call graph it reads and the
@@ -1004,9 +1214,9 @@ void trap(struct frame *f, uint64_t kind) {
 /* The first task each core runs; enter_user copies it onto the core's stack. */
 static struct frame first_frame[NCORES];
 
-/* Cores 1-3 start here (boot.S: secondary), once core 0 has the kernel up. */
+/* Cores 1-3 start here (boot.S: secondary), once core 0 has the kernel up, with their MMUs
+   and caches already on. */
 void secondary_main(uint64_t c) {
-    mmu_enable_this_core();
     SYSREG_WRITE(cntkctl_el1, 1UL << 1);
     lock();
     gic_this_core();
@@ -1021,9 +1231,12 @@ void secondary_main(uint64_t c) {
     enter_user(&first_frame[c], core_stack_top[c]);
 }
 
-/* Hand cores 1-3 `secondary` through the boot stub's spin table. Until their MMUs are on
-   they read memory past the caches, so what they read first (their stack addresses, their
-   stacks) is cleaned out to memory. */
+/* Hand cores 1-3 `secondary` through the boot stub's spin table: on a Pi 4 the firmware's
+   armstub (raspberrypi/tools, armstubs/armstub8.S) parks them at EL2, each waiting (WFE)
+   for a nonzero entry address at 0xd8 + 8 x core (0xe0, 0xe8, 0xf0), which it reads with
+   its MMU and caches off; QEMU's own boot stub does the same. So the entries, and what the
+   cores read before their MMUs are on (`mmu_regs`), are cleaned out to memory (to the
+   point of coherency) before the SEV that wakes them. */
 static void clean_range(const void *p, uint64_t len) {
     for (uint64_t a = (uint64_t)p & ~63UL; a < (uint64_t)p + len; a += 64)
         __asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
@@ -1037,6 +1250,7 @@ static void start_cores(void) {
         core_stack_top[c] = (uint64_t)stack_bottom(c) + STACK_SIZE;
         for (uint64_t *p = (uint64_t *)stack_bottom(c); (uint64_t)p < core_stack_top[c]; p++) *p = STACK_PAINT;
     }
+    clean_range(mmu_regs, sizeof mmu_regs);
     clean_range(core_stack_top, sizeof core_stack_top);
     clean_range(__core_stacks, (NCORES - 1) * STACK_SIZE);
     for (uint64_t c = 1; c < NCORES; c++) {
@@ -1058,6 +1272,7 @@ void kmain(void) {
     uint64_t el = SYSREG_READ(CurrentEL) >> 2;
     kputs(el == 1 ? "EL1" : "EL?");
     kputs("\n");
+    board_check();
     /* User mode may read the virtual counter (and its frequency) to keep time: animations
        need it, and a task could already time itself by counting loops. */
     SYSREG_WRITE(cntkctl_el1, 1UL << 1);

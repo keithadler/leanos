@@ -88,14 +88,6 @@ RECURSION = {
     # the pending interrupt lines: state_bounded, len s.pending <= len irqLines
     "lp_leanos_LeanOS_dropLine": (LINES + 1, f"an interrupt wait takes its line off the pending list: "
                                   f"at most {LINES} entries, one per line of irqLines (state_bounded)"),
-    # Not recursion at run time: kpanic draws the panic screen, which asks Lean for the
-    # screen's size; leanos_fb_width and leanos_fb_height drop their argument, and could free
-    # it (lean_dec_ref_cold, which can panic), but kpanic passes lean_box(0), a scalar, which
-    # is never freed. So each is on the stack at most once along this cycle.
-    "kpanic": (1, "draws the panic screen; its size queries are given a scalar, never freed"),
-    "leanos_fb_width": (1, "kpanic passes lean_box(0): it never reaches lean_dec_ref_cold"),
-    "leanos_fb_height": (1, "kpanic passes lean_box(0): it never reaches lean_dec_ref_cold"),
-    "lean_dec_ref_cold": (1, "can stop the machine (kpanic), which never frees anything"),
 }
 
 # Functions that call through their third argument, `init` (x2): the runtime's one-time

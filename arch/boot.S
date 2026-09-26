@@ -3,6 +3,44 @@
 
 #define FRAME_SIZE 288
 
+// If this core runs at EL2 (a Pi 4's firmware armstub leaves every core there; so does
+// QEMU), set up what EL1 relies on and drop to EL1h, interrupts masked, at `target`. The
+// armstub (raspberrypi/tools, armstubs/armstub8.S) sets CNTFRQ_EL0 (54 MHz), CNTVOFF_EL2,
+// CPTR_EL3, SCR_EL3 and the GIC, and nothing else of EL2's, so everything EL1 needs from
+// EL2 is set here rather than left at reset values the architecture calls UNKNOWN:
+//   HCR_EL2      RW (EL1 is AArch64), and nothing trapped or virtualized
+//   CNTHCTL_EL2  EL1 may use the physical timer and counter (EL1PCEN, EL1PCTEN)
+//   CPTR_EL2     no floating-point or SIMD traps to EL2 (TFP clear; 0x33ff, as Linux sets)
+//   HSTR_EL2     no system-register traps to EL2
+//   VPIDR_EL2, VMPIDR_EL2  what EL1 reads as MIDR_EL1 and MPIDR_EL1: the real values, so
+//                each core's number (this_core, secondary) is its own
+//   SCTLR_EL1    reserved-one bits, MMU and caches off
+.macro TO_EL1 target
+    mrs     x0, CurrentEL
+    lsr     x0, x0, #2
+    cmp     x0, #2
+    b.ne    \target
+    mov     x0, #(1 << 31)
+    msr     hcr_el2, x0
+    mov     x0, #3
+    msr     cnthctl_el2, x0
+    msr     cntvoff_el2, xzr
+    mov     x0, #0x33ff
+    msr     cptr_el2, x0
+    msr     hstr_el2, xzr
+    mrs     x0, midr_el1
+    msr     vpidr_el2, x0
+    mrs     x0, mpidr_el1
+    msr     vmpidr_el2, x0
+    ldr     x0, =0x30d00800
+    msr     sctlr_el1, x0
+    mov     x0, #0x3c5              // EL1h, interrupts masked
+    msr     spsr_el2, x0
+    adr     x0, \target
+    msr     elr_el2, x0
+    eret
+.endm
+
 .section .text.boot, "ax"
 .global _start
 _start:
@@ -13,23 +51,17 @@ _start:
     and     x0, x0, #0xff
     cbnz    x0, park
 
-    // If started at EL2, drop to EL1.
-    mrs     x0, CurrentEL
-    lsr     x0, x0, #2
-    cmp     x0, #2
-    b.ne    1f
-    mov     x0, #(1 << 31)          // EL1 runs AArch64
-    msr     hcr_el2, x0
-    mov     x0, #3                  // EL1 may use the physical timer and counter
-    msr     cnthctl_el2, x0
-    msr     cntvoff_el2, xzr
-    ldr     x0, =0x30d00800         // SCTLR_EL1: reserved-one bits, MMU and caches off
-    msr     sctlr_el1, x0
-    mov     x0, #0x3c5              // EL1h, interrupts masked
-    msr     spsr_el2, x0
-    adr     x0, 1f
-    msr     elr_el2, x0
-    eret
+    // The kernel is linked to run at 0x80000 (arch/kernel.ld), and the firmware loads it
+    // where config.txt's kernel_address says (0x200000 by default for a 64-bit kernel on
+    // current firmware, which is why tools/mkpiimage.py sets it). Anywhere else, nothing
+    // here can run, not even the UART: turn the green activity light (GPIO 42) on, which
+    // this code can do from any address, and stop.
+    adr     x1, _start
+    ldr     x2, =_start
+    cmp     x1, x2
+    b.ne    loaded_elsewhere
+
+    TO_EL1  1f
 1:
     ldr     x0, =__stack_top
     mov     sp, x0
@@ -55,27 +87,42 @@ park:
     wfi
     b       park
 
-// Cores 1-3, once core 0 has the kernel up: the same drop to EL1, their own stack (from
-// core_stack_top), the vectors, then secondary_main(core).
+loaded_elsewhere:
+    ldr     x0, =0xFE200010         // GPFSEL4: GPIO 42 (bits 6-8) an output
+    ldr     w1, [x0]
+    bic     w1, w1, #(7 << 6)
+    orr     w1, w1, #(1 << 6)
+    str     w1, [x0]
+    ldr     x0, =0xFE200020         // GPSET1: GPIO 42 (bit 10) high, the light on
+    mov     w1, #(1 << 10)
+    str     w1, [x0]
+    b       park
+
+// Cores 1-3, once core 0 has the kernel up: the same drop to EL1, then this core's MMU
+// and caches on, with the values core 0 used (kmain.c: mmu_regs, cleaned out to memory),
+// before anything touches memory this core will read back: until then its loads and
+// stores bypass the caches, while core 0 runs with them on. Then its own stack (from
+// core_stack_top), the vectors, and secondary_main(core).
 .global secondary
 secondary:
-    mrs     x0, CurrentEL
-    lsr     x0, x0, #2
-    cmp     x0, #2
-    b.ne    5f
-    mov     x0, #(1 << 31)
-    msr     hcr_el2, x0
-    mov     x0, #3
-    msr     cnthctl_el2, x0
-    msr     cntvoff_el2, xzr
-    ldr     x0, =0x30d00800
-    msr     sctlr_el1, x0
-    mov     x0, #0x3c5
-    msr     spsr_el2, x0
-    adr     x0, 5f
-    msr     elr_el2, x0
-    eret
+    TO_EL1  5f
 5:
+    ldr     x1, =mmu_regs
+    ldp     x2, x3, [x1]            // MAIR_EL1, TCR_EL1
+    ldp     x4, x5, [x1, #16]       // TTBR0_EL1, SCTLR_EL1
+    msr     mair_el1, x2
+    msr     tcr_el1, x3
+    msr     ttbr0_el1, x4
+    isb
+    tlbi    vmalle1
+    ic      iallu
+    dsb     nsh
+    isb
+    msr     sctlr_el1, x5
+    isb
+    ic      iallu
+    dsb     nsh
+    isb
     mrs     x0, mpidr_el1
     and     x0, x0, #0xff
     ldr     x1, =core_stack_top
