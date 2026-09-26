@@ -106,3 +106,14 @@ open LeanOS
 #print axioms keepBacked_eq_keepBackedTR
 #print axioms dropCaps_eq_dropCapsTR
 #print axioms dropMaps_eq_dropMapsTR
+-- the xHCI controller's DMA (Xhci.lean)
+#print axioms xhci_layout
+#print axioms xhci_region_readonly
+#print axioms xhci_maps_readonly
+#print axioms only_usb_driver_drives_xhci
+#print axioms xhci_dma_own_memory
+#print axioms sysXhci_ok
+#print axioms xhci_writes_in_memory
+#print axioms xhci_sync_own_memory
+#print axioms xhci_guard_safe
+#print axioms xhci_boot_ok

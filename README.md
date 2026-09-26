@@ -77,8 +77,8 @@ This is the start. The next steps, in order:
 
 ## What is proved
 
-90 theorems in [`LeanOS/Proofs.lean`](LeanOS/Proofs.lean), [`LeanOS/Tables.lean`](LeanOS/Tables.lean),
-[`LeanOS/Bounds.lean`](LeanOS/Bounds.lean), [`LeanOS/Fair.lean`](LeanOS/Fair.lean) and [`LeanOS/Journal.lean`](LeanOS/Journal.lean), for every state the kernel can reach,
+100 theorems in [`LeanOS/Proofs.lean`](LeanOS/Proofs.lean), [`LeanOS/Tables.lean`](LeanOS/Tables.lean),
+[`LeanOS/Bounds.lean`](LeanOS/Bounds.lean), [`LeanOS/Fair.lean`](LeanOS/Fair.lean), [`LeanOS/Xhci.lean`](LeanOS/Xhci.lean) and [`LeanOS/Journal.lean`](LeanOS/Journal.lean), for every state the kernel can reach,
 under any sequence of system calls with any arguments. Among them:
 
 - **Authority flows only along grants.** A task holds a frame of memory only if a chain of
@@ -90,8 +90,10 @@ under any sequence of system calls with any arguments. Among them:
   asking (`file_server_knows_the_sender`).
 - **Only verified code runs** in the manifest's slots (`only_verified_runs`).
 - **Devices stay with their owners.** Only the display server reaches the screen, only
-  the file server the disk, only the USB driver the USB controller. The controller's DMA
-  only ever touches the driver's own memory (`usb_dma_own_memory`).
+  the file server the disk, only the USB driver the USB controllers. The controller's DMA
+  only ever touches the driver's own memory (`usb_dma_own_memory`), and so does the xHCI
+  controller's for the USB-A ports, whose rings and contexts only the kernel writes, in
+  memory the driver can only read (`xhci_dma_own_memory`).
 - **The hardware is safe from software.** Only Settings changes the board's settings, and
   never overclocks the CPU (`cpu_never_overclocked`). Only the display server can switch the
   machine off. Only the USB driver can set the time.
@@ -122,7 +124,7 @@ declarations, 0 rejected). Start with
 or [`crash_atomic`](https://keithadler.github.io/leanviz/?p=leanos#/d/LeanOS.Journal.crash_atomic).
 
 Every theorem rests only on Lean's standard axioms (checked by `make test`), and
-`make mutants` breaks the kernel in 133 specific ways and checks that the proofs reject every
+`make mutants` breaks the kernel in 167 specific ways and checks that the proofs reject every
 one. [TRUST.md](TRUST.md) says exactly what is proved and what is trusted: the Lean
 compiler, a small runtime shim, the machine layer, the MMU model, and the hardware.
 
@@ -160,7 +162,7 @@ make test     # 37 tests: proofs, axioms, boot transcript and boot steps, pixels
 ```
 
 ```bash
-make mutants  # break the kernel 133 ways; the proofs must reject each (about 3 minutes)
+make mutants  # break the kernel 167 ways; the proofs must reject each (a few minutes)
 ```
 
 Things to try once it is up:
@@ -213,7 +215,9 @@ What you need to know first:
 - **Input today is the serial console**: a 3.3 V USB-serial cable on header pins 6
   (ground), 8 (TX) and 10 (RX), 115200 baud (`tools/serial.py --keys --mouse`). The USB
   driver runs the Pi 4's DWC2 controller, which is the USB-C port; the four USB-A ports sit
-  behind a VL805 chip on PCIe and need an xHCI driver, which is not written yet.
+  behind a VL805 chip on PCIe and need an xHCI driver. The kernel's side of it is written
+  and proved; the PCIe bring-up and the driver's xHCI code are next
+  ([ROADMAP.md](ROADMAP.md), stage 7).
 - **It has never booted on real hardware.** Likely trouble spots are the SD controller
   (EMMC2), the screen's color order, and timings QEMU does not model. Each boot step is
   announced before it runs, on the serial console, on the screen and (a panic's) on the
@@ -232,6 +236,7 @@ What you need to know first:
 | [`LeanOS/Proofs.lean`](LeanOS/Proofs.lean) | The theorems about `Kernel.lean`. |
 | [`LeanOS/Bounds.lean`](LeanOS/Bounds.lean) | The proof that the kernel's state stays within a fixed number of heap objects. |
 | [`LeanOS/Fair.lean`](LeanOS/Fair.lean) | The proofs that a receive takes waiting senders in turn, so none waits for good, and that a ready task runs within 18 timer interrupts. |
+| [`LeanOS/Xhci.lean`](LeanOS/Xhci.lean) | A model of the xHCI controller, from its specification, and the proof that it only ever touches the USB driver's memory. |
 | [`LeanOS/Arm.lean`](LeanOS/Arm.lean), [`LeanOS/Tables.lean`](LeanOS/Tables.lean) | A model of the MMU's translation walk, and the proof that the page tables give user mode exactly its mappings. |
 | [`LeanOS/JournalModel.lean`](LeanOS/JournalModel.lean), [`LeanOS/Journal.lean`](LeanOS/Journal.lean) | The file system journal's model, and the proof that a power cut never leaves a change half done. |
 | [`arch/`](arch) | The machine layer: boot, exception vectors, MMU, interrupts, four cores, the SD card, and the boot console (each boot step on serial, on screen and on the LED). It carries out what the Lean kernel returns. |
@@ -280,6 +285,7 @@ core is running.
 | 25 | `recvt(cap, ms)` | like `recv`, but gives up after that many milliseconds |
 | 26 | `stop(cap)` | stops the program in the slot a launch capability names |
 | 27 | `setwall(cap, secs)` | through the time capability: says what time of day it is |
+| 28 | `xhci(cap, op, x, y, z)` | the xHCI controller: reads or writes a register, runs it, or writes a TRB or 16 bytes of an input context into memory only the kernel writes, after checking every address in it |
 
 Capabilities name a run of physical frames (read, write, execute), an endpoint (receive,
 send, grant, and a badge), an interrupt line, a program slot, a run of SD card blocks, or

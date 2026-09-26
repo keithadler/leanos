@@ -226,6 +226,82 @@ mutant "grant the USB capability" \
       | .usbHost => some (some g)
       | _ => none"
 
+# the xHCI controller (LeanOS/Xhci.lean): every address in what the kernel writes for it
+mutant "xHCI: a transfer TRB's buffer is not checked" \
+  "((ty == tNormal || ty == tData) && !xIdt control && xDataOk j cs p (xLen status))" "((ty == tNormal || ty == tData) && !xIdt control)"
+mutant "xHCI: a buffer needs only the read right, whichever way the data goes" \
+  "ltB a 1099511627776 && dmaOk j cs a n true && dmaOk j cs a n false" "ltB a 1099511627776 && dmaOk j cs a n false"
+mutant "xHCI: a Link TRB may point anywhere" \
+  "p % 16 == 0 && (if cmd then xInCmd p else xInRings p) && xIntr status == 0" "p % 16 == 0 && true && xIntr status == 0"
+mutant "xHCI: a Link TRB on the command ring may point into the transfer rings" \
+  "p % 16 == 0 && (if cmd then xInCmd p else xInRings p) && xIntr status == 0" "p % 16 == 0 && (xInCmd p || xInRings p) && xIntr status == 0"
+mutant "xHCI: the last TRB of a ring may be any TRB" \
+  "  if xLast k then ty == tLink && p == (if cmd then xCmd else xRings) && status == 0" "  if false then ty == tLink && p == (if cmd then xCmd else xRings) && status == 0"
+mutant "xHCI: the guard written first is the new control word" \
+  "  if xLast k then control
+  else (if ltB k xCmdTrbs then tNoOpCmd else tNoOp) * 1024 + (1 - control % 2)" "  control"
+mutant "xHCI: a command may name any input context" \
+  "((ty == tAddress || ty == tConfigure || ty == tEvaluate) && xIsInput p)" "((ty == tAddress || ty == tConfigure || ty == tEvaluate) && true)"
+mutant "xHCI: Set TR Dequeue Pointer with a stream" \
+  "(ty == tSetDeq && ltB (p % 16) 2 && xInRings (p - p % 16) && status / 65536 == 0)" "(ty == tSetDeq && xInRings (p - p % 16))"
+mutant "xHCI: Get Port Bandwidth, which writes where it is told, is allowed" \
+  "    ty == tResetDevice || ty == tNoOpCmd ||" "    ty == tResetDevice || ty == tNoOpCmd || ty == 21 ||"
+mutant "xHCI: isoch TRBs, unchecked, are allowed" \
+  "     ty == tStatus || ty == tEventData || ty == tNoOp)" "     ty == tStatus || ty == tEventData || ty == tNoOp || ty == 5)"
+mutant "xHCI: a Setup Stage TRB without its data in the TRB" \
+  "(ty == tSetup && xIdt control && xLen status == 8)" "(ty == tSetup && xLen status == 8)"
+mutant "xHCI: a transfer TRB may report to an interrupter with no event ring" \
+  "  xIntr status == 0 &&
+    (((ty == tNormal" "  true &&
+    (((ty == tNormal"
+mutant "xHCI: an endpoint context may have streams" \
+  "then lo / 1024 % 32 == 0 && ltB (hi % 16) 2 && xInRings (hi - hi % 16)" "then ltB (hi % 16) 2 && xInRings (hi - hi % 16)"
+mutant "xHCI: an endpoint context's transfer ring is not checked" \
+  "then lo / 1024 % 32 == 0 && ltB (hi % 16) 2 && xInRings (hi - hi % 16)" "then lo / 1024 % 32 == 0"
+mutant "xHCI: a slot context may name another interrupter" \
+  "    (if c == 1 && u == 0 then xIntr (hi % 4294967296) == 0" "    (if c == 1 && u == 0 then true"
+mutant "xHCI: an input context write past a context's first 32 bytes" \
+  "ltB z (xInputs * pageSize) && z % 16 == 0 && ltB u 2 && ltB c 33 &&" "ltB z (xInputs * pageSize) && z % 16 == 0 && ltB u 4 && ltB c 33 &&"
+mutant "xHCI: USBCMD's Run/Stop through a plain write" \
+  "    if o == 0 then v % 2 == 0 && v / 16 % 64 == 0 && ltB v 2048" "    if o == 0 then v / 16 % 64 == 0 && ltB v 2048"
+mutant "xHCI: USBCMD's save and restore state" \
+  "    if o == 0 then v % 2 == 0 && v / 16 % 64 == 0 && ltB v 2048" "    if o == 0 then v % 2 == 0 && ltB v 2048"
+mutant "xHCI: DCBAAP set unchecked" \
+  "    else if o == 0x04 || o == 0x14 || o == 0x38 then ltB v 4294967296" "    else if o == 0x04 || o == 0x14 || o == 0x38 || o == 0x30 then ltB v 4294967296"
+mutant "xHCI: CRCR set unchecked" \
+  "    else if o == 0x18 then ltB (v % 64) 8 && xInCmd (v - v % 64)" "    else if o == 0x18 then true"
+mutant "xHCI: ERDP set unchecked" \
+  "    else if o == 0x38 then (v % 16 == 0 || v % 16 == 8) && xInEvents (v - v % 16)" "    else if o == 0x38 then true"
+mutant "xHCI: ERSTBA writable" \
+  "    if o == 0x20 || o == 0x24 then ltB v 4294967296" "    if o == 0x20 || o == 0x24 || o == 0x30 then ltB v 4294967296"
+mutant "xHCI: a doorbell may start a stream" \
+  "Nat.ble (v % 256) 31 && v / 256 == 0)" "Nat.ble (v % 256) 31)"
+mutant "xHCI: port registers past the ports" \
+  "    else Nat.ble 1024 o && ltB o (1024 + 16 * xPorts) && o % 4 == 0 && ltB v 4294967296" "    else Nat.ble 1024 o && o % 4 == 0 && ltB v 4294967296"
+mutant "xHCI: the capability registers writable" \
+  "  else if xSpace reg == 3 then
+    o % 4 == 0" "  else if xSpace reg == 3 || xSpace reg == 0 then
+    o % 4 == 0"
+mutant "xHCI: run points the controller at the transfer rings as its command ring" \
+  "xReply s t 3 xDcbaa (xCmd + 1) xErst xEvents" "xReply s t 3 xDcbaa (xRings + 1) xErst xEvents"
+mutant "xHCI: a TRB slot past the end of the rings" \
+  "        if ltB z xTrbs && xTrbOk s.cur t.caps z x status control then" "        if xTrbOk s.cur t.caps z x status control then"
+mutant "xHCI: cache maintenance over any memory" \
+  "        if ltB y 1048577 && xDataOk s.cur t.caps x y then xReply s t 6 x y 0 0" "        if ltB y 1048577 then xReply s t 6 x y 0 0"
+mutant "xHCI: the xHCI memory given to the driver writable" \
+  "def xhciCap : Cap := runCap xhciFirst xhciPages Rights.ro" "def xhciCap : Cap := runCap xhciFirst xhciPages Rights.rw"
+mutant "xHCI: the driver's spare run still covers the xHCI memory" \
+  "def sparePages (i : Nat) : Nat := if i = usbTask then 228 - xhciPages else 228" "def sparePages (i : Nat) : Nat := 228"
+mutant "xHCI: manifest gives mallory the xHCI memory" \
+  "| 2 => snoc (frameCaps 2) (epCap 0 false true false 2)" "| 2 => snoc (snoc (frameCaps 2) (epCap 0 false true false 2)) xhciCap"
+mutant "xHCI: input contexts start with no transfer ring" \
+  "∧ i % 8 = 1 ∧ 2 ≤ i % 512 / 8 ∧ i % 512 / 8 < 33 then xRings" "∧ i % 8 = 1 ∧ 2 ≤ i % 512 / 8 ∧ i % 512 / 8 < 33 then 0"
+mutant "xHCI: the scratchpad array's entries past the twelfth are 0" \
+  "  else if i < 512 then xScratch + (i - 256) % xScratchPages * pageSize" "  else if i < 256 + xScratchPages then xScratch + (i - 256) * pageSize
+  else if i < 512 then 0"
+mutant "xHCI: the command ring's last TRB is not a Link from boot" \
+  "  else if i = 3 * 512 + 2 * (xCmdTrbs - 1) then xCmd" "  else if i = 3 * 512 + 2 * (xCmdTrbs - 1) then 0"
+
 mutant "stop stops the slot after the one it names" \
   "          ret (setTask s k { u with status := .dead, result := .nil }) t (0 :: .nil)" "          ret (setTask s (k + 1) { u with status := .dead, result := .nil }) t (0 :: .nil)"
 

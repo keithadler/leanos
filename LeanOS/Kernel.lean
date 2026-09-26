@@ -43,6 +43,8 @@ def toBits (a : Rights) : Nat :=
 
 def rx : Rights := ⟨true, false, true⟩
 def rw : Rights := ⟨true, true, false⟩
+/-- Read only: the USB driver's view of the xHCI memory (`xhciCap`). -/
+def ro : Rights := ⟨true, false, false⟩
 
 end Rights
 
@@ -368,20 +370,32 @@ def powerCap : Cap := ⟨.power, ⟨true, true, false⟩, 0⟩
 /-- The Raspberry Pi's own settings: read the board and its sensors (read right), change the
 CPU clock and the activity light (write right). Settings' capability 5. -/
 def boardCap : Cap := ⟨.board, ⟨true, true, false⟩, 0⟩
-/-- The USB host controller (the Pi 4's DWC2): its registers, read and written only through
-the kernel, which starts a DMA transfer only into memory the holder owns (`sysUsb`). -/
+/-- The USB host controllers (the Pi 4's DWC2, and the VL805 xHCI behind the PCIe bridge):
+their registers, read and written only through the kernel, which lets a controller's DMA
+reach only memory the holder owns (`sysUsb`, `sysXhci`). -/
 def usbCap : Cap := ⟨.usbHost, ⟨true, true, false⟩, 0⟩
 /-- The time of day: its holder may say what it is (`setwall`). The USB driver's
 capability 8: it asks the network (NTP), as a Pi 4 has no clock that runs while it is off. -/
 def wallCap : Cap := ⟨.wallClock, ⟨false, true, false⟩, 0⟩
 
+/-- The xHCI memory: the last 64 of the USB driver's 256 frames (256 KiB, 64 KiB aligned),
+where the kernel keeps every structure of the xHCI controller that holds a DMA address.
+The driver holds it read-only (`xhciCap`), so only the kernel writes it (`sysXhci`). -/
+def xhciPages : Nat := 64
+def xhciFirst : Nat := framesPerTask * usbTask + framesPerTask - xhciPages
+def xhciCap : Cap := runCap xhciFirst xhciPages Rights.ro
+
+/-- The pages of task `i`'s spare run: 228, but the USB driver's ends where its xHCI memory
+begins, 64 pages sooner. -/
+def sparePages (i : Nat) : Nat := if i = usbTask then 228 - xhciPages else 228
+
 /-- Task `i`'s frames, as four runs: 16 pages of code (read/execute), 8 of data, 4 of
-stack, and 228 spare pages it holds a capability to but has not mapped. The machine layer
-loads the task's assets (fonts, icons, pictures), if it has any, at the start of the spare
-run. -/
+stack, and 228 spare pages (164 for the USB driver) it holds a capability to but has not
+mapped. The machine layer loads the task's assets (fonts, icons, pictures), if it has any,
+at the start of the spare run. -/
 def frameCaps (i : Nat) : List Cap :=
   runCap (256 * i) 16 Rights.rx :: runCap (256 * i + 16) 8 Rights.rw ::
-    runCap (256 * i + 24) 4 Rights.rw :: runCap (256 * i + 28) 228 Rights.rw :: .nil
+    runCap (256 * i + 24) 4 Rights.rw :: runCap (256 * i + 28) (sparePages i) Rights.rw :: .nil
 
 /-- Endpoint 0 is the display server's inbox. Task 0 (alice's Notes) may send to it and
 grant frames, with badge 1. Task 1 (the display server) receives from it, holds the
@@ -403,7 +417,11 @@ and the open slots' launch capabilities (its capabilities 6 to 11).
 Endpoint 1 is the file server's inbox. Task 8 (the file server) receives from it, and
 Notes, Terminal and Files may send to it and grant (a buffer, for one request), with
 badges 1, 5 and 9, as their capability 5. The file server alone holds the SD card's first
-`diskBlocks` blocks, as its capability 5. -/
+`diskBlocks` blocks, as its capability 5.
+
+Task 17, the USB driver, sends to the display server (badge 17), holds the USB interrupt
+(capability 5) and the USB controllers (6), receives on endpoint 2, the network service
+(7), holds the time of day (8), and holds its xHCI memory read-only (9, `xhciCap`). -/
 def initCaps : Nat → List Cap
   | 0 => snoc (snoc (frameCaps 0) (epCap 0 false true true 1)) (epCap 1 false true true 1)
   | 1 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 1) (epCap 0 true false false 0))
@@ -431,8 +449,8 @@ def initCaps : Nat → List Cap
            (epCap 2 false true true 14)
   | 15 => snoc (snoc (snoc (frameCaps 15) (epCap 0 false true true 15)) (epCap 1 false true true 15))
            (epCap 2 false true true 15)
-  | 17 => snoc (snoc (snoc (snoc (snoc (frameCaps 17) (epCap 0 false true false 17)) (irqCap usbIrq)) usbCap)
-           (epCap 2 true false false 0)) wallCap
+  | 17 => snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 17) (epCap 0 false true false 17)) (irqCap usbIrq)) usbCap)
+           (epCap 2 true false false 0)) wallCap) xhciCap
   | 16 => snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (snoc (frameCaps 16) (epCap 0 false true true 16))
            (epCap 1 false true true 16)) (launchCap 10)) (launchCap 11)) (launchCap 12)) (launchCap 13))
            (launchCap 14)) (launchCap 15)) (epCap 2 false true true 16)
@@ -695,10 +713,17 @@ structure Reply where
   usbB : Nat
   usbC : Nat
   usbD : Nat
+  /-- the xHCI controller (the USB-A ports), for the holder of the USB capability (0 =
+  nothing), with operands `usbA` to `usbD` (`usbOp` is 0): 1 read register `usbA` · 2 write
+  `usbB` to register `usbA` · 3 run: the DMA bases `usbA` to `usbD`, then run · 4 write a
+  TRB at `usbA` · 5 write 16 bytes of an input context at `usbA` · 6 clean and invalidate
+  the cache over `usbB` bytes at `usbA`. See `sysXhci`, and ROADMAP.md (stage 7, USB part
+  2) for exactly what the machine layer does with each. -/
+  xhciOp : Nat
 
 /-- The call returns to the caller with result registers `r`. -/
 def ret (s : KState) (t : Task) (r : List Nat) : Reply :=
-  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+  ⟨setTask s s.cur { t with result := r }, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-- Where the frame pool starts: frame `f < poolFrames` is at `frameBase + f * pageSize`. -/
 def frameBase : Nat := 0x04000000
@@ -731,13 +756,13 @@ def sysMap (s : KState) (t : Task) (ci vpn : Nat) : Reply :=
       if vpn + count ≤ userPages && c.rights.r && validRun s base count then
         ⟨setTask s s.cur { t with maps := app (runMaps vpn base c.rights count)
                                                (dropRange vpn count t.maps),
-                                  result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+                                  result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
 /-- Unmap pages `vpn` to `vpn + count - 1`. -/
 def sysUnmap (s : KState) (t : Task) (vpn count : Nat) : Reply :=
-  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+  ⟨setTask s s.cur { t with maps := dropRange vpn count t.maps, result := 0 :: .nil }, 0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-- The object a derived capability names: for a run of frames, the `count` frames from
 `offset` on (`count = 0`: all of them from `offset` on), if they lie inside the run. -/
@@ -797,7 +822,7 @@ def sysWrite (s : KState) (t : Task) (va n : Nat) : Reply :=
   else if n ≤ maxWrite ∧ userBase ≤ va ∧
       allReadable t.maps ((va - userBase) / pageSize)
         ((va + n - 1 - userBase) / pageSize + 1 - (va - userBase) / pageSize) = true then
-    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+    ⟨setTask s s.cur { t with result := 0 :: n :: .nil }, va, n, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
   else ret s t (eBadArg :: .nil)
 
 /-- The capability a send carries: none if `gi = 0`, else capability `gi - 1`, which must be
@@ -837,12 +862,12 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply
               | some u' =>
                 if call then
                   ⟨schedule (wake (setTask (setTask s j u') s.cur { t with status := .awaiting j, result := .nil }) j),
-                    0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+                    0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
                 else ret (wake (setTask s j u') j) t (0 :: .nil)
               | none => ret s t (eFull :: .nil)
             | none => ret s t (eBadArg :: .nil)
           | none =>
-            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+            ⟨schedule (setTask s s.cur { t with status := .sending e m, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -871,12 +896,12 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) (block : Bool) (deadline : Nat) :
             | some t' =>
               let u' : Task := if m.call then { u with status := .awaiting s.cur, result := .nil }
                                else { u with status := .ready, result := 0 :: .nil }
-              ⟨serve (wakeSender m.call (setTask (setTask s j u') s.cur t') j) e j, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+              ⟨serve (wakeSender m.call (setTask (setTask s j u') s.cur t') j) e j, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
             | none => ret s t (eFull :: .nil)
           | none => ret s t (eBadArg :: .nil)
         | none =>
           if block then
-            ⟨schedule (setTask s s.cur { t with status := .receiving e deadline, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+            ⟨schedule (setTask s s.cur { t with status := .receiving e deadline, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
           else ret s t (eTimeout :: .nil)
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
@@ -914,7 +939,7 @@ def sysIrqWait (s : KState) (t : Task) (ci : Nat) : Reply :=
     match c.obj with
     | .irq n =>
       if hasLine n s.pending then ret { s with pending := dropLine n s.pending } t (0 :: .nil)
-      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+      else ⟨schedule (setTask s s.cur { t with status := .waitingIrq n, result := .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
     | _ => ret s t (eBadArg :: .nil)
 
 /-- The holder of an interrupt has dealt with it: let it fire again. -/
@@ -989,7 +1014,7 @@ def sysBlock (s : KState) (t : Task) (ci idx va count : Nat) (write : Bool) : Re
     match c.obj with
     | .blocks b n =>
       if runFits (runLen count) idx n && capRightFor write c.rights && runPageOk t.maps va (runLen count) write then
-        ⟨setTask s s.cur { t with result := 0 :: .nil }, va, 0, false, 0, 0, ioRun write (runLen count), b + idx, 0, 0, 0, 0, 0, 0, 0, 0⟩
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, va, 0, false, 0, 0, ioRun write (runLen count), b + idx, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -1012,7 +1037,7 @@ def sysPower (s : KState) (t : Task) (ci action : Nat) : Reply :=
     match c.obj with
     | .power =>
       if c.rights.w && Nat.ble action 1 then
-        ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, action + 1, 0, 0, 0, 0, 0, 0⟩
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, action + 1, 0, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -1052,7 +1077,7 @@ def sysBoard (s : KState) (t : Task) (ci what value : Nat) : Reply :=
     | .board =>
       let req := boardRequest what value
       if !(req == 0) && (if boardChanges req then c.rights.w else c.rights.r) then
-        ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, 0, req, 0, 0, 0, 0, 0⟩
+        ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, 0, req, 0, 0, 0, 0, 0, 0⟩
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
@@ -1112,7 +1137,7 @@ def nthD (l : List Nat) (i : Nat) : Nat := match nth? l i with | some v => v | n
 
 /-- A reply that asks the machine layer for something on the USB controller. -/
 def usbReply (s : KState) (t : Task) (op a b c d : Nat) : Reply :=
-  ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, op, a, b, c, d⟩
+  ⟨setTask s s.cur { t with result := 0 :: .nil }, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, op, a, b, c, d, 0⟩
 
 /-- `usb(cap, op, reg, value)`: op 0 reads register `reg`, op 1 writes `value` to it. -/
 def sysUsb (s : KState) (t : Task) (ci op reg value : Nat) : Reply :=
@@ -1145,6 +1170,263 @@ def usbDone (s : KState) (v : Nat) : KState :=
   match nth? s.tasks s.cur with
   | some t => setTask s s.cur { t with result := 0 :: v :: .nil }
   | none => s
+/-! ## The USB-A ports: the xHCI controller
+
+The Pi 4's four USB-A ports sit behind a VL805 xHCI controller on the PCIe bridge. Unlike
+the DWC2, an xHCI controller finds its work in memory: rings of 16-byte TRBs (transfer
+request blocks), device and input contexts, an array of device context addresses (the
+DCBAA), an event ring and its segment table (ERST), scratchpad pages. Many of those hold
+DMA addresses, which the controller follows with no IOMMU to stop it. So the driver never
+writes any of them. They live in the xHCI memory (`xhciFirst`, 64 frames the manifest gives
+the driver read-only), and only the kernel writes there, on the driver's request, one TRB
+or 16 bytes of an input context at a time, after checking every address in it: a data
+buffer must lie in the driver's own frames, which it holds readable and writable (so it
+may be read or written, whichever way the data goes), and a ring or context address must
+point at the right part of the xHCI memory. The registers that set a DMA address
+(DCBAAP, CRCR, ERSTBA, ERDP) are written only with addresses the kernel chose or checked,
+and the controller runs only through `run`, which sets them first.
+
+The checks need no state: the xHCI memory has a fixed layout, and what a write may hold
+depends only on where it goes. The layout, by page of the xHCI memory: 0 the DCBAA (256
+entries) and the scratchpad array (256 entries); 1 the ERST (one entry); 2 the event ring
+(256 TRBs); 3 the command ring (256 TRBs); 4 to 15 scratchpad pages; 16 to 31 the output
+device contexts of slots 1 to 16; 32 to 47 sixteen input contexts; 48 to 63 the transfer
+rings (4096 TRBs, one 64 KiB block). The controller writes the event ring, the device
+contexts and the scratchpad pages; it reads the rest.
+
+`xhci_dma_own_memory` in `LeanOS/Xhci.lean` is the theorem, against a model of what the
+controller touches written from the xHCI specification. -/
+
+/-- `a < b`, computed without adding to `a`: the message words `xhci` takes may be close to
+2^63, past which the runtime would need a big number. -/
+def ltB (a b : Nat) : Bool := !Nat.ble b a
+
+def xhciBase : Nat := frameBase + xhciFirst * pageSize
+def xDcbaa : Nat := xhciBase
+def xScratchArr : Nat := xhciBase + 2048
+def xErst : Nat := xhciBase + pageSize
+def xEvents : Nat := xhciBase + 2 * pageSize
+def xCmd : Nat := xhciBase + 3 * pageSize
+def xScratch : Nat := xhciBase + 4 * pageSize
+def xOut : Nat := xhciBase + 16 * pageSize
+def xIn : Nat := xhciBase + 32 * pageSize
+def xRings : Nat := xhciBase + 48 * pageSize
+
+/-- Device slots (each has an output device context), input contexts, scratchpad pages. -/
+def xSlots : Nat := 16
+def xInputs : Nat := 16
+def xScratchPages : Nat := 12
+/-- TRBs in the event ring, the command ring, and the transfer rings. -/
+def xEventTrbs : Nat := 256
+def xCmdTrbs : Nat := 256
+def xRingTrbs : Nat := 4096
+def xTrbs : Nat := xCmdTrbs + xRingTrbs
+/-- Root hub ports whose registers the driver may write (the VL805 has five: one USB 2
+port, to the Pi's USB 2 hub, and four USB 3 ports). -/
+def xPorts : Nat := 5
+
+/-- TRB slot `k`: the command ring's 256 first, then the transfer rings'. -/
+def xTrbAddr (k : Nat) : Nat := if k < xCmdTrbs then xCmd + 16 * k else xRings + 16 * (k - xCmdTrbs)
+
+/-- The last TRB of the command ring, and of the transfer rings: always a Link TRB back to the
+start of its ring (in the xHCI memory from boot, `xhciBoot`), so the controller never reads
+past the end of either. -/
+def xLast (k : Nat) : Bool := k + 1 == xCmdTrbs || k + 1 == xTrbs
+
+/-- Address `a` is in the command ring, the transfer rings, or the event ring. -/
+def xInCmd (a : Nat) : Bool := Nat.ble xCmd a && ltB a (xCmd + 16 * xCmdTrbs)
+def xInRings (a : Nat) : Bool := Nat.ble xRings a && ltB a (xRings + 16 * xRingTrbs)
+def xInEvents (a : Nat) : Bool := Nat.ble xEvents a && ltB a (xEvents + 16 * xEventTrbs)
+/-- Address `a` is the start of one of the input contexts. -/
+def xIsInput (a : Nat) : Bool := Nat.ble xIn a && ltB a (xIn + xInputs * pageSize) && a % pageSize == 0
+
+/-- A TRB's fields: its type (control bits 10-15), immediate data (control bit 6), the
+transfer length (status bits 0-16) and the interrupter it reports to (status bits 22-31). -/
+def xType (control : Nat) : Nat := control / 1024 % 64
+def xIdt (control : Nat) : Bool := bit control 6
+def xLen (status : Nat) : Nat := status % 131072
+def xIntr (status : Nat) : Nat := status / 4194304 % 1024
+
+/-- TRB types, from the xHCI specification (table 6-91). -/
+def tNormal : Nat := 1
+def tSetup : Nat := 2
+def tData : Nat := 3
+def tStatus : Nat := 4
+def tLink : Nat := 6
+def tEventData : Nat := 7
+def tNoOp : Nat := 8
+def tEnableSlot : Nat := 9
+def tDisableSlot : Nat := 10
+def tAddress : Nat := 11
+def tConfigure : Nat := 12
+def tEvaluate : Nat := 13
+def tResetEp : Nat := 14
+def tStopEp : Nat := 15
+def tSetDeq : Nat := 16
+def tResetDevice : Nat := 17
+def tNoOpCmd : Nat := 23
+
+/-- A data buffer: bytes `a` to `a + n - 1` are in the driver's own frames, in a run it holds
+with the write right and in one it holds with the read right. (The address is checked to be
+small before anything is added to it.) -/
+def xDataOk (j : Nat) (cs : List Cap) (a n : Nat) : Bool :=
+  ltB a 1099511627776 && dmaOk j cs a n true && dmaOk j cs a n false
+
+/-- A Link TRB: to a TRB of its own ring (the command ring's, or the transfer rings'). -/
+def xLinkOk (cmd : Bool) (p status : Nat) : Bool :=
+  p % 16 == 0 && (if cmd then xInCmd p else xInRings p) && xIntr status == 0
+
+/-- A command the kernel lets onto the command ring: one with no address in it, or one
+whose address is an input context (Address Device, Configure Endpoint, Evaluate Context),
+or a TRB of the transfer rings with no stream (Set TR Dequeue Pointer). -/
+def xCmdOk (ty p status : Nat) : Bool :=
+  ty == tEnableSlot || ty == tDisableSlot || ty == tResetEp || ty == tStopEp ||
+    ty == tResetDevice || ty == tNoOpCmd ||
+  ((ty == tAddress || ty == tConfigure || ty == tEvaluate) && xIsInput p) ||
+  (ty == tSetDeq && ltB (p % 16) 2 && xInRings (p - p % 16) && status / 65536 == 0)
+
+/-- A TRB the kernel lets onto a transfer ring: Normal and Data Stage TRBs with a checked
+buffer, a Setup Stage TRB with its 8 bytes in the TRB itself, and Status Stage, Event Data
+and No-Op TRBs, which point at nothing; all report to interrupter 0, the only one with an
+event ring. -/
+def xXferOk (j : Nat) (cs : List Cap) (ty p status control : Nat) : Bool :=
+  xIntr status == 0 &&
+    (((ty == tNormal || ty == tData) && !xIdt control && xDataOk j cs p (xLen status)) ||
+     (ty == tSetup && xIdt control && xLen status == 8) ||
+     ty == tStatus || ty == tEventData || ty == tNoOp)
+
+/-- TRB slot `k` may hold this TRB. The last slot of each ring only ever holds the same Link
+back to the ring's start, so a torn write there can only change its cycle bit. -/
+def xTrbOk (j : Nat) (cs : List Cap) (k p status control : Nat) : Bool :=
+  let ty := xType control
+  let cmd := ltB k xCmdTrbs
+  if xLast k then ty == tLink && p == (if cmd then xCmd else xRings) && status == 0
+  else (ty == tLink && xLinkOk cmd p status) ||
+    (if cmd then xCmdOk ty p status else xXferOk j cs ty p status control)
+
+/-- The control word the machine layer writes first, before the rest of a TRB: a No-Op
+with the other cycle bit, so that while the TRB is half written the controller sees either
+the whole old TRB, or a No-Op, or the whole new one. At the last slot of a ring, which
+holds the same Link whatever is written there, the new control word itself. -/
+def xGuard (k control : Nat) : Nat :=
+  if xLast k then control
+  else (if ltB k xCmdTrbs then tNoOpCmd else tNoOp) * 1024 + (1 - control % 2)
+
+/-- 16 bytes at byte `z` of the input contexts, as if each context took 64 bytes (the
+machine layer places them for the controller's own context size): context `c` of input
+context `z / 4096` (0 the input control context, 1 the slot context, 2 to 32 the endpoint
+contexts), bytes `16u` to `16u + 15` of it, `lo` the first two words, `hi` the next two.
+Only the first 32 bytes of a context (u = 0, 1), which every context size has. A slot
+context reports to interrupter 0; an endpoint context has no streams (whose context array
+would hold more addresses), and its transfer ring dequeue pointer is a TRB of the
+transfer rings. -/
+def xCtxOk (z lo hi : Nat) : Bool :=
+  let c := z % pageSize / 64
+  let u := z % 64 / 16
+  ltB z (xInputs * pageSize) && z % 16 == 0 && ltB u 2 && ltB c 33 &&
+    (if c == 1 && u == 0 then xIntr (hi % 4294967296) == 0
+     else if Nat.ble 2 c && u == 0 then lo / 1024 % 32 == 0 && ltB (hi % 16) 2 && xInRings (hi - hi % 16)
+     else true)
+
+/-- The xHCI's registers, as the machine layer finds them: register `reg` is at byte
+`reg % 0x10000` of space `reg / 0x10000`, 0 the capability registers (from the start of the
+controller's registers), 1 the operational registers (from CAPLENGTH), 2 the runtime
+registers (from RTSOFF), 3 the doorbells (from DBOFF). -/
+def xSpace (reg : Nat) : Nat := reg / 65536
+def xOff (reg : Nat) : Nat := reg % 65536
+
+/-- Registers the driver may read: the capability registers and what follows them in the
+first 4 KiB, the operational registers and the ports', and the runtime registers up to
+interrupter 0's. -/
+def xReadable (reg : Nat) : Bool :=
+  xOff reg % 4 == 0 &&
+    ((xSpace reg == 0 && ltB (xOff reg) 4096) ||
+     (xSpace reg == 1 && ltB (xOff reg) (1024 + 16 * xPorts)) ||
+     (xSpace reg == 2 && ltB (xOff reg) 64))
+
+/-- A register write the kernel passes on. USBCMD (0x00): never Run/Stop (only `run` sets
+it, after the DMA bases), never save or restore state, never a light reset or anything
+newer; only a reset, and the interrupt and wrap-event enables. USBSTS, DNCTRL, CONFIG and
+the ports' registers: anything. CRCR (0x18, 64 bits): a command ring address. Interrupter
+0's IMAN and IMOD: anything; its ERDP (64 bits): an event ring address. A doorbell: the
+command ring's, or a slot's endpoint 1 to 31, with no stream. Nothing else: not DCBAAP or
+ERSTBA or ERSTSZ, not another interrupter, not the capability registers or the extended
+capabilities that follow them (the debug capability has DMA addresses of its own). -/
+def xWriteOk (reg v : Nat) : Bool :=
+  let o := xOff reg
+  if xSpace reg == 1 then
+    if o == 0 then v % 2 == 0 && v / 16 % 64 == 0 && ltB v 2048
+    else if o == 0x04 || o == 0x14 || o == 0x38 then ltB v 4294967296
+    else if o == 0x18 then ltB (v % 64) 8 && xInCmd (v - v % 64)
+    else Nat.ble 1024 o && ltB o (1024 + 16 * xPorts) && o % 4 == 0 && ltB v 4294967296
+  else if xSpace reg == 2 then
+    if o == 0x20 || o == 0x24 then ltB v 4294967296
+    else if o == 0x38 then (v % 16 == 0 || v % 16 == 8) && xInEvents (v - v % 16)
+    else false
+  else if xSpace reg == 3 then
+    o % 4 == 0 && Nat.ble o (4 * xSlots) &&
+      (if o == 0 then v == 0 else Nat.ble 1 (v % 256) && Nat.ble (v % 256) 31 && v / 256 == 0)
+  else false
+
+/-- A reply that asks the machine layer for something on the xHCI controller. -/
+def xReply (s : KState) (t : Task) (op a b c d : Nat) : Reply :=
+  { usbReply s t 0 a b c d with xhciOp := op }
+
+/-- `xhci(cap, op, x, y, z)`, through a USB capability (read right to read, write right for
+the rest):
+  op 0 read register `z` · 1 write `x` to register `z` · 2 run: set the DMA bases (the DCBAA,
+  the command ring, the ERST, the event ring) and run · 3 write the TRB with parameter `x`,
+  status `y % 2^32` and control `y / 2^32` at TRB slot `z` (`xTrbAddr`) · 4 write `x`
+  (words 0 and 1) and `y` (words 2 and 3) at byte `z` of the input contexts (`xCtxOk`) ·
+  5 make `y` bytes at `x`, in the driver's own frames, and the parts of the xHCI memory the
+  controller writes, consistent between the cache and memory (before a transfer, and
+  after, before reading what came in). -/
+def sysXhci (s : KState) (t : Task) (ci op x y z : Nat) : Reply :=
+  match nth? t.caps ci with
+  | none => ret s t (eNoCap :: .nil)
+  | some c =>
+    match c.obj with
+    | .usbHost =>
+      if op = 0 then
+        if c.rights.r && xReadable z then xReply s t 1 z 0 0 0 else ret s t (eBadArg :: .nil)
+      else if !c.rights.w then ret s t (eBadArg :: .nil)
+      else if op = 1 then
+        if xWriteOk z x then xReply s t 2 z x 0 0 else ret s t (eBadArg :: .nil)
+      else if op = 2 then xReply s t 3 xDcbaa (xCmd + 1) xErst xEvents
+      else if op = 3 then
+        let status := y % 4294967296
+        let control := y / 4294967296 % 4294967296
+        if ltB z xTrbs && xTrbOk s.cur t.caps z x status control then
+          xReply s t 4 (xTrbAddr z) x status (control + xGuard z control * 4294967296)
+        else ret s t (eBadArg :: .nil)
+      else if op = 4 then
+        if xCtxOk z x y then xReply s t 5 (xIn + z) x y 0 else ret s t (eBadArg :: .nil)
+      else if op = 5 then
+        if ltB y 1048577 && xDataOk s.cur t.caps x y then xReply s t 6 x y 0 0
+        else ret s t (eBadArg :: .nil)
+      else ret s t (eBadArg :: .nil)
+    | _ => ret s t (eBadArg :: .nil)
+
+/-- What the xHCI memory holds from boot, as 64-bit words (word `i` at byte `8i`; in the
+input contexts, at the byte it would have if each context took 64 bytes): the DCBAA (the
+scratchpad array, then each slot's device context, slots past the sixteenth sharing
+theirs), the scratchpad array (each entry a scratchpad page, shared past the twelfth), the
+ERST's one entry (the event ring, 256 TRBs), the Link TRB at the end of the command ring
+and at the end of the transfer rings (back to the start of each, toggling the cycle, with
+cycle bit 0), and in every input context each endpoint context's transfer ring dequeue
+pointer at the start of the transfer rings. Everything else is 0. The machine layer
+stores these before the driver runs, and `sysXhci` writes the rest. -/
+def xhciBoot (i : Nat) : Nat :=
+  if i < 256 then (if i = 0 then xScratchArr else xOut + (i - 1) % xSlots * pageSize)
+  else if i < 512 then xScratch + (i - 256) % xScratchPages * pageSize
+  else if i = 512 then xEvents
+  else if i = 513 then xEventTrbs
+  else if i = 3 * 512 + 2 * (xCmdTrbs - 1) then xCmd
+  else if i = 3 * 512 + 2 * (xCmdTrbs - 1) + 1 then (tLink * 1024 + 2) * 4294967296
+  else if i = 48 * 512 + 2 * (xRingTrbs - 1) then xRings
+  else if i = 48 * 512 + 2 * (xRingTrbs - 1) + 1 then (tLink * 1024 + 2) * 4294967296
+  else if 32 * 512 ≤ i ∧ i < 48 * 512 ∧ i % 8 = 1 ∧ 2 ≤ i % 512 / 8 ∧ i % 512 / 8 < 33 then xRings
+  else 0
 
 /-! ## Time -/
 
@@ -1183,9 +1465,9 @@ def sysSetWall (s : KState) (t : Task) (ci secs : Nat) : Reply :=
 run; 0 just lets the next ready task run. -/
 def sysSleep (s : KState) (t : Task) (ms : Nat) : Reply :=
   let ticks := (ms + tickMs - 1) / tickMs
-  if ticks = 0 then ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+  if ticks = 0 then ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
   else ⟨schedule (setTask s s.cur { t with status := .sleeping (s.now + ticks), result := .nil }),
-        0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+        0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-! ## Dropping a capability -/
 
@@ -1262,7 +1544,7 @@ def sysDrop (s : KState) (t : Task) (ci : Nat) : Reply :=
   | some _ =>
     let cs := removeNth t.caps ci
     ⟨setTask s s.cur { t with caps := cs, maps := keepBacked cs t.maps, result := 0 :: .nil },
-      0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+      0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
 
 /-! ## Starting programs, and taking back what they shared -/
 
@@ -1384,7 +1666,7 @@ def sysStart (s : KState) (t : Task) (ci src len : Nat) : Reply :=
         if startable u.status && !(k == s.cur) && imageOk (dropMaps k t.maps) k src len then
           let s1 : KState := setTask { s with tasks := revokeAll k s.tasks } k (mkTask k)
           match nth? s1.tasks s.cur with
-          | some t1 => ⟨setTask s1 s.cur { t1 with result := 0 :: .nil }, src, 0, true, 0, k + 1, 0, 0, len, 0, 0, 0, 0, 0, 0, 0⟩
+          | some t1 => ⟨setTask s1 s.cur { t1 with result := 0 :: .nil }, src, 0, true, 0, k + 1, 0, 0, len, 0, 0, 0, 0, 0, 0, 0, 0⟩
           | none => ret s t (eBadArg :: .nil)
         else ret s t (eBadArg :: .nil)
       | none => ret s t (eBadArg :: .nil)
@@ -1462,11 +1744,11 @@ def sysBootInfo (s : KState) (t : Task) (i : Nat) : Reply :=
 def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match num with
   | 0 => sysWrite s t a0 a1
-  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+  | 1 => ⟨schedule (setTask s s.cur { t with result := 0 :: .nil }), 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
   | 2 => sysMap s t a0 a1
   | 3 => sysUnmap s t a0 a1
   | 4 => sysDerive s t a0 a1 a2 a3
-  | 5 => ⟨killCurrent s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+  | 5 => ⟨killCurrent s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
   | 6 => sysCapInfo s t a0
   | 7 => ret s t (0 :: s.cur :: .nil)
   | 8 => sysSend s t a0 a1 a2 a3 a4 false
@@ -1489,6 +1771,7 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   | 25 => sysRecv s t a0 (!(a1 == 0)) (s.now + (a1 + tickMs - 1) / tickMs)
   | 26 => sysStop s t a0
   | 27 => sysSetWall s t a0 a1
+  | 28 => sysXhci s t a0 a1 a2 a3 a4
   | _ => ret s t (eNoCall :: .nil)
 
 /-- System call `num` from the current task with arguments `a0` to `a4`:
@@ -1505,14 +1788,15 @@ def runCall (s : KState) (t : Task) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   25 recvt(cap, ms): like recv, but gives up after `ms` milliseconds (0: do not wait)
   26 stop(cap): stop the program in the slot a launch capability names
   27 setwall(cap, secs): say what time of day it is (the time capability's holder)
+  28 xhci(cap, op, x, y, z): the xHCI controller's registers and memory (`sysXhci`)
 Only a running (ready) task makes system calls; anything else is ignored. -/
 def syscall (s : KState) (num a0 a1 a2 a3 a4 : Nat) : Reply :=
   match nth? s.tasks s.cur with
-  | none => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+  | none => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
   | some t =>
     match t.status with
     | .ready => runCall s t num a0 a1 a2 a3 a4
-    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩  -- only a running task makes system calls
+    | _ => ⟨s, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩  -- only a running task makes system calls
 
 /-- The machine layer has loaded task `j`'s result registers; forget them. -/
 def clearResult (s : KState) (j : Nat) : KState :=
@@ -1560,6 +1844,10 @@ def enter (s : KState) (c b0 b1 b2 : Nat) : KState := { s with cur := c, busy :=
 @[export leanos_reply_usb_b] def exRUsbB (r : Reply) : Nat := r.usbB
 @[export leanos_reply_usb_c] def exRUsbC (r : Reply) : Nat := r.usbC
 @[export leanos_reply_usb_d] def exRUsbD (r : Reply) : Nat := r.usbD
+@[export leanos_reply_xhci_op] def exRXhciOp (r : Reply) : Nat := r.xhciOp
+/-- Word `i` of what the xHCI memory holds from boot (`xhciBoot`), and where it starts. -/
+@[export leanos_xhci_boot] def exXhciBoot (i : Nat) : Nat := xhciBoot i
+@[export leanos_xhci_base] def exXhciBase (u : Nat) : Nat := xhciBase + u * 0
 @[export leanos_usb_done] def exUsbDone (s : KState) (v : Nat) : KState := usbDone s v
 @[export leanos_board_done] def exBoardDone (s : KState) (a b c d e : Nat) : KState := boardDone s a b c d e
 @[export leanos_open_slot] def exOpenSlot (i : Nat) : Bool := openSlot i

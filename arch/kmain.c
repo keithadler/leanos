@@ -48,6 +48,7 @@ lean_object *leanos_reply_usb_a(lean_object *r);
 lean_object *leanos_reply_usb_b(lean_object *r);
 lean_object *leanos_reply_usb_c(lean_object *r);
 lean_object *leanos_reply_usb_d(lean_object *r);
+lean_object *leanos_reply_xhci_op(lean_object *r);
 lean_object *leanos_usb_done(lean_object *s, lean_object *v);
 lean_object *leanos_enter(lean_object *s, lean_object *c, lean_object *b0, lean_object *b1, lean_object *b2);
 lean_object *leanos_schedule(lean_object *s);
@@ -92,7 +93,9 @@ static uint64_t nat(lean_object *o) {
    from it, or one system call with a huge argument would stop the machine.
 
    Message words (send and call: x1-x3; reply: x1-x3) are data the kernel only carries,
-   never computes with: they keep their low 63 bits. Every other argument is an index, an
+   never computes with: they keep their low 63 bits. So do xhci's x1-x3 (its operation, a
+   TRB's parameter and its status and control words), which the kernel only compares, never
+   adds to, before it has checked they are small (`ltB` in LeanOS/Kernel.lean). Every other argument is an index, an
    address, a count, a length, a time or a set of rights, and none is valid at 2^40 or
    more; those clamp to 2^40, which every call refuses (a 2^40 ms sleep is 34 years), and
    which keeps every sum and product the kernel makes from arguments far below 2^63.
@@ -100,7 +103,12 @@ static uint64_t nat(lean_object *o) {
 #define ARG_MAX (1ULL << 40)
 static lean_object *arg(uint64_t v) { return lean_box(v < ARG_MAX ? v : ARG_MAX); }
 static lean_object *msg_word(uint64_t v) { return lean_box(v & ~(1ULL << 63)); }
-static int carries_words(uint64_t num) { return num == 8 || num == 10 || num == 11; }
+/* As a mask of the call numbers (send, call, reply, xhci), which compiles to a test and a
+   select: a table of the two functions would be an indirect call tools/stackcheck.py cannot
+   trace. */
+static int carries_words(uint64_t num) {
+    return num < 64 && ((1ULL << num) & ((1ULL << 8) | (1ULL << 10) | (1ULL << 11) | (1ULL << 28))) != 0;
+}
 
 static uint64_t cur_task(void) { return nat(leanos_cur(K1)); }
 static int ready(uint64_t i) { return leanos_ready(K1, lean_box(i)); }
@@ -983,6 +991,7 @@ static void do_syscall(uint64_t cur) {
     uint64_t usb_b = nat(leanos_reply_usb_b((lean_inc(r), r)));
     uint64_t usb_c = nat(leanos_reply_usb_c((lean_inc(r), r)));
     uint64_t usb_d = nat(leanos_reply_usb_d((lean_inc(r), r)));
+    uint64_t xhci_op = nat(leanos_reply_xhci_op((lean_inc(r), r)));
     K = leanos_reply_state(r);
     if (unmask) gic_enable((uint32_t)(unmask - 1));
 
@@ -1012,6 +1021,10 @@ static void do_syscall(uint64_t cur) {
     }
     /* The USB driver asked (only it can: `only_usb_driver_drives_usb`). */
     if (usb_op) usb_request(usb_op, usb_a, usb_b, usb_c, usb_d);
+    /* The xHCI controller behind the PCIe bridge (the USB-A ports) is not brought up yet:
+       what the kernel approved for it fails, as an I/O error. ROADMAP.md (stage 7, USB
+       part 2) says what this layer will do with each request. */
+    if (xhci_op) K = leanos_io_failed(K);
     /* The display server asked (only it can: `only_display_powers`). Every file is already
        on the card: the file server writes each change through before it answers. */
     if (power == 1) {

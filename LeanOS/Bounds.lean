@@ -422,6 +422,12 @@ theorem small_sysUsb {ci op reg v : Nat} : Small hp lp (sysUsb s t ci op reg v).
     | exact small_ret (s := { s with usbSize := setNth s.usbSize (chanOf reg) v })
         ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, by rw [len_setNth]; exact hs.usbSize, hs.busy, hs.served⟩ ht (by len_le)
 
+/-- `xhci` keeps no state of its own: the xHCI memory's layout is fixed, so its checks need
+none. It only sets the caller's result. -/
+theorem small_sysXhci {ci op x y z : Nat} : Small hp lp (sysXhci s t ci op x y z).state := by
+  obtain ⟨r, hr, h⟩ := sysXhci_state s t ci op x y z
+  rw [h]; exact small_setTask hs (ht.res (Nat.le_trans hr (by decide)))
+
 theorem small_sysStop {ci : Nat} : Small hp lp (sysStop s t ci).state := by
   unfold sysStop
   split
@@ -592,6 +598,7 @@ theorem small_syscall {s : KState} (hs : Small hp lp s) (hnil : hp .nil) (num a0
       · exact small_sysRecv hs ht
       · exact small_sysStop hs ht
       · exact small_sysSetWall hs ht
+      · exact small_sysXhci hs ht
       · exact small_ret hs ht (by len_le)
     · exact hs
 

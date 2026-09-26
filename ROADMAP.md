@@ -110,10 +110,165 @@ USB. USB, part 1, done: a user-space driver (slot 17) for the Pi 4's DWC2 (the U
 what QEMU emulates), with hubs and boot-protocol keyboards and mice. It reaches the
 controller only through `usb`, and the kernel checks each DMA transfer against the
 driver's own frames: `usb_dma_own_memory` proves the controller never touches anyone
-else's memory, with no IOMMU. Part 2, next: the USB-A ports, which are a VL805 xHCI
-controller behind the BCM2711's PCIe bridge (no QEMU model: only testable on a Pi). xHCI
-reads rings of descriptors from memory, so its DMA needs a different check: the rings kept
-in memory only the kernel writes, or a bounce buffer.
+else's memory, with no IOMMU. Part 2: the USB-A ports, which are a VL805 xHCI controller
+behind the BCM2711's PCIe bridge (no QEMU model: only testable on a Pi). The kernel's side
+of it is done and proved; the machine layer's PCIe and controller bring-up and the
+driver's xHCI code are next. The plan follows.
+
+### USB, part 2: the xHCI controller
+
+An xHCI controller does not take DMA addresses in its registers the way the DWC2 does.
+It finds them in memory: rings of 16-byte TRBs (transfer request blocks), whose parameter
+is a data buffer's address or the next ring segment's, input contexts holding each
+endpoint's ring, an array of device context addresses (the DCBAA), an event ring segment
+table (ERST), scratchpad pages the controller keeps for itself. With no IOMMU, a driver
+that could write any of these could aim the controller anywhere. So the driver writes
+none of them. They live in memory only the kernel writes, and the kernel checks every
+address before it writes it. No bounce buffer: data moves straight to and from the
+driver's own frames, as with the DWC2.
+
+**The xHCI memory.** The last 64 of the USB driver's 256 frames (frames 4544 to 4607,
+physical 0x051C0000, 256 KiB, 64 KiB aligned). The manifest gives the driver a read-only
+capability to them (`xhciCap`, its capability 9), and its spare run is 64 pages shorter
+(164 pages, of which the driver uses 144), so no capability anyone holds covers them with
+the write right (`xhci_region_readonly`): the driver maps them read-only, and no other task
+can hold them at all. No new kind of capability was needed: derive never adds a right, and
+nobody can pass memory to the driver that it did not have. The layout is fixed, by page:
+
+| Pages | What | Written by | Read by the controller as |
+|---|---|---|---|
+| 0 | the DCBAA (256 entries), then the scratchpad array (256 entries) | boot content | tables of addresses |
+| 1 | the ERST: one entry, the event ring, 256 TRBs | boot content | a table |
+| 2 | the event ring | the controller | (it writes events there) |
+| 3 | the command ring, 256 TRBs, the last a Link back to its start | the kernel | commands |
+| 4 to 15 | 12 scratchpad pages | the controller | (its own) |
+| 16 to 31 | the device contexts of slots 1 to 16 | the controller | (its own) |
+| 32 to 47 | 16 input contexts | the kernel | input contexts |
+| 48 to 63 | the transfer rings: 4096 TRBs in one 64 KiB block, the last a Link back to the start | the kernel | transfer TRBs |
+
+What the controller writes (events, device contexts, scratchpads) never overlaps what it
+reads as structures (`xhci_layout`). Every entry of the DCBAA and of the scratchpad array
+is filled from boot (slots past the sixteenth share device contexts, scratchpad entries
+past the twelfth share pages), so whatever MaxSlotsEn the driver sets and however many
+scratchpads the controller wants, no entry is ever 0. Every endpoint context of every input
+context starts with its dequeue pointer at the start of the transfer rings, so an Add flag
+for a context the driver never wrote still names a ring.
+
+**The system call**, one: `xhci(cap, op, x, y, z)` (28), through the USB capability the
+driver already holds (read right to read, write right for the rest). `x`, `y` and the
+operation are 63-bit words (`carries_words` in `arch/kmain.c`), since a TRB's parameter
+and its status and control words do not fit the 2^40 clamp; the kernel only compares them,
+never adds to them, before it has checked they are small (`ltB`). The operations:
+
+| op | What | What the kernel checks |
+|---|---|---|
+| 0 | read register `z` | an aligned register in the capability registers (first 4 KiB), the operational and port registers, or the runtime registers up to interrupter 0's |
+| 1 | write `x` to register `z` | `xWriteOk`: USBCMD without Run/Stop and with only reset, INTE, HSEE and EWE; USBSTS, DNCTRL, CONFIG, the five ports' registers; CRCR only with a command ring address; interrupter 0's IMAN, IMOD, and ERDP only with an event ring address; a doorbell for slot 0 to 16, endpoint 1 to 31, no stream. Never DCBAAP, ERSTSZ, ERSTBA, another interrupter, the capability or extended capability registers |
+| 2 | run | nothing to check: the DMA bases are the kernel's |
+| 3 | TRB slot `z` := parameter `x`, status `y % 2^32`, control `y / 2^32` | `xTrbOk`: on the command ring, Enable and Disable Slot, Reset Endpoint, Stop Endpoint, Reset Device, No-Op; Address Device, Configure Endpoint, Evaluate Context with an input context's address; Set TR Dequeue Pointer with a transfer TRB's address and no stream. On a transfer ring, Normal and Data Stage TRBs whose buffer (the whole transfer length) is in the driver's own frames, in a run it holds writable and one it holds readable; Setup Stage with its 8 bytes in the TRB; Status Stage, Event Data, No-Op; every one reporting to interrupter 0. A Link only within its own ring; the last slot of each ring only the Link back to its start |
+| 4 | 16 bytes (`x`, then `y`) at byte `z` of the input contexts | `xCtxOk`: only the first 32 bytes of a context; a slot context reports to interrupter 0; an endpoint context has no streams and its dequeue pointer is a transfer TRB |
+| 5 | cache maintenance over `y` bytes at `x` | at most 1 MiB, in the driver's own frames, writable and readable |
+
+A data buffer needs both rights, whichever way the data goes. xHCI decides a transfer's
+direction from the endpoint context's type and a Data Stage TRB's direction bit, which the
+controller interprets; asking for both rights makes the check hold for either reading,
+and the driver's buffers are read-write anyway. The kernel keeps no state for any of this
+(so `LeanOS/Bounds.lean` has nothing new to bound): what a write may hold depends only on
+where it goes.
+
+**The theorems** (`LeanOS/Xhci.lean`), against a model of the controller written from the
+xHCI specification, revision 1.2: for each TRB type on each ring, 16 bytes of an input
+context and each register, what the controller then touches (a data buffer, a ring, an
+input context, a device context, a scratchpad page, the event ring, a table, or unknown).
+
+- `xhci_dma_own_memory`: in every reachable state, everything any system call asks the
+  machine layer to write for the controller (a TRB and the guard written before it, 16
+  bytes of an input context, a register, `run`'s DMA bases) makes it touch only a data
+  buffer in the USB driver's own frames, outside the xHCI memory, or the part of the xHCI
+  memory where that structure belongs; never anything the model cannot bound.
+- `xhci_boot_ok`: so does everything the xHCI memory holds from boot (`xhciBoot`).
+- `xhci_guard_safe`: and so does a TRB the controller reads half written.
+- `xhci_region_readonly`, `xhci_maps_readonly`: only the USB driver holds the xHCI memory,
+  and only read-only.
+- `only_usb_driver_drives_xhci`, `xhci_writes_in_memory`, `xhci_sync_own_memory`: only the
+  driver reaches the controller; the machine layer writes only the command ring, the
+  transfer rings and the input contexts; cache maintenance covers only the driver's own
+  memory.
+- `xhci_layout`: the parts of the xHCI memory lie inside it, in order, without overlap.
+
+34 new mutants (`test/mutants.sh`, "xHCI: ...") break each check: a buffer unchecked or
+needing only the read right, a Link anywhere or from the command ring into the transfer
+rings, the last slot any TRB, the guard the new control word, a command naming any input
+context, Set TR Dequeue with a stream, Get Port Bandwidth or isoch TRBs allowed, a Setup
+Stage without its data inline, another interrupter, an endpoint context with streams or an
+unchecked ring, a slot context's interrupter, context bytes past the first 32, Run/Stop or
+save and restore through USBCMD, DCBAAP, CRCR or ERDP unchecked, ERSTBA writable, a
+doorbell with a stream, port registers past the ports, the capability registers writable,
+`run` with the wrong command ring, a TRB slot past the rings, cache maintenance anywhere,
+the xHCI memory writable, the spare run still covering it, mallory given it, and boot
+content with an input context, a scratchpad entry or the command ring's Link missing. The
+proofs reject every one.
+
+**What the machine layer must do** (the next pass; until then every approved request
+fails with an I/O error, `arch/kmain.c`):
+
+1. At boot, bring up the PCIe bridge (Linux's `drivers/pci/controller/pcie-brcmstb.c`):
+   reset, link up, an outbound window for the VL805's registers (mapped as device memory,
+   kernel only), and an inbound window mapping bus address x to physical address x for at
+   least the first GiB, since the kernel's addresses are physical. No MSI: the driver
+   polls. PCIe configuration space stays in this layer; no task can reach it (an MSI
+   address is a DMA write too).
+2. On a Pi 4 whose VL805 has no EEPROM, ask the firmware to load its firmware after the
+   PCIe reset: mailbox tag 0x00030058 ("notify xHCI reset") with the device's address
+   (bus 1, device 0, function 0: 0x100000).
+3. Read CAPLENGTH, HCSPARAMS1 and 2, HCCPARAMS1, DBOFF, RTSOFF and PAGESIZE, and keep the
+   controller off (every request fails, as now) unless: 4 KiB pages are supported; there
+   are at least 5 ports and at most 12 scratchpads; and the windows the kernel allows lie
+   in the registers and overlap nothing else: capability registers [0, 0x1000),
+   operational [CAPLENGTH, CAPLENGTH + 0x400 + 16 × 5), runtime [RTSOFF, RTSOFF + 0x40),
+   doorbells [DBOFF, DBOFF + 4 × 17), none overlapping another or any extended capability
+   (walk the xECP list). Keep CSZ (HCCPARAMS1 bit 2): contexts of 64 bytes or 32.
+4. After `load_program` clears the driver's frames and before it runs: store the xHCI
+   memory's boot content, word i (`leanos_xhci_boot(i)`, i < 64 × 512) at
+   `leanos_xhci_base() + 8i`, except that in pages 32 to 47 a word at byte 64c + 16u + 8w
+   of its page goes to 32c + 16u + 8w when contexts are 32 bytes; clean it to the point of
+   coherency; reset the controller (HCRST, wait for CNR to clear); only then turn on bus
+   mastering.
+5. For each reply, with `xhciOp`:
+   - 1, read: the 32-bit register at base + `usbA % 0x10000`, where the base is the
+     controller's registers for space (`usbA / 0x10000`) 0, plus CAPLENGTH for 1, plus
+     RTSOFF for 2; hand the value back with `leanos_usb_done`.
+   - 2, write `usbB` to register `usbA`, the same way (space 3: plus DBOFF). CRCR (space
+     1, 0x18) and ERDP (space 2, 0x38) are 64-bit: low word, then high.
+   - 3, run: DCBAAP := `usbA`, CRCR := `usbB`, interrupter 0's ERSTSZ := 1, ERSTBA :=
+     `usbC`, ERDP := `usbD` (each 64-bit but ERSTSZ, in that order), then USBCMD := USBCMD
+     or 1 (reading it back keeps the enables the driver set).
+   - 4, a TRB at physical `usbA`, through the kernel's own identity mapping, in three steps
+     with a DSB and a clean of the line to the point of coherency after each: word 3 :=
+     `usbD / 2^32` (the guard); words 0 and 1 := `usbB`, word 2 := `usbC`; word 3 :=
+     `usbD % 2^32`. So the controller sees the old TRB, a No-Op, or the new TRB, never a
+     mix (`xhci_guard_safe`).
+   - 5, an input context's 16 bytes: `usbA` is page + 64c + 16u; write words 0 and 1 :=
+     `usbB`, 2 and 3 := `usbC` at page + c × (64 or 32, by CSZ) + 16u, in any order (every
+     check holds word by word), then DSB and clean.
+   - 6, cache maintenance: clean and invalidate (DC CIVAC) `usbB` bytes from `usbA`, and
+     the event ring and the device contexts (pages 2 and 16 to 31), which only the
+     controller writes, then DSB, so the driver reads what the controller wrote.
+   - Any of these with the controller off: `leanos_io_failed`.
+
+**What the driver must do** (with it; `user/usb.c`, whose network code another change is
+moving): map capability 9 read-only; keep the command ring from slot 0 with cycle 1 (`run`
+sets CRCR there), writing each command through op 3 and ringing doorbell 0; lay out its
+transfer rings in the 4096 transfer slots (for example 64 rings of 64 TRBs, each ending
+in a Link back to its start with Toggle Cycle; not the last slot, which is the area's);
+read events from its read-only view after op 5 (with no range), and move ERDP on through
+op 1; enumerate through Enable Slot, Address Device and Configure Endpoint with the input
+contexts; keep every buffer in its spare run, and call op 5 over a buffer before a
+transfer and after it, before reading what came in. The Pi 4's two USB 2 ports hang off a
+USB 2 hub on the VL805's first port, so hubs as with the DWC2.
+
+**Trusted**: that the model says what the VL805 does (TRUST.md lists it), and the
+machine layer's part above.
 
 Drawing speed (the display server logs it on every boot, and `make test` checks a drag
 frame stays under 20 ms). Measured under QEMU on the development Mac, one window open:
@@ -528,5 +683,5 @@ windows through clicks, keys, copy and paste, both ways of closing one, and clos
 last; dfuzz asks CLOSE for numbers it does not hold and checks every number it is given.
 
 Next: the first boot on real Pi 4 hardware (EMMC2, colors, timings), the USB-A ports
-(xHCI on PCIe), the Pi 4's own Ethernet (GENET), a kernel lock finer than the whole kernel
+(xHCI on PCIe: the kernel's side is done, stage 7), the Pi 4's own Ethernet (GENET), a kernel lock finer than the whole kernel
 (disk and USB transfers hold it today), and the Pi 5.

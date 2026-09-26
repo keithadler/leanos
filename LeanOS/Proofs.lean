@@ -1294,6 +1294,46 @@ theorem inv_boardDone {s : KState} (hs : Inv s) (a b c d e : Nat) : Inv (boardDo
   · rename_i t ht; exact inv_setTask hs ((hs.tasks _ t ht).result _)
   · exact hs
 
+/-! ### The xHCI controller
+
+Whatever `xhci` decides, it changes only the caller's result registers (to one status
+word) and asks the machine layer for at most one xHCI request. Everything the other proofs
+need about the call follows from that shape; what it asks of the controller is proved in
+`LeanOS/Xhci.lean`. -/
+
+theorem sysXhci_shape (s : KState) (t : Task) (ci op x y z : Nat) :
+    ∃ r a b c d o, len r ≤ 1 ∧
+      sysXhci s t ci op x y z = { ret s t r with usbA := a, usbB := b, usbC := c, usbD := d, xhciOp := o } := by
+  have hr : ∀ r a b c d o, len r ≤ 1 → ∃ r' a' b' c' d' o', len r' ≤ 1 ∧
+      ({ ret s t r with usbA := a, usbB := b, usbC := c, usbD := d, xhciOp := o } : Reply) =
+        { ret s t r' with usbA := a', usbB := b', usbC := c', usbD := d', xhciOp := o' } :=
+    fun r a b c d o h => ⟨r, a, b, c, d, o, h, rfl⟩
+  have he : ∀ r, len r ≤ 1 → ∃ r' a' b' c' d' o', len r' ≤ 1 ∧
+      ret s t r = { ret s t r' with usbA := a', usbB := b', usbC := c', usbD := d', xhciOp := o' } :=
+    fun r h => ⟨r, 0, 0, 0, 0, 0, h, rfl⟩
+  unfold sysXhci
+  split
+  · exact he _ (Nat.le_of_ble_eq_true rfl)
+  split
+  · repeat' (first
+      | apply of_ite (P := fun r : Reply => ∃ r' a' b' c' d' o', len r' ≤ 1 ∧
+          r = { ret s t r' with usbA := a', usbB := b', usbC := c', usbD := d', xhciOp := o' })
+      | dsimp only)
+    all_goals first
+      | exact he _ (Nat.le_of_ble_eq_true rfl)
+      | exact hr _ _ _ _ _ _ (Nat.le_of_ble_eq_true rfl)
+  · exact he _ (Nat.le_of_ble_eq_true rfl)
+
+theorem sysXhci_state (s : KState) (t : Task) (ci op x y z : Nat) :
+    ∃ r, len r ≤ 1 ∧ (sysXhci s t ci op x y z).state = setTask s s.cur { t with result := r } := by
+  obtain ⟨r, _, _, _, _, _, hr, h⟩ := sysXhci_shape s t ci op x y z
+  exact ⟨r, hr, by rw [h]; rfl⟩
+
+theorem inv_sysXhci {s : KState} {t : Task} {ci op x y z : Nat} (hs : Inv s)
+    (ht : TaskOK (fbSane s.fbBase) s.cur t) : Inv (sysXhci s t ci op x y z).state := by
+  obtain ⟨r, -, h⟩ := sysXhci_state s t ci op x y z
+  rw [h]; exact inv_setTask hs (ht.result _)
+
 /-! ### Time -/
 
 theorem TaskOK.wake {fb : Bool} {j : Nat} {t : Task} (h : TaskOK fb j t) (now : Nat) :
@@ -1381,6 +1421,7 @@ theorem inv_syscall {s : KState} (hs : Inv s) (num a0 a1 a2 a3 a4 : Nat) :
       · exact inv_sysRecv hs ht hmt
       · exact inv_sysStop hs hto
       · exact inv_sysSetWall hs hto
+      · exact inv_sysXhci hs hto
       · exact inv_ret hs hto _
     · exact hs
 
@@ -2055,8 +2096,10 @@ none but `setwall` touches either clock. These facts, proved once per call, are 
 theorems below about single fields of a reply (`outLen_pos`, `io_pos`, `power_pos`,
 `loadLen_pos`, `board_pos`, `usb_pos`, `syscall_now`, `syscall_wall`) rest on. -/
 
-/-- The reply asks the machine layer for nothing (no printing, block I/O, program load,
-power change, board request or USB access) and leaves both clocks as they were in `s`. -/
+/-- The reply asks the machine layer for none of these (no printing, block I/O, program
+load, power change, board request or DWC2 access; a request to the xHCI controller, in
+`Reply.xhciOp`, has its own theorems in `LeanOS/Xhci.lean`) and leaves both clocks as they
+were in `s`. -/
 abbrev Calm (s : KState) (r : Reply) : Prop :=
   r.outLen = 0 ∧ r.io = 0 ∧ r.loadLen = 0 ∧ r.power = 0 ∧ r.board = 0 ∧ r.usbOp = 0 ∧
     r.state.now = s.now ∧ r.state.wall = s.wall
@@ -2137,6 +2180,13 @@ local macro "calm_leaf" : tactic => `(tactic| first
 @[simp] theorem sysStop_calm (s : KState) (t : Task) (ci : Nat) : Calm s (sysStop s t ci) := by
   unfold sysStop; repeat' split
   all_goals calm_leaf
+
+/-- `xhci` asks for none of these: its requests are in their own field (`Reply.xhciOp`),
+with their own theorems (`LeanOS/Xhci.lean`). -/
+@[simp] theorem sysXhci_calm (s : KState) (t : Task) (ci op x y z : Nat) :
+    Calm s (sysXhci s t ci op x y z) := by
+  obtain ⟨r, a, b, c, d, o, -, h⟩ := sysXhci_shape s t ci op x y z
+  rw [h]; calm_leaf
 
 /-- `write` asks only to print. -/
 @[simp] theorem sysWrite_asks (s : KState) (t : Task) (va n : Nat) :

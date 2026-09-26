@@ -16,8 +16,8 @@ leanos splits the kernel in two:
 These hold for every state the kernel can reach: `init`, then any sequence of system calls
 (including starting and restarting programs) with any arguments, timer ticks, faults,
 interrupts, result loads, and boot checks with any measurement. They are in
-`LeanOS/Proofs.lean`, the bounds on the state in `LeanOS/Bounds.lean`, and fair receive and
-fair running in `LeanOS/Fair.lean`.
+`LeanOS/Proofs.lean`, the bounds on the state in `LeanOS/Bounds.lean`, fair receive and
+fair running in `LeanOS/Fair.lean`, and the xHCI controller's DMA in `LeanOS/Xhci.lean`.
 
 Tasks can hand each other memory, so the central guarantee is about where memory can go.
 The boot manifest (`initCaps` in `Kernel.lean`) fixes which task can send with the grant
@@ -59,6 +59,10 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `uart_confined`, `uart_irq_only_input` | Only the input driver can ever hold the UART's registers or its interrupt. |
 | `only_settings_touches_board`, `board_needs_right`, `board_requests_listed`, `cpu_never_overclocked` | Only Settings reads or changes the board, through its board capability with the right the request needs, and only with a listed request: read the board or the sensors, the activity light off or on, or the CPU at 600, 1000 or 1500 MHz, never above. |
 | `only_usb_driver_drives_usb`, `usb_writes_safe`, `usb_dma_confined`, `usb_dma_own_memory` | Only the USB driver reaches the USB controller. A plain register write it passes on never starts a channel, sets a DMA address or transfer size, forces device mode or turns on descriptor DMA; a transfer starts only inside one run of the driver's own frames, so the controller only ever touches memory the manifest gave the driver. |
+| `xhci_region_readonly`, `xhci_maps_readonly` | The xHCI memory (the last 64 of the USB driver's frames, where the xHCI controller's rings, contexts and tables live) is held only by the USB driver, and only without the write right: only the kernel writes it. |
+| `only_usb_driver_drives_xhci`, `xhci_dma_own_memory` | Only the USB driver reaches the xHCI controller (`xhci`). Everything a system call asks the machine layer to write for it (a TRB and the guard written first, 16 bytes of an input context, a register, `run`'s DMA bases) makes the controller touch, by a model of it written from the xHCI specification (`LeanOS/Xhci.lean`), only a data buffer in the driver's own frames outside the xHCI memory, or the part of the xHCI memory where that structure belongs; never anything the model cannot bound. `sysXhci_ok` is the same for one step, with the buffer in a run the driver holds writable and one it holds readable, so it may go either way. |
+| `xhci_boot_ok`, `xhci_guard_safe`, `xhci_layout` | What the xHCI memory holds from boot leads only where it may (every DCBAA and scratchpad entry, the ERST, each ring's closing Link, every input context's rings); a TRB read half written is the old one, a No-Op or the new one; the memory's parts do not overlap, and what the controller writes is apart from what it reads as structures. |
+| `xhci_writes_in_memory`, `xhci_sync_own_memory` | The machine layer writes for the controller only in the command ring, the transfer rings and the input contexts, and its cache maintenance covers only the driver's own memory. |
 | `start_revokes` | When `start` has the machine layer load slot `k`, the slot holds the manifest's fresh, unverified task, and no other task holds a capability to or a mapping of any of the slot's frames, is waiting to send a message granting one, or holds a reply slot for the old run. |
 | `task_bounded` | Every task holds at most 64 capabilities, at most 8192 mappings (no two for the same virtual page), at most 8 reply slots and at most 7 result registers. |
 | `state_bounded`, `stateSize_le` | When the machine layer calls the kernel as it does (`Driven`: a boot check hands over the eight words of a SHA-256, as `exVerify` does, and only the lines in `irqLines` fire), the state also has exactly 18 tasks, each measured with at most eight words, at most one pending entry per interrupt line, eight DMA addresses and eight transfer sizes for the USB channels, three other cores, and one last-served task for each of the three endpoints: in all, at most 447,559 heap objects. (The scheduler's two task numbers, whom a wake-up chose and where the round robin is, take none.) What that means in bytes is below, under `rt/runtime.c`. |
@@ -123,7 +127,7 @@ MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 133 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 167 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a level-3 table that keeps the
@@ -134,7 +138,9 @@ task it served last, or one task short, or forgets whom it served, a scheduler t
 chose or keeps choosing it, a timer that follows a wake-up's choice, a round robin that forgets where it is,
 an interrupt that waits for its holder's turn or runs it on a core already running it, a block run
 that checks its capability or its memory for the first block or page only, one block short or long, or
-without the right, and so on) and
+without the right, an xHCI TRB whose buffer, ring or interrupter goes unchecked, a Link out of its
+ring, Run/Stop, DCBAAP, CRCR or ERDP through a plain register write, the xHCI memory given writable,
+and so on) and
 checks that the proofs reject every one.
 
 `make test` checks that each theorem rests only on Lean's standard axioms (`propext`,
@@ -264,8 +270,25 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   at most one packet more, which the kernel's check includes) is the controller's
   documented behavior, trusted, not proved; so is that nothing else in its register page
   can make it DMA once device mode, descriptor DMA and the descriptor-list registers are
-  refused. On a Pi 4 the DWC2 is the USB-C port; the USB-A ports need a separate xHCI
-  driver, whose DMA (rings of descriptors in memory) this scheme does not cover yet.
+  refused. On a Pi 4 the DWC2 is the USB-C port; the USB-A ports are the xHCI controller,
+  next.
+- The xHCI controller (the VL805, behind the PCIe bridge). The kernel's side is proved
+  (`xhci_dma_own_memory` and the rest, above); the machine layer's side is not written
+  yet, and until it is, every request the kernel approves fails with an I/O error. What it
+  must do with each request, and at boot, is in ROADMAP.md (stage 7, USB part 2), and is
+  trusted once written: that it brings up the PCIe bridge with an inbound window mapping
+  bus addresses to the same physical addresses (the kernel's addresses are physical), keeps
+  PCIe configuration space and MSI to itself, stores the xHCI memory's boot content
+  (`xhciBoot`) before the driver runs and bus mastering starts, places input context bytes
+  for the controller's context size, turns a register number into the right address
+  (CAPLENGTH, RTSOFF, DBOFF) and keeps the controller off unless those windows overlap
+  nothing else, writes each TRB in the three steps the guard needs, and keeps the cache
+  out of the way. Trusted about the controller, as the model in `LeanOS/Xhci.lean` says:
+  it touches memory only through the addresses in its DMA registers and in the structures
+  they lead to, as the xHCI specification (revision 1.2) lays them out; a TRB of a type not
+  allowed on its ring is a TRB Error and touches nothing; it reads a TRB's 16 bytes in one
+  access; it reads no more DCBAA entries than slots and no more scratchpad entries than 256;
+  it does no DMA while halted; and it writes nothing past a TRB's transfer length.
 - The time of day: that the time server's answer is right is trusted, not proved (SNTP, one
   question, no authentication: anyone on the network path could send a wrong time). The
   proofs say only who can set it and that it then moves with the kernel's own clock.

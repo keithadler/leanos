@@ -247,6 +247,10 @@ theorem sysSetWall_served (ci secs : Nat) : (sysSetWall s t ci secs).state.serve
   unfold sysSetWall; repeat' split
   all_goals served_leaf
 
+theorem sysXhci_served (ci op x y z : Nat) : (sysXhci s t ci op x y z).state.served = s.served := by
+  obtain ⟨r, -, h⟩ := sysXhci_state s t ci op x y z
+  rw [h]; rfl
+
 end calls
 
 /-- A receive either leaves every endpoint's memory alone or takes a waiting message. -/
@@ -294,6 +298,7 @@ theorem runCall_served {s : KState} {t : Task} (ht : nth? s.tasks s.cur = some t
         | exact sysStart_served .. | exact sysDrop_served .. | exact sysBlock_served ..
         | exact sysSleep_served .. | exact sysPower_served .. | exact sysBoard_served ..
         | exact sysUsb_served .. | exact sysStop_served .. | exact sysSetWall_served ..
+        | exact sysXhci_served ..
 
 /-- **Only a receive moves what an endpoint remembers.** A step of the kernel either leaves
 every endpoint's last-served task as it was, or is a receive that takes a waiting message. -/
@@ -511,6 +516,7 @@ theorem runCall_rr (num a0 a1 a2 a3 a4 : Nat) :
   split
   all_goals first
     | turn_leaf
+    | (left; obtain ⟨r, -, h⟩ := sysXhci_state s t a0 a1 a2 a3 a4; rw [h]; rfl)
     | (unfold sysUsb usbReply
        split
        · exact Or.inl rfl

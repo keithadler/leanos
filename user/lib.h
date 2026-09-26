@@ -21,7 +21,8 @@ enum { R = 1, W = 2, X = 4 };
 enum { RECV = 1, SEND = 2, GRANT = 4 };
 
 /* Every task's window: code at pages 0-15, data at 16-23, stack at the top. Capabilities
-   0-3 are runs of frames: code (16 pages), data (8), stack (4) and spare (228, unmapped).
+   0-3 are runs of frames: code (16 pages), data (8), stack (4) and spare (228, unmapped;
+   the USB driver's is 164, and its last 64 frames are its xHCI memory, read-only).
    Capability 4, if any, is the task's endpoint. */
 #define DATA PAGE(16)
 #define PAGE(n) (0x80000000UL + (n) * 4096UL)
