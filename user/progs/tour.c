@@ -72,7 +72,7 @@ static const struct page pages[] = {
      "root can do anything, and one privilege-escalation bug in the kernel or in any setuid "
      "program gives any process root."},
     {"Checked by proofs", TRY_NONE,
-     "The kernel's decisions are 1,600 lines of Lean, compiled into it, with 73 "
+     "The kernel's decisions are 1,600 lines of Lean, compiled into it, with 77 "
      "machine-checked theorems. 108 deliberate breaks: the proofs catch all.",
      "Tens of millions of lines of C, reviewed and tested, not proved. Thousands of kernel "
      "CVEs were published in 2024 alone."},

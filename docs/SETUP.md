@@ -140,15 +140,15 @@ make run
 
 The whole test suite (about 2 to 3 minutes on a 10-core Mac; it boots the system many times
 and checks what it prints and what is on the screen). It runs up to four tests at once, half
-your cores at most; `make test JOBS=1` runs them one after the other (about 8 minutes), and
+your cores at most; `make test JOBS=1` runs them one after the other (about 9 minutes), and
 each test's output stays in `build/test/NAME/output.txt`:
 
 ```bash
 make test
 ```
 
-The mutation check: breaks the kernel in 102 ways and checks the proofs reject every one
-(about 15 minutes):
+The mutation check: breaks the kernel in 108 ways and checks the proofs reject every one
+(about 3 minutes on a 10-core Mac):
 
 ```bash
 make mutants

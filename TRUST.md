@@ -27,9 +27,11 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 |---|---|
 | `frame_flow` | A task holds a frame only if a chain of grant edges leads to it from the frame's owner at boot, and never with more rights than the owner had. |
 | `endpoints_fixed` | Endpoint capabilities never gain rights and keep their badge, so no task can forge who it is. |
-| `edge_iff`, `reach_iff` | In the manifest the only grant edges are from the apps (Notes, Terminal, Settings, Security, Files) to the display server, and from Notes, Terminal and Files to the file server. Memory moves at most one step: neither server can pass on what it was given. |
-| `confined` | Every task but the two servers only ever holds its own 256 frames. (`mallory_confined`, `carol_confined`, `alice_confined` are the same for those three.) |
-| `server_frames`, `file_server_frames` | The display server holds only its own frames, the framebuffer, and frames the apps granted it; the file server, only its own frames and frames its clients granted it. |
+| `edge_iff`, `reach_iff` | In the manifest the only grant edges are from the apps (Notes, Terminal, Settings, Security, Files, Apps and the open slots) to the display server, from Notes, Terminal, Files, Apps and the open slots to the file server, and from Terminal, Apps and the open slots to the USB driver, which serves the network. Memory moves at most one step: no server can pass on what it was given. |
+| `confined` | Every task but the three servers (the display server, the file server and the USB driver) only ever holds its own 256 frames. (`mallory_confined`, `carol_confined`, `alice_confined` are the same for those three.) |
+| `server_frames`, `file_server_frames`, `net_server_frames` | The display server holds only its own frames, the framebuffer, and frames the apps granted it; the file server, only its own frames and frames its clients granted it; the USB driver, only its own frames and frames its network clients lent it. |
+| `mapping_flow` | A page a task can see belongs, at boot, to a task that can reach it along grant edges. |
+| `file_server_knows_the_sender` | Every capability to the file server's endpoint that a task holds with the send right carries that task's own badge, and the kernel delivers the badge with every message: a program in open slot k arrives as k, and cannot pass for Terminal, Files, Apps or Notes. |
 | `blocks_fixed`, `disk_only_file_server` | Block capabilities never move and never gain rights: only the file server ever holds one, for the manifest's 1,048,576 blocks (512 MiB; the machine layer keeps every access inside the card's data partition). |
 | `block_io_confined` | When a call asks the machine layer for block I/O, the block is inside a block capability the caller holds with the right it needs, and the 512 bytes are in the user window, in one page the caller has mapped writable (a read fills it) or readable (a write sends it). |
 | `drop_only_shrinks` | After `drop`, every task holds a subset of the capabilities and mappings it held before. |
@@ -40,21 +42,26 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `write_reads_only_readable` | When `write` asks the machine layer to print user memory, every byte is in a page the calling task has mapped readable. |
 | `schedule_picks_ready` | If any task is ready that no other core is running, the scheduler picks such a task. |
 | `syscall_wall`, `only_usb_driver_sets_time` | Only `setwall` changes the time of day, and only the USB driver, through the time capability it alone was given, ever sets it. |
-| `schedule_not_on_other_core` | The scheduler never picks a task another core is running, so no task runs on two cores at once. |
+| `schedule_not_on_other_core`, `enter_only_cores` | The scheduler never picks a task another core is running, so no task runs on two cores at once. Telling the kernel which task each core runs changes nothing else. |
 | `reply_grants_nothing` | A reply changes no task's capabilities or mappings. |
 | `reply_wakes_only_caller` | A reply wakes only a task waiting for this replier. |
-| `only_verified_runs` | Every task that can run in a manifest slot was loaded with exactly the code and assets the manifest names. The two open slots (10, 11) run whatever program Terminal starts them with; that program is measured and shown, and holds only what the manifest gives the slot. |
+| `only_verified_runs` | Every task that can run in a manifest slot was loaded with exactly the code and assets the manifest names. The six open slots (10 to 15) run whatever program Terminal or Apps starts them with; that program is measured and shown, and holds only what the manifest gives the slot. |
 | `verify_refuses_mismatch` | A task in a manifest slot whose measurement differs from the manifest is stopped for good. |
 | `exec_reads_only_readable` | When a program image is loaded, the slot is an open slot, the image is at most 64 KiB, and every byte comes from a page the loader has mapped readable (in its address space as it is after the start). |
 | `irqs_fixed` | Interrupt capabilities never move: a task holds one only if it held it at boot. |
 | `only_display_powers` | When a call asks the machine layer to switch off or restart, the caller is the display server. |
+| `clock_monotone`, `syscall_now`, `tick_now`, `time_reads_clock`, `clockOf_spec` | The clock never goes back: no system call changes it, and a timer tick moves it on by exactly one. `time` returns it, as milliseconds and as hours, minutes and seconds that add up to it, and changes nothing else. |
+| `sleep_on_time` | `sleep` never ends early, and is at most one tick late. |
 | `tick_wakes_only_sleepers` | If a timer tick changes a task's status, the task was asleep until at most that tick, and is now ready. |
 | `irq_wakes_holder` | An interrupt wakes only a task given that interrupt's capability at boot. |
 | `uart_confined`, `uart_irq_only_input` | Only the input driver can ever hold the UART's registers or its interrupt. |
+| `only_settings_touches_board`, `board_needs_right`, `board_requests_listed`, `cpu_never_overclocked` | Only Settings reads or changes the board, through its board capability with the right the request needs, and only with a listed request: read the board or the sensors, the activity light off or on, or the CPU at 600, 1000 or 1500 MHz, never above. |
+| `only_usb_driver_drives_usb`, `usb_writes_safe`, `usb_dma_confined`, `usb_dma_own_memory` | Only the USB driver reaches the USB controller. A plain register write it passes on never starts a channel, sets a DMA address or transfer size, forces device mode or turns on descriptor DMA; a transfer starts only inside one run of the driver's own frames, so the controller only ever touches memory the manifest gave the driver. |
 | `start_revokes` | When `start` has the machine layer load slot `k`, the slot holds the manifest's fresh, unverified task, and no other task holds a capability to or a mapping of any of the slot's frames, is waiting to send a message granting one, or holds a reply slot for the old run. |
 | `task_bounded` | Every task holds at most 64 capabilities, at most 8192 mappings (no two for the same virtual page), at most 8 reply slots and at most 7 result registers. |
 | `state_bounded`, `stateSize_le` | When the machine layer calls the kernel as it does (`Driven`: a boot check hands over the eight words of a SHA-256, as `exVerify` does, and only the lines in `irqLines` fire), the state also has exactly 18 tasks, each measured with at most eight words, at most one pending entry per interrupt line, eight DMA addresses and eight transfer sizes for the USB channels, three other cores, and one last-served task for each of the three endpoints: in all, at most 447,559 heap objects. What that means in bytes is below, under `rt/runtime.c`. |
-| `launch_fixed`, `only_display_launches` | Launch capabilities never move: only the display server starts the manifest's apps, and only Terminal starts the open slots. Nothing can restart the display server, the input driver, the file server or the tests. |
+| `launch_fixed`, `only_display_launches` | Launch capabilities never move: only the display server starts the manifest's apps, and only Terminal and Apps start the open slots. Nothing can restart the display server, the input driver, the file server or the tests. |
+| `sysStop_only`, `only_launchers_stop` | A stop changes only the program it names, and only the display server (the apps it starts), Terminal or Apps (the open slots) can stop one: nothing can stop the display server, the input driver, the file server, the USB driver or the tests. |
 
 Fair receive, in `LeanOS/Fair.lean`. Several tasks can be blocked sending to one endpoint
 (the display server's, the file server's or the network service's) while its server is
@@ -87,7 +94,7 @@ MMU model in `LeanOS/Arm.lean`:
 
 | Theorem | Statement |
 |---|---|
-| `l3Table_spec`, `Stored.installed` | The level-3 table Lean returns for a task in one call, built in one pass over its mappings, holds at each of its 8192 indices the word `l3Word` gives for that page (the first mapping of the page, or nothing), so tables stored from it are `Installed`. |
+| `l3Table_spec`, `l3Table_size`, `Stored.installed`, `stored_iff_installed` | The level-3 table Lean returns for a task in one call, built in one pass over its mappings, has 8192 words, and holds at each index the word `l3Word` gives for that page (the first mapping of the page, or nothing), so tables stored from it are `Installed`; `Stored` asks nothing more than that. |
 | `walk_eq_view` | For every virtual address, what user mode may do there is exactly what the task's mappings say, and nothing outside the 32 MiB user window. |
 | `physOf_inj` | Different frames are different physical pages: the framebuffer never overlaps the pool. |
 | `el0_no_write_execute` | No address user mode can reach is both writable and executable. |
@@ -125,7 +132,7 @@ though every proof checks.
   `Data.Array.Set`, for writing one word of the level-3 table).
 - clang and ld.lld.
 
-**`rt/runtime.c` (~440 lines)**: the part of Lean's runtime compiled code needs, rewritten
+**`rt/runtime.c` (~450 lines)**: the part of Lean's runtime compiled code needs, rewritten
 for bare metal: allocator, reference counting, closures, arrays. Its limits:
 - Numbers must stay below 2^63. A larger one stops the machine and never gives a wrong
   answer. Two standard-library constants (`UInt64.size`, `USize.size`) are built at
@@ -160,9 +167,9 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   1,325,600 bytes with its list cell (1,310,720 of them for 8192 mappings of 160 bytes
   each: the cell, the `Mapping` and its `Rights`), 18 tasks 23,860,800, and the whole state
   23,862,064 bytes (22.8 MiB), 37% of the heap. For scale: in `test/stack.sh`, with one
-  task holding all 8192 mappings, the heap's peak is 1,448,544 bytes. In `test/chaos.sh`,
+  task holding all 8192 mappings, the heap's peak is 1,448,480 bytes. In `test/chaos.sh`,
   with six programs from the card each holding 64 capabilities and 8192 mappings at once,
-  then one slot restarted 30 times beside five of them, it is 5,787,200 bytes. The machine
+  then one slot restarted 30 times beside five of them, it is 5,787,136 bytes. The machine
   layer reports the heap after every start (`leanos: kernel heap N bytes live`), and with
   the same programs in the same slots that number is the same to the byte every time: what
   a stopped, faulted or exited program held is all freed when its slot starts again.
@@ -180,7 +187,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   constants built once at boot) come on top. If the heap runs out anyway, the kernel
   panics, which denies service but never breaks isolation.
 
-**`arch/boot.S` and `arch/kmain.c` (~1,350 lines)**
+**`arch/boot.S` and `arch/kmain.c` (~1,400 lines)**
 - Storing the tables: `mmu_init`, `tables_init` and `build_user_pages` must store each
   word Lean computes at its index, in the page-aligned arrays whose addresses they pass to
   Lean (a level-1 table, a level-2 table, and 16 level-3 tables in one array). For level 3,
@@ -433,7 +440,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   registers, and measure it, before any task runs again. `start_revokes` says no other
   task can reach those frames once the tables are rebuilt; that the clearing and loading
   touch only the slot's frames is this code's job.
-- The SD card (`arch/sd.c`, ~160 lines): an SDHCI driver by programmed I/O only, never
+- The SD card (`arch/sd.c`, ~210 lines): an SDHCI driver by programmed I/O only, never
   DMA, because the controller can be told to write anywhere in physical memory. It must
   move exactly the 512 bytes at the address a Reply names, to or from exactly the block it
   names, while the calling task's address space is live; block numbers are inside the

@@ -35,7 +35,7 @@ Synchronous IPC through endpoint capabilities: send and receive with a few regis
 an optional capability transfer, with tasks blocking and waking. The isolation theorem
 changes from "task memory never overlaps" to authority confinement: a task can reach a
 frame only if a chain of explicit grants gave it one. (Done with endpoint capabilities
-fixed by the boot manifest; creating and passing endpoints waits for stage 5.) A GUI needs this: clients talk to
+fixed by the boot manifest; creating and passing endpoints waits for stage 6.) A GUI needs this: clients talk to
 the display server over IPC and hand it the memory they draw into.
 
 Done later: fair receive. A receive took the lowest-numbered task waiting to send, so

@@ -46,17 +46,17 @@ This is the start. The next steps, in order:
 
 - **A desktop** at 1024×600: windows you can drag, a menu bar with the date and time in the
   time zone chosen in Settings, and a dock. Built-in apps: Notes, Files, Terminal, Settings,
-  Security, Apps and Clock. What opens at startup is a list on the SD card (`startup.txt`:
-  Apps and the tour, to begin with).
+  Security and Apps; the dock also keeps Clock, Calculator, Tour and Web from the SD card. What
+  opens at startup is a list on the SD card (`startup.txt`: Apps and the tour, to begin with).
 - **Copy and paste, by hand only**: Ctrl+C and Ctrl+V (or the Edit menu in the menu bar)
   between Notes, Terminal and `edit`. The display server keeps the clipboard. It asks the
   window in front for its text only when you press Ctrl+C, takes the answer only from that
   window, and hands the text only to the window in front when you press Ctrl+V. No program
   can read the clipboard, or put text on it, by asking.
 - **Programs from the SD card**: `web` (a text web browser), `edit` (a text editor),
-  `calc`, `snake`, `life`, `tiles` (2048), `tour`, `fuzz` and `hello`. Up to six run at once,
-  each confined to its own memory, a window, its own folder, the files you hand it, and the
-  network only if you allow it.
+  `clock`, `calc`, `snake`, `life`, `tiles` (2048), `tour`, `fuzz` and `hello`. Up to six
+  run at once, each confined to its own memory, a window, its own folder, the files you hand
+  it, and the network only if you allow it.
 - **A real file system** on the SD card: folders, large files, and a write-ahead journal so
   a power cut never leaves a change half done (proved for a model of the journal, and
   tested by cutting the power twelve times mid-write).
@@ -69,14 +69,15 @@ This is the start. The next steps, in order:
   the boot manifest. Flip one bit and it is refused.
 - **The tour**: open Terminal and type `tour`. An untrusted program really tries what
   malware does on a desktop (read your files, another program's memory, the disk, your
-  keystrokes; run code it wrote; switch the machine off). It shows the kernel's answer next
-  to what a typical Linux desktop allows, and ends with what Linux does better.
+  keystrokes, your clipboard; run code it wrote; switch the machine off). It shows the
+  kernel's answer next to what a typical Linux desktop allows, and ends with what Linux does
+  better.
 
 ![The leanos boot screen, checking each program's SHA-256 against the boot manifest](docs/logo.png)
 
 ## What is proved
 
-73 theorems in [`LeanOS/Proofs.lean`](LeanOS/Proofs.lean), [`LeanOS/Tables.lean`](LeanOS/Tables.lean),
+77 theorems in [`LeanOS/Proofs.lean`](LeanOS/Proofs.lean), [`LeanOS/Tables.lean`](LeanOS/Tables.lean),
 [`LeanOS/Bounds.lean`](LeanOS/Bounds.lean), [`LeanOS/Fair.lean`](LeanOS/Fair.lean) and [`LeanOS/Journal.lean`](LeanOS/Journal.lean), for every state the kernel can reach,
 under any sequence of system calls with any arguments. Among them:
 
@@ -151,16 +152,18 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # proofs, axioms, boot transcript, pixels on screen, apps, USB, network, power cuts, the fuzzer, the kernel stack, copy and paste, every limit at once, servers that serve in turn
+make test     # 28 tests: proofs, axioms, boot transcript, pixels on screen, apps, USB, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
-make mutants  # break the kernel 108 ways; the proofs must reject each (about 15 minutes)
+make mutants  # break the kernel 108 ways; the proofs must reject each (about 3 minutes)
 ```
 
 Things to try once it is up:
 
 - Open **Terminal** and type `help`, then `tour`, `caps`, `ps`, `date` or `ping 10.0.2.2`.
+  Tab completes a command or file name, and Up brings back the commands you ran.
+- Pick a time zone in **Settings**: the menu bar and Clock show the time there.
 - Click the **globe** in the dock and go to `info.cern.ch`.
 - `run edit notes.txt` in Terminal edits that one file, and nothing else.
 - Type in Notes, press Ctrl+C, click Terminal and press Ctrl+V: the text is on its command
@@ -197,6 +200,7 @@ What you need to know first:
 | Path | What it is |
 |---|---|
 | [`LeanOS/Kernel.lean`](LeanOS/Kernel.lean) | Every kernel decision: capabilities, mappings, system calls, scheduling, the boot manifest. Compiled into the image. |
+| [`LeanOS/Manifest.lean`](LeanOS/Manifest.lean) | The SHA-256 each program in the manifest must match, written by `make` (`tools/mkmanifest.py`). Compiled into the image. |
 | [`LeanOS/Proofs.lean`](LeanOS/Proofs.lean) | The theorems about `Kernel.lean`. |
 | [`LeanOS/Bounds.lean`](LeanOS/Bounds.lean) | The proof that the kernel's state stays within a fixed number of heap objects. |
 | [`LeanOS/Fair.lean`](LeanOS/Fair.lean) | The proof that a receive takes waiting senders in turn, so none waits for good. |
@@ -205,8 +209,8 @@ What you need to know first:
 | [`arch/`](arch) | The machine layer: boot, exception vectors, MMU, interrupts, four cores, the SD card. It carries out what the Lean kernel returns. |
 | [`rt/`](rt) | The bare-metal slice of Lean's runtime: allocator, reference counts, closures. |
 | [`user/`](user) | Everything in user space: the display server, the file server, the USB driver and network stack, the apps, and the programs on the card (`user/progs/`). |
-| [`test/`](test) | `make test` and `make mutants`: boot transcripts, screenshots, the apps, USB, network, power cuts, tampering, the fuzzer, the kernel stack at its deepest, the trusted base with every limit reached at once, servers kept busy by low slots. |
-| [`tools/`](tools) | Building assets and SD cards, and the browser console (`serve.py`). |
+| [`test/`](test) | `make test` and `make mutants`: boot transcripts, screenshots, the apps, USB, network, power cuts, tampering, fuzzers for system calls, the file server and the display, the kernel stack at its deepest and its bound from the code, the trusted base with every limit reached at once, servers kept busy by low slots. |
+| [`tools/`](tools) | Building assets and SD cards, the kernel stack's bound (`stackcheck.py`), each program's code size (`codesize.py`), and the browser console (`serve.py`). |
 
 A system call works like this. The machine layer saves the task's registers and hands the
 Lean kernel its state and the call's arguments. Lean returns a new state and a short list of
