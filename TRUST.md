@@ -245,10 +245,14 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   the CPU at 600, 1000 or 1500 MHz) through the firmware's mailbox. What the firmware
   answers is passed back unexamined, and what the firmware does with a clock request (it
   may cap it further, for heat or power) is the firmware's.
-- The clock's link to real time: `now` counts timer interrupts, and the machine layer
-  programs the timer for one every 10 ms. That the interval is right, and that no tick is
-  lost while interrupts are masked in the kernel, is argued, not proved; the proofs are
-  about the count.
+- The clock's link to real time: `now` counts ticks of 10 ms, and the machine layer keeps
+  that count with the counter. Each core's timer is set to an absolute value on the counter
+  (CNTP_CVAL), its next tick, not to an interval from when the last one was taken, and when
+  core 0's interrupt comes late it passes the kernel one tick for every interval that ended
+  (at most 100 at once; a longer gap, a stalled host, is let go). Before, a late interrupt
+  pushed every later tick back, and under QEMU the clock ran about a quarter slow;
+  `test/clock.sh` now checks the kernel's clock against the counter to within 30 ms. That the
+  interval is right is argued, not proved; the proofs are about the count.
 - The USB controller: `usb_request` in `arch/kmain.c` carries out only what `sysUsb`
   returned. It writes a checked physical address with the controller's bus offset
   (0xC0000000, the VideoCore's view of RAM, which QEMU's model also maps), and keeps the

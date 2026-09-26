@@ -8,9 +8,9 @@
 # stopwatch ran at least the 2 s the test waited between starting it and stopping it, and
 # about as long as the host saw between its log lines; the timer ended no sooner than 3 s
 # after it started and within 400 ms after, and the host saw about 3 s go by. The kernel's
-# clock, logged beside, never ran ahead of the counter (its ticks come at least 10 ms apart)
-# and kept at least a third of its pace (a tick that comes late puts it behind for good:
-# under QEMU, about a quarter).
+# clock, logged beside, keeps the counter's time to within 30 ms: its ticks are set on the
+# counter, not from when the last one was taken, and a late tick catches up the ones it
+# missed (before, each late tick put it behind for good: under QEMU about a quarter slow).
 #
 # The pixels: each tab, when shown, is the one lit in the pill at the top (and the others are
 # not); the stopwatch, stopped, offers Start; the timer, done, flashes red behind the numbers
@@ -77,7 +77,7 @@ assert int(m.group(1)) * 1000 + int(m.group(2)) * 10 == ms // 10 * 10, ("shown i
 assert 2000 <= ms <= 2000 + 2500, ("the stopwatch ran for", ms)
 host = (h1 - h0) * 1000
 assert abs(ms - host) <= 800, ("the stopwatch measured", ms, "and the host saw", host)
-assert ms // 3 <= kms <= ms + 20, ("the kernel's clock and the counter disagree", ms, kms)
+assert ms - 30 <= kms <= ms + 20, ("the kernel's clock and the counter disagree", ms, kms)
 _, lap = line("clock: stopwatch lap 1, ")
 lm = re.fullmatch(r"clock: stopwatch lap 1, 00:(\d\d)\.(\d\d)", lap)
 assert lm and 1000 <= int(lm.group(1)) * 1000 + int(lm.group(2)) * 10 < ms, ("lap 1", lap)
@@ -90,7 +90,7 @@ m = re.fullmatch(r"clock: timer done after 3 s \((\d+) ms by the counter, (\d+) 
 assert m, done
 tms, tkms = int(m.group(1)), int(m.group(2))
 assert 3000 <= tms <= 3400, ("the timer ended after", tms)
-assert tms // 3 <= tkms <= tms + 20, ("the kernel's clock and the counter disagree", tms, tkms)
+assert tms - 30 <= tkms <= tms + 20, ("the kernel's clock and the counter disagree", tms, tkms)
 assert abs(tms - (h3 - h2) * 1000) <= 800, ("the timer took", tms, "and the host saw", (h3 - h2) * 1000)
 line("clock: showing the timer")
 line("clock: timer reset to 00:03")

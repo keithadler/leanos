@@ -706,9 +706,32 @@ static void switch_to(uint64_t i) {
 
 static uint64_t timer_interval;
 
-static void timer_rearm(void) {
-    SYSREG_WRITE(cntp_tval_el0, timer_interval);
+/* Each core's next tick, on the counter. The timer is set to that absolute value
+   (CNTP_CVAL), never "an interval from now" (CNTP_TVAL): an interrupt taken late would push
+   every later tick back by as much, and the kernel's clock would fall behind the counter for
+   good (under QEMU it ran about 25% slow). */
+static uint64_t next_tick[4];                 /* NCORES, defined further down: checked there */
+
+/* At most this many ticks are caught up in one interrupt (1 s); a longer gap, a stalled
+   host or a debugger, is let go rather than replayed. */
+#define MAX_CATCH_UP 100
+
+/* Start this core's ticks one interval from now. */
+static void timer_start(uint64_t c) {
+    next_tick[c] = timer_now() + timer_interval;
+    SYSREG_WRITE(cntp_cval_el0, next_tick[c]);
     SYSREG_WRITE(cntp_ctl_el0, 1);
+}
+
+/* The timer fired on core c: move its next tick past now, and return how many whole
+   intervals have ended since the last one (1 when on time). */
+static uint64_t timer_rearm(uint64_t c) {
+    uint64_t now = timer_now(), n = 0;
+    do { next_tick[c] += timer_interval; n++; } while (next_tick[c] <= now && n < MAX_CATCH_UP);
+    if (next_tick[c] <= now) next_tick[c] = now + timer_interval;
+    SYSREG_WRITE(cntp_cval_el0, next_tick[c]);
+    SYSREG_WRITE(cntp_ctl_el0, 1);
+    return n;
 }
 
 static void gic_enable(uint32_t id) { mmio_w32(GICD + 0x100 + 4 * (id / 32), 1u << (id % 32)); }
@@ -739,7 +762,7 @@ static void irq_init(void) {
     }
     gic_this_core();
     timer_interval = timer_hz() / 100;                  /* 10 ms time slice, from CNTFRQ_EL0 */
-    timer_rearm();
+    timer_start(0);
 }
 
 /* ---- tasks ---- */
@@ -757,6 +780,7 @@ static uint64_t syscalls, ticks, device_irqs;
  * cores run (`enter`), so the kernel's decisions are about the right task, and it never
  * picks a task another core is running (`runnable`). */
 #define NCORES 4
+_Static_assert(NCORES == sizeof next_tick / sizeof next_tick[0], "a next tick per core");
 #define NONE MAX_TASKS                         /* a core running no task */
 static volatile uint64_t core_task[NCORES];   /* what each core runs */
 static volatile int core_in_user[NCORES];     /* the core is in user mode, running it */
@@ -800,10 +824,13 @@ static void handle_irq(uint64_t c) {
     uint32_t iar = mmio_r32(GICC + 0x00c);
     uint32_t id = iar & 0x3ff;
     if (id == TIMER_IRQ) {
-        timer_rearm();
+        uint64_t n = timer_rearm(c);
         if (c == 0) {
-            ticks++;
-            K = leanos_tick(K);
+            /* every interval that ended counts, so the clock keeps up with the counter */
+            for (uint64_t k = 0; k < n; k++) {
+                ticks++;
+                K = leanos_tick(K);
+            }
         } else K = leanos_rotate(K);
     } else if (id < 16) {
     } else if (id < 1020) {
@@ -1228,7 +1255,7 @@ void secondary_main(uint64_t c) {
     SYSREG_WRITE(cntkctl_el1, 1UL << 1);
     lock();
     gic_this_core();
-    timer_rearm();
+    timer_start(c);
     cores_up++;
     kputs("leanos: core ");
     kputdec(c);
