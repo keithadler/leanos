@@ -7,9 +7,12 @@
 # command line (Ctrl+V), which Terminal logs, after an echo (so it runs as nothing more).
 #
 #   cp: a file of 30000 bytes and one of 40 KiB, in pieces, whole (wc, grep, tail, verify);
-#       onto itself; into a folder; a folder, a missing file and one name refused. A TO.tmp
-#       that is there already (an empty folder, a file) is refused and left as it was; the
-#       TO.tmp a cp made is gone after it, whether the copy was put in place or not.
+#       onto itself; into a folder; a folder, a missing file and one name refused.
+#   fill and cp make NAME in NAME.part~, then rename it: a NAME.tmp of yours (an empty
+#       folder, a file) is left as it was, and the fill or cp goes ahead. A folder
+#       NAME.part~ is refused and left as it was; a file NAME.part~ (what a power cut in the
+#       middle leaves) is written over and gone after it. The NAME.part~ a fill or cp made is
+#       gone after it, whether the new file was put in place or not.
 #   head, tail: the first and last lines, -n N, a file without a last '\n', a long line
 #       shown in its first 200 bytes (4 rows), a missing file, a bad -n.
 #   wc: lines, words and bytes; a folder refused. grep: a word, -i, several files (with
@@ -77,11 +80,20 @@ steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *cmd("cp lines.txt lines.txt"), *cmd("wc lines.txt"),
          *cmd("mkdir t"), *cmd("cp lines.txt t"), *cmd("wc t/lines.txt"),
          *cmd("cp t x"), *cmd("cp nope.txt x"), *cmd("cp lines.txt"), *cmd("wc t"),
-         # TO.tmp that is there already is left alone; one cp made and could not rename goes
-         *cmd("wc n2.txt.tmp"), *cmd("mkdir x.tmp"), *cmd("write y.tmp keep me"),
+         # a NAME.tmp of yours is left alone: cp and fill make NAME in NAME.part~
+         *cmd("wc n2.txt.part~"), *cmd("mkdir x.tmp"), *cmd("write y.tmp keep me"),
          *cmd("cp lines.txt x"), *cmd("cp lines.txt y"), *cmd("ls x.tmp"), *cmd("wc y.tmp"),
          *cmd("wc x"), *cmd("wc y"),
+         *cmd("fill x 2 a"), *cmd("fill y 3 b"), *cmd("ls x.tmp"), *cmd("wc y.tmp"),
+         *cmd("verify x"), *cmd("verify y"), *cmd("wc x.part~"), *cmd("wc y.part~"),
+         # a folder NAME.part~ is refused and stays; a file NAME.part~ is a leftover, written over
+         *cmd("mkdir w.part~"), *cmd("fill w 1 c"), *cmd("cp lines.txt w"), *cmd("ls w.part~"),
+         *cmd("wc w"), *cmd("write v.part~ left over"), *cmd("fill v 1 d"), *cmd("verify v"),
+         *cmd("wc v.part~"), *cmd("write u.part~ left over"), *cmd("cp lines.txt u"), *cmd("wc u"),
+         *cmd("wc u.part~"),
+         # the NAME.part~ a cp or fill made and could not rename is gone (z/lines.txt: a folder)
          *cmd("mkdir z"), *cmd("mkdir z/lines.txt"), *cmd("cp lines.txt z"), *cmd("ls z"),
+         *cmd("fill z/lines.txt 1 e"), *cmd("ls z"),
          # find
          *cmd("mkdir t/sub"), *cmd("write t/sub/deep.txt x"), *cmd("write t/b.txt y"),
          *cmd("find t"), *shown(), *cmd("find t deep"), *shown(), *cmd("find deep"), *shown(),
@@ -160,15 +172,30 @@ has "terminal: cp t x -> cp copies files, not folders"
 has "terminal: cp nope.txt x -> no such file"
 has "terminal: cp lines.txt -> cp FROM TO"
 has "terminal: wc t -> a folder, not a file"
-has "terminal: wc n2.txt.tmp -> no such file"                        # a copy leaves no TO.tmp
-has "terminal: cp lines.txt x -> TO.tmp is there already: rename it first"
-has "terminal: cp lines.txt y -> TO.tmp is there already: rename it first"
-has "terminal: ls x.tmp -> 0 files"                                  # the empty folder x.tmp stays
-has "terminal: wc y.tmp -> 0 lines, 2 words, 7 bytes"                # and the file y.tmp, as it was
-has "terminal: wc x -> no such file"
-has "terminal: wc y -> no such file"
+has "terminal: wc n2.txt.part~ -> no such file"                      # a copy leaves no TO.part~
+has "terminal: cp lines.txt x -> $lines_bytes bytes"                # x.tmp and y.tmp are not in the way
+has "terminal: cp lines.txt y -> $lines_bytes bytes"
+count 2 "terminal: ls x.tmp -> 0 files"                              # the empty folder x.tmp stays
+count 2 "terminal: wc y.tmp -> 0 lines, 2 words, 7 bytes"            # and the file y.tmp, as it was
+has "terminal: wc x -> 12 lines, $lines_words words, $lines_bytes bytes"
+has "terminal: wc y -> 12 lines, $lines_words words, $lines_bytes bytes"
+has "terminal: fill x -> ok"
+has "terminal: fill y -> ok"
+has "terminal: verify x -> 2048 bytes of 'a'"
+has "terminal: verify y -> 3072 bytes of 'b'"
+has "terminal: wc x.part~ -> no such file"                           # a fill leaves no NAME.part~
+has "terminal: wc y.part~ -> no such file"
+has "terminal: fill w -> NAME.part~ is a folder: rename it first"
+has "terminal: cp lines.txt w -> NAME.part~ is a folder: rename it first"
+has "terminal: ls w.part~ -> 0 files"                                # the folder w.part~ stays
+has "terminal: wc w -> no such file"
+has "terminal: verify v -> 1024 bytes of 'd'"                        # a leftover v.part~ written over
+has "terminal: wc v.part~ -> no such file"
+has "terminal: wc u -> 12 lines, $lines_words words, $lines_bytes bytes"
+has "terminal: wc u.part~ -> no such file"
 has "terminal: cp lines.txt z -> already there"                      # z/lines.txt is a folder
-has "terminal: ls z -> 1 file"                                       # and z/lines.txt.tmp is gone
+has "terminal: fill z/lines.txt -> already there"
+count 2 "terminal: ls z -> 1 file"                                   # and z/lines.txt.part~ is gone
 
 # find
 has "terminal: find t -> 4 found"

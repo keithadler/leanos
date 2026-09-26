@@ -12,9 +12,11 @@
 #   |: cat big.txt | grep x | wc; history | tail -n 2; find | grep .txt | head -n 3 (grep
 #       completed by Tab after the |); head | cat; Up brings a line with | back and it runs.
 #   A line of 1024 bytes: 200 on the screen, all of it through > and |.
-#   A FILE.tmp that is there already (a folder, a file) is refused and left as it was; a
-#       write that cannot be made (a missing folder), a command that fails (cat of a
-#       missing file), and more than 64 KiB of output all leave the old file as it was.
+#   > makes FILE in FILE.part~, then renames it: a folder FILE.part~ is refused and left as
+#       it was; a file FILE.part~ (what a power cut leaves) is written over and gone after;
+#       a FILE.tmp of yours is left alone. A write that cannot be made (a missing folder), a
+#       command that fails (cat of a missing file), and more than 64 KiB of output all leave
+#       the old file as it was.
 #   Refused, with nothing run and nothing written: > with no file, | at the start or the
 #       end, > before a |, a file that is a folder, a command that is not one, and run,
 #       tour, cd and kill.
@@ -81,10 +83,12 @@ steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *cmd("head -n 1 long.txt > h.txt", "terminal: > h.txt"), *cmd("wc h.txt"),
          *cmd("cat long.txt | grep zzz | wc", "terminal: wc -> "),
          # the old file stays when the new one cannot be made, the command fails, or it is too much
-         *cmd("echo old > keep.txt", "terminal: > keep.txt"), *cmd("mkdir keep.txt.tmp"),
-         *cmd("echo new > keep.txt", "terminal: echo new > keep.txt -> "), *cmd("rm keep.txt.tmp"),
-         *cmd("write k.txt.tmp mine"), *cmd("echo new > k.txt", "terminal: echo new > k.txt -> "),
+         *cmd("echo old > keep.txt", "terminal: > keep.txt"), *cmd("mkdir keep.txt.part~"),
+         *cmd("echo new > keep.txt", "terminal: echo new > keep.txt -> "), *cmd("rm keep.txt.part~"),
+         *cmd("write k.txt.tmp mine"), *cmd("echo new > k.txt", "terminal: > k.txt"),
          *cmd("wc k.txt.tmp"), *cmd("wc k.txt"),
+         *cmd("write k2.txt.part~ left over"), *cmd("echo new > k2.txt", "terminal: > k2.txt"),
+         *cmd("wc k2.txt"), *cmd("wc k2.txt.part~"),
          *cmd("cat nope.txt > keep.txt", "terminal: > keep.txt"), *shown(),
          *cmd("fill huge.txt 70 a"), *cmd("cat huge.txt > keep.txt", "terminal: > keep.txt"),
          *cmd("cat huge.txt | wc", "terminal: | -> "),
@@ -174,11 +178,14 @@ has "terminal: wc -> 1 line, 1 word, 1025 bytes"
 
 # the old file stays
 has "terminal: > keep.txt -> 4 bytes"
-has "terminal: echo new > keep.txt -> FILE.tmp is there already: rename it first"   # a folder
-has "terminal: rm keep.txt.tmp -> ok"                                 # still there, empty
-has "terminal: echo new > k.txt -> FILE.tmp is there already: rename it first"      # a file
-has "terminal: wc k.txt.tmp -> 0 lines, 1 word, 4 bytes"             # left as it was
-has "terminal: wc k.txt -> no such file"
+has "terminal: echo new > keep.txt -> NAME.part~ is a folder: rename it first"     # refused
+has "terminal: rm keep.txt.part~ -> ok"                               # still there, empty
+has "terminal: > k.txt -> 4 bytes"                                    # a k.txt.tmp is not in the way
+has "terminal: wc k.txt.tmp -> 0 lines, 1 word, 4 bytes"             # and is left as it was
+has "terminal: wc k.txt -> 1 line, 1 word, 4 bytes"
+has "terminal: > k2.txt -> 4 bytes"                                   # a leftover k2.txt.part~
+has "terminal: wc k2.txt -> 1 line, 1 word, 4 bytes"                 # is written over
+has "terminal: wc k2.txt.part~ -> no such file"
 has "terminal: cat nope.txt -> no such file"
 has "terminal: > keep.txt -> stopped, the command failed"
 pasted "no such file nothing written"
@@ -204,6 +211,7 @@ has "terminal: > x -> > needs a command before it"
 has "terminal: cat x -> no such file"
 [ "$(echo "$out" | grep -c "^terminal: ls -> ")" = 2 ] || fail "an ls that was refused ran"
 echo "$out" | grep -qE "^terminal: (run hello|run tour|kill 10|cd \.\.) -> " && fail "a refused command ran"
-# every file the card has now: no FILE.tmp left behind, no x, no huge output written
-has "terminal: ls -a -> 13 files"
+# every file the card has now: no FILE.part~ left behind, no x, no huge output written
+# (13 as before, and k.txt and k2.txt)
+has "terminal: ls -a -> 15 files"
 echo "ok: > and >> write and add, | hands output on ($x_lines of 4000 lines through cat | grep | wc), ls, df and cat big.txt through > are what they show, the old file stays when the new one cannot be written, refused lines run nothing"

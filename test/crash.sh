@@ -1,6 +1,6 @@
 #!/bin/bash
 # Power cuts. Terminal rewrites a 200 KB file over and over (fill: written in pieces to
-# f.tmp, then renamed over f in one step), and the machine is killed at a random moment,
+# f.part~, then renamed over f in one step), and the machine is killed at a random moment,
 # twelve times. After each cut, the card must check clean on the next boot (the journal
 # either finishes or drops the interrupted change: nothing to repair), and f must be one
 # whole version, never half of each: 204800 bytes all the same letter (or not there yet),

@@ -15,7 +15,7 @@
    after it (a folder with a '/'), from the file server's listing; when several match, it
    completes what they share, and a second Tab lists them.
 
-   CMD > FILE puts what CMD prints in FILE instead of on the screen (made in FILE.tmp, then
+   CMD > FILE puts what CMD prints in FILE instead of on the screen (made in FILE.part~, then
    put in place by one rename, as cp and fill do: FILE is its old self or the new one), and
    CMD >> FILE adds it at FILE's end. CMD | CMD2 [| CMD3 ...] hands what CMD prints to CMD2,
    and grep, head, tail, wc and cat read it when they are given no file. The output is
@@ -410,10 +410,18 @@ COLD static void into_folder(struct term *t, const char *from, char *to) {
     if (n + 1 + (int)slen(last) <= FS_PATH_MAX) { to[n] = '/'; scopy(to + n + 1, last); }
 }
 
-/* PATH.tmp, where fill, cp and > make a file before one rename puts it in place. cp and >
-   refuse when it is there already (it may be someone's), so the one they remove after a
-   failure is always one they made. */
-COLD static void tmp_of(const char *path, char *tmp) { scopy(tmp + scopy(tmp, path), ".tmp"); }
+/* PATH.part~, where fill, cp and > make a file before one rename puts it in place. The name
+   is theirs alone: a file there is one they left when the power was cut in the middle, and
+   they write over it (and remove it after a failure). So a PATH.tmp of yours is never
+   touched, and a power cut never stops the next fill, cp or >. A folder there is refused
+   and left alone, as is a name too long to take the ".part~". 0, or why not. */
+COLD static const char *tmp_of(struct term *t, const char *path, char *tmp) {
+    int n = scopy(tmp, path), at = n;
+    while (at > 0 && path[at - 1] != '/') at--;
+    if (n + 6 > FS_PATH_MAX || n - at + 6 > FS_NAME_MAX) return "the name is too long";
+    scopy(tmp + n, ".part~");
+    return fs_stat(&t->fs, tmp, 0) == FS_DIR ? "NAME.part~ is a folder: rename it first" : 0;
+}
 
 COLD static void cmd_mv(struct term *t, struct line *l, const char *args) {
     char a[FS_PATH_MAX + 1], b[FS_PATH_MAX + 1], pa[FS_PATH_MAX + 1], pb[FS_PATH_MAX + 1];
@@ -452,26 +460,31 @@ COLD static void cmd_cd(struct term *t, struct line *l, const char *args) {
     fs_log(l, "cd", arg[0] ? arg : "/", "ok");
 }
 
-/* fill NAME KB CHAR: a file of KB kilobytes of CHAR, written in pieces to NAME.tmp and then
-   put in place by one rename, which the file server does in one step: whatever happens,
-   NAME is the old file or the new one, never half of each. */
+/* fill NAME KB CHAR: a file of KB kilobytes of CHAR, written in pieces to NAME.part~ and
+   then put in place by one rename, which the file server does in one step: whatever
+   happens, NAME is the old file or the new one, never half of each. */
 COLD static void cmd_fill(struct term *t, struct line *l, const char *args) {
-    char name[FS_PATH_MAX + 1], num[12], ch[4], path[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 5];
-    word_of(word_of(word_of(args, name, FS_PATH_MAX - 4), num, 10), ch, 2);
+    char name[FS_PATH_MAX + 1], num[12], ch[4], path[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 7];
+    word_of(word_of(word_of(args, name, FS_PATH_MAX), num, 10), ch, 2);
     u64 kb = 0;
     for (int i = 0; num[i] >= '0' && num[i] <= '9'; i++) kb = kb * 10 + (u64)(num[i] - '0');
     resolve(t, name, path);
-    tmp_of(path, tmp);
-    char *piece = (char *)PAGE(SPARE_PAGE + FILE_OFFSET);
-    for (u64 i = 0; i < 16384; i++) piece[i] = ch[0] ? ch[0] : 'x';
-    u64 st = fs_write(&t->fs, tmp, piece, 0);
-    for (u64 off = 0; st == FS_OK && off < kb * 1024; off += 16000) {
-        u64 take = kb * 1024 - off < 16000 ? kb * 1024 - off : 16000;
-        st = fs_write_at(&t->fs, tmp, off, piece, take);
+    const char *why = tmp_of(t, path, tmp);
+    if (!why) {
+        char *piece = (char *)PAGE(SPARE_PAGE + FILE_OFFSET);
+        for (u64 i = 0; i < 16384; i++) piece[i] = ch[0] ? ch[0] : 'x';
+        u64 st = fs_write(&t->fs, tmp, piece, 0);
+        int made = st == FS_OK;
+        for (u64 off = 0; st == FS_OK && off < kb * 1024; off += 16000) {
+            u64 take = kb * 1024 - off < 16000 ? kb * 1024 - off : 16000;
+            st = fs_write_at(&t->fs, tmp, off, piece, take);
+        }
+        if (st == FS_OK) st = fs_rename(&t->fs, tmp, path);
+        if (st != FS_OK && made) fs_delete(&t->fs, tmp);
+        why = st == FS_OK ? 0 : fs_error(st);
     }
-    if (st == FS_OK) st = fs_rename(&t->fs, tmp, path);
-    say(t, st == FS_OK ? "filled" : fs_error(st));
-    fs_log(l, "fill", name, st == FS_OK ? "ok" : fs_error(st));
+    say(t, why ? why : "filled");
+    fs_log(l, "fill", name, why ? why : "ok");
 }
 
 /* verify NAME: whether every byte of NAME is the same (what fill makes). */
@@ -597,20 +610,19 @@ COLD static void put_line(struct term *t, struct line *l, const char *s, long k)
     t->over |= k >= LINE_MAX;
 }
 
-/* cp FROM TO: a copy, made as fill makes a file: in pieces into TO.tmp, then put in place
-   by one rename, so TO is its old self or the whole copy. TO may be a folder, as for mv.
-   A TO.tmp that is there already is left alone: cp refuses. */
+/* cp FROM TO: a copy, made as fill makes a file: in pieces into TO.part~, then put in place
+   by one rename, so TO is its old self or the whole copy. TO may be a folder, as for mv. */
 COLD static void cmd_cp(struct term *t, struct line *l, const char *args) {
-    char a[FS_PATH_MAX + 1], b[FS_PATH_MAX + 1], pa[FS_PATH_MAX + 1], pb[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 5];
+    char a[FS_PATH_MAX + 1], b[FS_PATH_MAX + 1], pa[FS_PATH_MAX + 1], pb[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 7];
     word_of(word_of(args, a, FS_PATH_MAX), b, FS_PATH_MAX);
     resolve(t, a, pa);
     resolve(t, b, pb);
     into_folder(t, a, pb);
-    tmp_of(pb, tmp);
+    const char *in_way = tmp_of(t, pb, tmp);
     u64 size = 0, off = 0, kind = fs_stat(&t->fs, pa, &size), st = FS_OK;
     const char *why = !a[0] || !b[0] ? "cp FROM TO" : kind == FS_DIR ? "cp copies files, not folders"
                     : !kind ? "no such file" : same(tmp, pa) ? "FROM is where the copy is made: rename it first"
-                    : fs_stat(&t->fs, tmp, 0) ? "TO.tmp is there already: rename it first" : 0;
+                    : in_way;
     if (!why) {
         st = fs_write(&t->fs, tmp, "", 0);
         int made = st == FS_OK;
@@ -1327,7 +1339,7 @@ COLD static int listed(const char *list, const char *w) {
 /* The command line: one command, or several joined by | (each one's output the next one's
    input), the last one's output going to the screen or, after > or >>, into a file. */
 COLD static void run(struct term *t, struct line *l) {
-    char s[CMD_MAX + 1], file[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 5], w[16], bad[48];
+    char s[CMD_MAX + 1], file[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 7], w[16], bad[48];
     int len = scopy(s, t->cmd), ns = 1, to = 0;     /* to: 1 after >, 2 after >> */
     char *stage[CMD_MAX + 1], *target = 0;
     const char *why = 0;
@@ -1356,9 +1368,9 @@ COLD static void run(struct term *t, struct line *l) {
     const char *op = to == 2 ? ">>" : to ? ">" : "|";
     if (!why && to) {
         resolve(t, file, path);
-        tmp_of(path, tmp);
+        const char *in_way = tmp_of(t, path, tmp);
         if (fs_stat(&t->fs, path, 0) == FS_DIR) why = "a folder, not a file";
-        else if (to == 1 && fs_stat(&t->fs, tmp, 0)) why = "FILE.tmp is there already: rename it first";
+        else if (to == 1) why = in_way;
     }
     if (why) {
         say(t, why);
@@ -1387,7 +1399,7 @@ COLD static void run(struct term *t, struct line *l) {
         return;
     }
     if (!to) return;
-    /* into the file: > through FILE.tmp and one rename, >> at its end */
+    /* into the file: > through FILE.part~ and one rename, >> at its end */
     const char *b = pipe_buf();
     u64 n = t->capn, at = 0, off = 0, st = FS_OK;
     const char *dest = path;
