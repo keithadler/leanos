@@ -107,7 +107,7 @@ After a few seconds you see the desktop, with the **Tour** in front and **Apps**
 - The **dock** at the bottom starts apps: Notes, Files, Terminal, Settings, Security,
   Apps, Clock, Calculator, Tour, and the globe, which is **Web**.
 - In **Terminal**, type `help`. Try `ps`, `caps`, `date`, `ls`, `ping 10.0.2.2`,
-  `run snake`, or `run edit notes.txt`.
+  `run snake`, or `run edit notes/1.txt` (a note from Notes).
 - In **Web**, type `info.cern.ch` and press Enter. It shows plain `http://` pages as text;
   most sites are `https://`, which it cannot open yet.
 

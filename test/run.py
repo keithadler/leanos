@@ -392,10 +392,10 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
     return proc.returncode if status is None else status
 
 
-# The interaction `make test` performs: type into the focused Notes window, then drag it by
-# its title bar, 180 px right and 132 down.
+# The interaction `make test` performs: type into the focused Notes window, wait for Notes
+# to save the note, then drag the window by its title bar, 180 px right and 132 down.
 DEMO_DRAG = (180, 132)
-DEMO_STEPS = [b"H", b"i", b"!", wmouse("v", "alice", 24, 12), wmouse("d", "alice", 24, 12),
+DEMO_STEPS = [b"H", b"i", b"!", wait_for("alice: saved note 1 (3 bytes)"), wmouse("v", "alice", 24, 12), wmouse("d", "alice", 24, 12),
               wmouse("v", "alice", 104, 74), wmouse("v", "alice", 24 + DEMO_DRAG[0], 12 + DEMO_DRAG[1]),
               wmouse("u", "alice", 24 + DEMO_DRAG[0], 12 + DEMO_DRAG[1])]
 

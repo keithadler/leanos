@@ -41,7 +41,8 @@ keys = lambda s: [s.encode()]           # a whole command at once
 def cmd(line, done):
     return [*keys(line + "\r"), wait_for(done)]
 SECRET = "fsfuzz-must-never-read-this"
-steps = [*[b"k"] * 3, *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
+steps = [*[b"k"] * 3, wait_for("alice: saved note 1 (3 bytes)"),
+         *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *cmd("mkdir apps", "terminal: mkdir apps "),
          *cmd(f"write zzsecret.txt {SECRET}", "terminal: write zzsecret.txt"),
          *cmd("fill keep 20 k", "terminal: fill keep")]
@@ -60,7 +61,7 @@ steps += cmd("run fsfuzz2", "terminal: run fsfuzz2 -> slot") + cmd("run fsfuzz3"
 for i in range(3):
     steps += cmd(f"fill t{i} {10 + 10 * i} {'xyz'[i]}", f"terminal: fill t{i}")
     steps += cmd(f"verify t{i}", f"terminal: verify t{i}")
-steps += cmd("verify notes.txt", "terminal: verify notes.txt")
+steps += cmd("verify notes/1.txt", "terminal: verify notes/1.txt")
 steps += [wait_for("fsfuzz: fsfuzz2 in slot 13: all done"), wait_for("fsfuzz: fsfuzz3 in slot 14: all done"),
           wait_for("fsfuzz: fsfuzz in slot 11: all done")]
 first = boot(180, steps=steps, until="fsfuzz: fsfuzz in slot 11: all done", sd=card)
@@ -68,7 +69,7 @@ print("---- boot 2", flush=True)
 steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *cmd(f"write zzsecret2.txt {SECRET}", "terminal: write zzsecret2.txt"),
          *cmd("run fsfuzz", "terminal: run fsfuzz -> slot"), wait_for("fsfuzz: fsfuzz in slot 10: checked after a restart"),
-         *cmd("verify keep", "terminal: verify keep"), *cmd("verify notes.txt", "terminal: verify notes.txt"),
+         *cmd("verify keep", "terminal: verify keep"), *cmd("verify notes/1.txt", "terminal: verify notes/1.txt"),
          *cmd("cat zzsecret.txt", "terminal: cat zzsecret.txt")]
 for i in range(3):
     steps += cmd(f"verify t{i}", f"terminal: verify t{i}")
@@ -77,7 +78,7 @@ PY
 )
 status=$?
 echo "$out" > "$T/serial.txt"                # the whole transcript, for a failure
-echo "$out" | grep -E "^(fsfuzz: |---- boot|fs: (ready|checked|repaired|finished|dropped)|terminal: (run|verify|cat) |leanos: (slot 1. stopped|PANIC)|alice: loaded)" \
+echo "$out" | grep -E "^(fsfuzz: |---- boot|fs: (ready|checked|repaired|finished|dropped)|terminal: (run|verify|cat) |leanos: (slot 1. stopped|PANIC)|alice: .*loaded)" \
   | grep -v "random requests so far" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish (status $status)"
 echo "$out" | grep -qE "PANIC|exception in the kernel" && fail "the kernel stopped"
@@ -118,8 +119,8 @@ echo "$boot2" | grep -q "^fs: checked: " || fail "the card was not checked"
 echo "$boot2" | grep -q "^fs: repaired" && fail "the card needed repairs: $(echo "$boot2" | grep '^fs: repaired')"
 echo "$boot2" | grep -q "^fsfuzz: fsfuzz in slot 10: checked after a restart: [0-9]* requests, 0 wrong" \
   || fail "fsfuzz did not find its files as it left them"
-echo "$boot2" | grep -q "^alice: loaded notes.txt, 3 bytes" || fail "Notes' note was not loaded"
-echo "$boot2" | grep -q "^terminal: verify notes.txt -> 3 bytes of 'k'" || fail "Notes' note changed"
+echo "$boot2" | grep -q "^alice: 1 note; loaded notes/1.txt, 3 bytes" || fail "Notes' note was not loaded"
+echo "$boot2" | grep -q "^terminal: verify notes/1.txt -> 3 bytes of 'k'" || fail "Notes' note changed"
 echo "$boot2" | grep -q "^terminal: verify keep -> 20480 bytes of 'k'" || fail "Terminal's keep changed"
 echo "$boot2" | grep -q "^terminal: cat zzsecret.txt -> 27 bytes" || fail "the secret changed"
 total=$(echo "$out" | sed -n 's/^fsfuzz: .*: all done: \([0-9]*\) requests.*/\1/p' | awk '{ n += $1 } END { print n }')

@@ -9,7 +9,8 @@
 #   1. The freeze as it was found: Notes closed, Terminal and Files open, hog (user/progs/
 #      chaos.c) in all six open slots, each waiting on its window: 8 windows wait. Notes,
 #      started from the dock, must get its window; keys typed into it must reach it (it
-#      saves them: Terminal's cat finds 2 bytes); a click in Files must reach Files.
+#      saves them: Terminal's cat of notes/1.txt finds 2 bytes); a click in Files must
+#      reach Files.
 #   2. The most windows the display shows: one hog stopped, then Security, Settings, Apps
 #      and wins, which opens windows until the display refuses one: 12 windows, 11 waiting.
 #      Keys still reach Notes and Terminal, a click still reaches Files.
@@ -73,7 +74,8 @@ steps = [*wclick("alice", *CLOSE), wait("alice: window closed"),
 # 1. eight windows wait, then Notes asks for one
 for k in range(10, 16): steps += run("hog", f"chaos: hog in slot {k}:")
 steps += [*click(*DOCK["Notes"]), wait("alice: opened"), *keys("Hi"), wait("display: key 'i' to alice"),
-          *front, *keys("cat notes.txt\r"), wait("terminal: cat notes.txt"),
+          wait("alice: saved note 1 (2 bytes)"),
+          *front, *keys("cat notes/1.txt\r"), wait("terminal: cat notes/1.txt"),
           *FILES, wait("files: showing"), *front]
 # 2. twelve windows, eleven waiting
 steps += [*keys("kill 15\r"), wait("terminal: kill 15"),
@@ -81,8 +83,9 @@ steps += [*keys("kill 15\r"), wait("terminal: kill 15"),
           *click(*DOCK["Settings"]), wait("settings: opened"),
           *click(*DOCK["Apps"]), wait("apps: opened"), *front,
           *run("wins", "chaos: wins in slot 15:"),
-          *click(*DOCK["Notes"]), *keys("!"), wait("display: key '!' to alice"), pause(0.5),
-          *front, *keys("cat notes.txt\r"), wait("terminal: cat notes.txt"),
+          *click(*DOCK["Notes"]), *keys("!"), wait("display: key '!' to alice"),
+          wait("alice: saved note 1 (3 bytes)"),
+          *front, *keys("cat notes/1.txt\r"), wait("terminal: cat notes/1.txt"),
           *click(*DOCK["Files"]), *FILES, wait("files: showing"), *front, pause(1)]
 # 3. idle with eleven waiting, then switch off
 steps += [*IDLE, *click(40, 15), *click(60, 80), wait("leanos: switched off")]
@@ -101,11 +104,11 @@ bad=$(echo "$out" | grep -E "^leanos: [a-z]+ stopped" | grep -vE "^leanos: (mall
   || fail "not all six hogs reached their limits and waited on a window"
 echo "$out" | grep -q "^display: more windows wait than the 7 calls it holds: " \
   || fail "the display never had more windows waiting than it holds"
-[ "$(echo "$out" | grep -c "^alice: opened a 300x200 window, read-only, 59 pages -> ok$")" = 2 ] \
+[ "$(echo "$out" | grep -c "^alice: opened a 480x320 window, read-only, 150 pages -> ok$")" = 2 ] \
   || fail "Notes did not get its window with 8 windows waiting"
-cats=$(echo "$out" | grep "^terminal: cat notes.txt")
-[ "$(echo "$cats" | sed -n 1p)" = "terminal: cat notes.txt -> 2 bytes" ] || fail "keys typed into Notes did not reach it: $cats"
-[ "$(echo "$cats" | sed -n 2p)" = "terminal: cat notes.txt -> 3 bytes" ] || fail "with 12 windows, a key typed into Notes did not reach it: $cats"
+cats=$(echo "$out" | grep "^terminal: cat notes/1.txt")
+[ "$(echo "$cats" | sed -n 1p)" = "terminal: cat notes/1.txt -> 2 bytes" ] || fail "keys typed into Notes did not reach it: $cats"
+[ "$(echo "$cats" | sed -n 2p)" = "terminal: cat notes/1.txt -> 3 bytes" ] || fail "with 12 windows, a key typed into Notes did not reach it: $cats"
 [ "$(echo "$out" | grep -c "^files: showing")" -ge 3 ] || fail "a click in Files did not reach it"
 echo "$out" | grep -q "^chaos: wins in slot 15: 1 windows, then the display refused one$" \
   || fail "the display did not show exactly 12 windows: $(echo "$out" | grep "^chaos: wins")"

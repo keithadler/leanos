@@ -701,6 +701,13 @@ the kernel.
   (`apps/NAME`) and the paths Terminal, Files or Apps shared with its slot, read and/or
   write. The kernel proves who is asking (`file_server_knows_the_sender`); the rule itself
   is the file server's C (`allowed` in `user/fs.c`), trusted, not proved.
+- Notes keeps to its folder by its own code. Notes (task 0) is one of the four programs the
+  file server lets reach the whole card (with Terminal, Files and Apps). That it changes only
+  `notes/` (and, once, moves the `notes.txt` of an older card to `notes/1.txt`) is its C
+  (`user/alice.c`), trusted, not proved. It saves a note whole into `notes/N.txt.tmp` and
+  puts it in place with one rename, so after a power cut the note is its last save or the
+  one before (each request is whole, by the file server's journal); a `.tmp` that is there
+  already is left alone, and `.tmp2` to `.tmp9` used instead. Tested by `test/notes.sh`.
 - The file server is trusted with what its clients store: it can read and change any
   file, and it sees each client's buffer while it answers that client. The proofs bound
   what it can *hold* (its own frames, a client's buffer only as that client granted it,

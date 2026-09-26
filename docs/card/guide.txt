@@ -1,7 +1,7 @@
 leanos: a short guide
 
 The dock
-  Notes     a note that is saved to the SD card as you type
+  Notes     notes, saved to the SD card as you type (more under Notes below)
   Files     the files on the card; click one to read it (more under Files below)
   Terminal  commands; type help
   Settings  the background, the time zone, and the Raspberry Pi's speed and light
@@ -29,7 +29,7 @@ Copy and paste
   Ctrl+V    paste into the window in front (or Edit, Paste)
 
   What each program copies, and where a paste goes:
-  Notes     the whole note; a paste goes at the end
+  Notes     the whole note (its first 4 KiB); a paste goes in at the cursor
   edit      the whole file (its first 4 KiB); a paste goes in at the cursor
   Terminal  the command line you are typing, or, when it is empty, what the last
             command printed; a paste goes onto the command line at the cursor, line
@@ -45,6 +45,14 @@ Copy and paste
 
   In the browser console, Ctrl+C, Ctrl+V and Ctrl+O are leanos's (Cmd+V on a Mac types the
   host's clipboard as keys). Under make run, your terminal's Ctrl+C stops QEMU itself.
+
+Notes
+  Each note is a file, notes/1.txt, notes/2.txt and so on, of up to 32 KiB.
+  Arrows    move the cursor; Return starts a line, Backspace deletes before it
+  Tab       go to the list: Up and Down choose a note, Return goes back to it
+  Ctrl+N    a new note (the + button too)
+  Ctrl+D    delete this note: it asks, and Ctrl+D again deletes it (or Delete twice)
+  A note left empty goes when you choose another.
 
 Files
   Click a file to read it; click a folder again (or press Return) to open it; Left goes

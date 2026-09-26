@@ -29,6 +29,7 @@ steps = [wait_for("usb: ready"),
          *usb_key("v", ctrl=True), wait_for("terminal: pasted"), pause(0.5), snap("paste-terminal"),
          b"\r", pause(0.3), *usb_key("c", ctrl=True), wait_for("display: copied", 2),   # what echo printed
          *wclick("alice", 14, 124), b"\r", PASTE, wait_for("alice: pasted"), pause(0.5), snap("paste-notes"),
+         wait_for("alice: saved note 1 (34"),
          *TERM, *keys("run edit\r"), wait_for("edit: opened a window"),
          *click(165, 15), wait_for("display: the Edit menu"), pause(0.3), snap("edit-menu"),
          *click(180, 80), wait_for("edit: pasted"), wait_for("edit: saved"), pause(0.3), snap("paste-edit"),
@@ -36,14 +37,14 @@ steps = [wait_for("usb: ready"),
          *[b"\r"] * 5, wait_for("tour: What you copy"), pause(0.3), snap("tour-clipboard"),
          COPY, wait_for("display: copy: asked a program"), pause(2.5),
          LEFT, RIGHT, wait_for("tour: What you copy", 2),
-         *TERM, *keys("cat notes.txt\r"), wait_for("terminal: cat notes.txt"),
+         *TERM, *keys("cat notes/1.txt\r"), wait_for("terminal: cat notes/1.txt"),
          PASTE, wait_for("terminal: pasted", 2), COPY]
 sys.exit(boot(120, usb=True, steps=steps, until="terminal: copied the command line", settle=0.5))
 PY
 )
 status=$?
 echo "$out" > "$T/serial.txt"            # where each window opened, for the pixel checks
-echo "$out" | grep -E "^(mallory: (ask|put)|alice: (copied|pasted)|terminal: (copied|pasted|cat|run)|edit: (copied|pasted|saved)|tour: What|display: (copy|copied|paste|the Edit|.*(copy|request)))" | sed 's/^/  | /'
+echo "$out" | grep -E "^(mallory: (ask|put)|alice: (copied|pasted|saved)|terminal: (copied|pasted|cat|run)|edit: (copied|pasted|saved)|tour: What|display: (copy|copied|paste|the Edit|.*(copy|request)))" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish (status $status)"
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 
@@ -68,7 +69,8 @@ has "terminal: copied the last command's output, 14 bytes -> ok"
 has "display: copied 14 bytes from Terminal"
 has "display: paste: 14 bytes to alice"
 has "alice: pasted 14 bytes"
-has "terminal: cat notes.txt -> 34 bytes"
+has "alice: saved note 1 (34 bytes)"
+has "terminal: cat notes/1.txt -> 34 bytes"
 has "display: the Edit menu, for a program from the SD card"
 has "display: paste: 14 bytes to a program from the SD card"
 has "edit: pasted 14 bytes"

@@ -12,7 +12,7 @@ from run import boot, mouse, wait_for, wclick, DOCK
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [c.encode() for c in s]
 UP, DOWN, RIGHT, LEFT = b"\x1b[A", b"\x1b[B", b"\x1b[C", b"\x1b[D"
-term = wclick("Terminal", 230, 60)      # Terminal's window, where no program window covers it
+term = wclick("Terminal", 40, 60)       # Terminal's window, where no program window covers it
 steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *keys("tour\r"), wait_for("tour: opened"),
          *[b"\r" for _ in range(11)], wait_for("tour: The difference"),

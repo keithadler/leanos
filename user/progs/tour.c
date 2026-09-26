@@ -33,7 +33,7 @@ static const struct page pages[] = {
      "Next: right arrow, Enter or a click. Back: left arrow. Close the window to stop."},
     {"Your files", TRY_FILES,
      "A program from the card reaches only its own folder and the files you hand it (run "
-     "edit notes.txt). The kernel tells the file server who is asking; it cannot be faked.",
+     "edit notes/1.txt). The kernel tells the file server who is asking; it cannot be faked.",
      "Every program you run has all of your user's rights: ~/.ssh, your browser profile, "
      "every document. Unless you sandbox it (Flatpak, SELinux)."},
     {"Other programs' memory", TRY_MEMORY,
@@ -122,10 +122,10 @@ static void attempt(struct tour *t) {
     t->what[0] = t->said[0] = 0;
     switch (pages[t->page].try) {
     case TRY_FILES: {      /* your note, which nobody gave it; then its own folder, which it has */
-        fs_path(&t->fs, "notes.txt");
+        fs_path(&t->fs, "notes/1.txt");
         u64 note = fs_call(&t->fs, FS_READ, 0).x[1];
         u64 own = fs_write(&t->fs, "apps/tour/visited.txt", "yes", 3);
-        result(t, "Read your note (notes.txt)", note == FS_DENIED && own == FS_OK ? BAD_ARG : OK);
+        result(t, "Read your note (notes/1.txt)", note == FS_DENIED && own == FS_OK ? BAD_ARG : OK);
         if (note == FS_DENIED && own == FS_OK)
             copy(t->said, "not given to it (its own folder, apps/tour: allowed)", sizeof t->said);
         break;

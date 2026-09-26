@@ -17,8 +17,8 @@ echo "$axioms" | grep -v "depends on axioms: \[\(propext\|Classical.choice\|Quot
 echo "ok: $(echo "$axioms" | wc -l | tr -d ' ') theorems rest only on Lean's standard axioms"
 
 rm -f "$T/screen.ppm" "$T/screen.png" "$T/logo.ppm" "$T/logo.png" "$T/console.ppm" "$T/console.png"
-# Boot, wait for the desktop to settle, type "Hi!" into the Notes window, drag it by its
-# title bar, then capture the screen (test/run.py, DEMO_STEPS).
+# Boot, wait for the desktop to settle, type "Hi!" into the Notes window, wait for Notes to
+# save it, drag the window by its title bar, then capture the screen (test/run.py, DEMO_STEPS).
 out=$(python3 test/run.py 40 --demo)
 status=$?
 echo "$out" > "$T/serial.txt"            # where the window opened, for the pixel checks
@@ -43,7 +43,8 @@ check_order() {
 check_order alice \
   "alice: wrote secret 0x5ec12e7 to my data page" \
   "alice: no saved note yet" \
-  "alice: opened a 300x200 window, read-only, 59 pages -> ok"
+  "alice: opened a 480x320 window, read-only, 150 pages -> ok" \
+  "alice: saved note 1 (3 bytes)"
 
 check_order fs \
   "fs: ready, 22 files on the SD card" \
@@ -84,7 +85,7 @@ expected_head=$(printf '%s\n' "display: boot checks shown: 6 verified, 0 refused
 [ "$(echo "$display" | head -3)" = "$expected_head" ] || fail "display did not show the boot checks, logo and desktop"
 for line in \
   "display: start Apps -> ok" \
-  "display: alice opened a 300x200 window at 8,38 from a read-only capability to 59 pages" \
+  "display: alice opened a 480x320 window at 8,38 from a read-only capability to 150 pages" \
   "display: mallory sent a copy nobody asked for; refused"; do
   [ "$(echo "$display" | grep -cxF "$line")" = 1 ] || fail "display line missing or repeated: $line"
 done
@@ -206,14 +207,18 @@ assert at(0, 0) == at(2, 0) == at(3, 0) and at(1, 0) == at(2, 0), ("menu bar", a
 assert min(at(mx + 224, my + 6)) > 220, ("title bar after the drag", at(mx + 224, my + 6))
 # where the window was: the background pattern again, a dot at every 32 px brighter than
 # the gradient between the dots
-assert not (mx <= ox + 54 < mx + 300), "the window did not move off where it was"
+assert not (mx <= ox + 54 < mx + 480), "the window did not move off where it was"
 r, g, b = at(ox + 54, oy + 74)
 assert b > r + 40 and b > 90, ("background between the dots", (r, g, b))
 for x, y in ((144, 144), (16, 48), (976, 560)):
     dot, between = at(x, y), at(x + 8, y + 8)
     assert sum(dot) > sum(between) + 40, ("pattern dot", (x, y), dot, between)
-dark = sum(1 for y in range(my + 84, my + 106) for x in range(mx + 16, mx + 54) if max(at(x, y)) < 100)
+# the note, right of the list (the window's title bar is 30 px), and its first line as its
+# title in the list
+dark = sum(1 for y in range(my + 42, my + 62) for x in range(mx + 160, mx + 200) if max(at(x, y)) < 100)
 assert dark > 20, ("typed text", dark)
+dark = sum(1 for y in range(my + 84, my + 106) for x in range(mx + 14, mx + 54) if max(at(x, y)) < 100)
+assert dark > 20, ("the note's title in the list", dark)
 assert max(at(215, 548)) > 120, ("the Notes icon in the dock", at(215, 548))
 print("ok: the boot console, the boot screen, the desktop, the dock, the typed note and the moved window are on screen; mallory's write never landed")
 PY

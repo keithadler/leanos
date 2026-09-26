@@ -13,7 +13,7 @@ sys.path.insert(0, "test")
 from run import boot, mouse, wait_for, wclick, DOCK
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [c.encode() for c in s]
-term = wclick("Terminal", 230, 150)     # in Terminal's window, where edit's does not cover it
+term = wclick("Terminal", 230, 60)      # in Terminal's window, where edit's does not cover it
 steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *keys("write memo.txt hello\r"), wait_for("terminal: write"),
          *keys("run edit memo.txt\r"), wait_for("edit: opened a window"),

@@ -128,8 +128,8 @@ failed=0
 has() { echo "$out" | grep -qxF "$1" || { echo "FAIL: missing: $1"; failed=1; }; }
 # In order: what the display did, and who got each key typed to see where the focus was.
 # Files is 460 x 340 (460 x 370 with its title bar), zoomed to x (1024 - 460) / 2 and, in the
-# room from the menu bar (31 px) to the dock (y 514), y 31 + (483 - 370) / 2; Notes is 300 x
-# 230, zoomed to ((1024 - 300) / 2, 31 + (483 - 230) / 2).
+# room from the menu bar (31 px) to the dock (y 514), y 31 + (483 - 370) / 2; Notes is 480 x
+# 350, zoomed to ((1024 - 480) / 2, 31 + (483 - 350) / 2).
 got=$(echo "$out" | grep -E "^display: (.* (minimized|restored|zoomed|zoomed back)(, its window [0-9]+)?$|focus to |key 'q' to |moved Files|moved alice|the Window menu)")
 want="display: focus to Terminal
 display: key 'q' to Terminal
@@ -147,7 +147,7 @@ display: Files zoomed
 display: moved Files's window to (282, 87)
 display: key 'q' to Files
 display: Files zoomed back
-display: moved Files's window to (88, 136)
+display: moved Files's window to (456, 136)
 display: the Window menu, for Files
 display: focus to Terminal
 display: the Window menu, for Terminal
@@ -155,7 +155,7 @@ display: Terminal minimized
 display: focus to alice
 display: the Window menu, for alice
 display: alice zoomed
-display: moved alice's window to (362, 157)
+display: moved alice's window to (272, 97)
 display: the Window menu, for alice
 display: alice zoomed back
 display: moved alice's window to (8, 38)
@@ -167,8 +167,8 @@ display: focus to mwin, its window 1
 display: clock restored
 display: mwin minimized"
 [ "$got" = "$want" ] || { echo "FAIL: what the display did, in order:"; echo "$got" | sed 's/^/  got  | /'; failed=1; }
-has "display: Files opened a 460x340 window at 88,136 from a read-only capability to 153 pages"
-has "display: alice opened a 300x200 window at 8,38 from a read-only capability to 59 pages"
+has "display: Files opened a 460x340 window at 456,136 from a read-only capability to 153 pages"
+has "display: alice opened a 480x320 window at 8,38 from a read-only capability to 150 pages"
 # mwin's other windows heard their keys while window 1 was minimized; 1 its own once back
 has "mwin: window 2: key 'k'"
 has "mwin: window 1: key 'j'"
@@ -207,17 +207,18 @@ for icon, shots in ((TERMINAL, ("three", "minimized", "restored")), (EXTRA, ("mw
                     (CLOCK, ("clock", "clockmin", "clockback"))):
     for shot, want in zip(shots, (WHITE, AMBER, WHITE)):
         assert dot(shot, icon) == want, (shot, "the dock's dot at", icon, dot(shot, icon))
-# Terminal (556, 38; its dark content from y 68, 460 x 272): drawn, gone, back
+# Terminal (556, 38; its dark content from y 68, 460 x 272, Files over it from y 136): drawn,
+# gone, back
 dark = lambda p: max(p) < 40
-term = {s: count(s, dark, 556, 68, 1016, 340) for s in ("three", "minimized", "restored")}
-assert term["three"] > 100000 and term["restored"] > 100000 and term["minimized"] < 100, ("Terminal's pixels", term)
-# Files zoomed to (282, 87): its window where it went (light), none where it was
+term = {s: count(s, dark, 556, 68, 1016, 136) for s in ("three", "minimized", "restored")}
+assert term["three"] > 25000 and term["restored"] > 25000 and term["minimized"] < 100, ("Terminal's pixels", term)
+# Files zoomed to (282, 87) from (456, 136): its window where it went (light), none where it was
 z, t = load("zoomed"), load("three")
-assert min(z(700, 440)) > 200 and max(t(700, 440)) < 160, ("Files at its zoomed place", z(700, 440), t(700, 440))
-assert max(z(400, 485)) < 160 and min(t(400, 485)) > 200, ("Files gone from where it was", z(400, 485), t(400, 485))
-# Notes zoomed from the Window menu to (362, 157): light where it went
+assert min(z(300, 420)) > 200 and max(t(300, 420)) < 160, ("Files at its zoomed place", z(300, 420), t(300, 420))
+assert max(z(850, 485)) < 160 and min(t(850, 485)) > 200, ("Files gone from where it was", z(850, 485), t(850, 485))
+# Notes zoomed from the Window menu to (272, 97): light where it went
 m = load("menuzoom")
-assert min(m(620, 300)) > 200 and max(t(620, 300)) < 160, ("Notes at its zoomed place", m(620, 300), t(620, 300))
+assert min(m(400, 420)) > 200 and max(t(400, 420)) < 160, ("Notes at its zoomed place", m(400, 420), t(400, 420))
 # mwin: red, green, blue; green (window 1) gone while minimized, the others shown; green back
 RED, GREEN, BLUE = (0xd0, 0x40, 0x40), (0x40, 0xb0, 0x40), (0x40, 0x60, 0xd0)
 cols = {s: {n: count(s, near(c), 0, 31, 1024, 514) for n, c in (("red", RED), ("green", GREEN), ("blue", BLUE))}

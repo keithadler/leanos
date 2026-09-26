@@ -29,11 +29,12 @@ check_order() {
 check_order alice \
   "alice: wrote secret 0x5ec12e7 to my data page" \
   "alice: no saved note yet" \
-  "alice: opened a 300x200 window, read-only, 59 pages -> ok" \
+  "alice: opened a 480x320 window, read-only, 150 pages -> ok" \
+  "alice: saved note 1 (2 bytes)" \
   "alice: window closed, exiting" \
   "alice: wrote secret 0x5ec12e7 to my data page" \
-  "alice: loaded notes.txt, 2 bytes" \
-  "alice: opened a 300x200 window, read-only, 59 pages -> ok"
+  "alice: 1 note; loaded notes/1.txt, 2 bytes" \
+  "alice: opened a 480x320 window, read-only, 150 pages -> ok"
 
 check_order terminal \
   "terminal: opened a window -> ok" \
@@ -142,13 +143,16 @@ for k in (10, 11):
 for k in (12, 13, 14, 15):   # (the edge of Apps' check, just below slot 15, may show)
     assert count(k, blue) == 0 and count(k, green) < 12, ("empty open slot", k, count(k, green))
 assert count(16, green) > 60, ("Apps, started at boot for the startup items", count(16, green))
-# the note came back after Notes started again: dark text where "Hi" is
+# the note came back after Notes started again: dark text where "Hi" is, in the note and as
+# its title in the list
 notes = load("notes-again")
-assert sum(1 for y in range(ny + 84, ny + 104) for x in range(nx + 18, nx + 36) if max(notes(x, y)) < 100) > 20, \
+assert sum(1 for y in range(ny + 42, ny + 62) for x in range(nx + 160, nx + 200) if max(notes(x, y)) < 100) > 20, \
     "the saved note"
-# Terminal's dark window, below Security's: its left edge, beside Security
-assert tx + 6 < sx and ty < sy, ("Terminal is not beside Security", (tx, ty), (sx, sy))
-assert max(at(tx + 6, sy + 100)) < 60, ("terminal", at(tx + 6, sy + 100))
+assert sum(1 for y in range(ny + 84, ny + 104) for x in range(nx + 18, nx + 36) if max(notes(x, y)) < 100) > 20, \
+    "the saved note's title"
+# Terminal's dark window, below Security's: its left edge, left of Security
+assert tx + 6 < sx, ("Terminal is not beside Security", (tx, ty), (sx, sy))
+assert max(at(tx + 6, ty + 100)) < 60, ("terminal", at(tx + 6, ty + 100))
 print("ok: the Graphite background, Security's ten checks, Terminal and the saved note are on screen")
 PY
 
@@ -157,7 +161,7 @@ again=$(python3 test/run.py 40 --keep-sd)
 [ $? -eq 0 ] || fail "the second boot did not reach idle"
 echo "$again" | grep -E "^(fs|alice): " | sed 's/^/  | /'
 echo "$again" | grep -qx "fs: ready, 25 files on the SD card" || fail "the files did not survive a restart"
-echo "$again" | grep -qx "alice: loaded notes.txt, 2 bytes" || fail "Notes did not get its note back after a restart"
+echo "$again" | grep -qx "alice: 1 note; loaded notes/1.txt, 2 bytes" || fail "Notes did not get its note back after a restart"
 
 # And with no card at all, the system still comes up, with files in memory only.
 nocard=$(python3 test/run.py 40 --no-sd)
