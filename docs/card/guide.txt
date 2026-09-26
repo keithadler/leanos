@@ -41,9 +41,11 @@ Terminal
   ip, ping HOST, get http://URL [FILE]      the network (a USB network adapter)
   date, ntp [HOST]                          the time of day (set from a time server)
   run PROGRAM [FILE...]                     start a program from the card, giving it
-                                            those files (and its own folder, apps/NAME)
+                                            those files, 7 at most (and its own folder,
+                                            apps/NAME)
   ps                                        every program slot, and what runs in it
-  kill SLOT                                 stop a program from the card (10 to 15), answering or not
+  kill SLOT                                 stop a program from the card (10 to 15), answering or
+                                            not, and take back the files it was given
   whoami, caps, boot, uptime                what the kernel says about this program
   tour                                      why leanos is harder to attack than Linux
 

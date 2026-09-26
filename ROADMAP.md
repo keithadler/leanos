@@ -406,8 +406,14 @@ regressions: the check at start stopped 32 folders down and freed what was deepe
 a restart a name in one program's folder could reach a file made later in another's; a
 cluster given out again in the request that freed it kept its old bytes; a full card refused
 a rename or a delete that needed no room; and a program's folder that could not be made on a
-full card left its inode taken. TRUST.md says what the file server is trusted to do and
-what the fuzzer checks.
+full card left its inode taken. A change that fails no longer reads all the metadata back
+from the card (13 to 17 ms, which any program could make the file server spend in a loop):
+the file server keeps a copy of exactly what the card holds and copies that back, in about
+45 microseconds, and the fuzzer times failed changes against stats of the same paths. And
+the 48 records of what programs were given are 8 for each open slot, taken back when a
+program is killed, so one `run` naming many files cannot leave a later program without its
+folder (`test/grants.sh`). TRUST.md says what the file server is trusted to do and what the
+fuzzer checks.
 
 Next: the first boot on real Pi 4 hardware (EMMC2, colors, timings), the USB-A ports
 (xHCI on PCIe), the Pi 4's own Ethernet (GENET), a kernel lock finer than the whole kernel

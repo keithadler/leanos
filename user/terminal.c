@@ -595,7 +595,8 @@ static void cmd_get(struct term *t, struct line *l, const char *args) {
 
 /* kill SLOT: stop the program from the card in open slot SLOT (10 to 15), answering or not.
    Terminal holds those slots' launch capabilities; the kernel lets nothing else stop them
-   (`only_launchers_stop`). */
+   (`only_launchers_stop`). What the file server gave the slot is taken back too, whether a
+   program was still running there or had ended by itself. */
 static void cmd_kill(struct term *t, struct line *l, const char *args) {
     char num[8];
     word_of(args, num, 6);
@@ -608,6 +609,7 @@ static void cmd_kill(struct term *t, struct line *l, const char *args) {
         return;
     }
     struct res r = sys1(SYS_STOP, LAUNCH_OPEN + (k - OPEN_FIRST));
+    fs_unshare(&t->fs, k);
     say(t, r.status == OK ? "stopped" : "nothing running there");
     fs_log(l, "kill", num, r.status == OK ? "stopped" : "nothing running");
 }
@@ -636,8 +638,8 @@ static void cmd_ps(struct term *t, struct line *l) {
 /* Read a program from the SD card, make its image, and start it in a free open slot. */
 /* What a program from the card gets from the file server when it starts in open slot
    `slot`: its own folder, apps/NAME, read-write (made if new), and the files named after
-   it on the command line, read-write; nothing else. Whatever the slot's last program was
-   given is taken back first. */
+   it on the command line (FS_GRANTS_PER_SLOT - 1 at most: cmd_run checks), read-write;
+   nothing else. Whatever the slot's last program was given is taken back first. */
 static void give(struct term *t, struct line *l, u64 slot, const char *name, const char *files) {
     fs_unshare(&t->fs, slot);
     char folder[FS_PATH_MAX + 1] = "apps/";
@@ -669,6 +671,15 @@ static void cmd_run(struct term *t, struct line *l, const char *args) {
     int net = args[0] == '-' && args[1] == 'n' && args[2] == 'e' && args[3] == 't' && (args[4] == ' ' || !args[4]);
     if (net) args += 4;
     const char *files = word_of(args, name, FS_NAME_MAX);
+    /* the file server keeps FS_GRANTS_PER_SLOT paths for each slot: its folder, and 7 files */
+    int named = 0;
+    char word[FS_PATH_MAX + 1];
+    for (const char *w = files; w = word_of(w, word, FS_PATH_MAX), word[0];) named++;
+    if (named > FS_GRANTS_PER_SLOT - 1) {                               /* 7 */
+        say(t, "a program can be given 7 files at most");
+        fs_log(l, "run", name, "more than 7 files");
+        return;
+    }
     if (name[0] && app_raise(name)) {
         say(t, "already open: brought it to the front");
         fs_log(l, "run", name, "already open");

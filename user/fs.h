@@ -24,7 +24,8 @@ enum {
     FS_STAT = 7,      /* x2 = size, x3 = kind */
     FS_RENAME = 8,    /* path becomes the path in the data area, in one step */
     FS_SHARE = 9,     /* give open slot (arg & 255) path, with rights (arg >> 8 & 3), making it a
-                         folder first if (arg >> 16 & 1); only Terminal, Files and Apps may */
+                         folder first if (arg >> 16 & 1); only Terminal, Files and Apps may;
+                         FS_FULL if the slot holds FS_GRANTS_PER_SLOT paths already */
     FS_UNSHARE = 10,  /* take back everything open slot `arg` was given */
     FS_GRANTS = 11,   /* what the caller was given: x2 entries in the data area, each a rights
                          byte then a path and a 0 */
@@ -32,6 +33,9 @@ enum {
 enum { FS_OK = 0, FS_NOT_FOUND = 1, FS_FULL = 2, FS_BAD = 3, FS_NO_SERVER = 4, FS_EXISTS = 5,
        FS_NOT_EMPTY = 6, FS_NOT_DIR = 7, FS_IS_DIR = 8, FS_IO = 9, FS_DENIED = 10 };
 enum { FS_R = 1, FS_W = 2 };
+/* What one open slot may be given (SHARE): its folder and 7 more paths. The file server
+   keeps this many records for each of the 6, so no program's can crowd out another's. */
+#define FS_GRANTS_PER_SLOT 8
 enum { FS_FILE = 1, FS_DIR = 2 };
 
 #define FS_BUF_PAGES 4

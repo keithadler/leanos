@@ -40,6 +40,7 @@
 #define STAGE_PAGE 84                 /* 16 pages: clusters a request reads or changes */
 #define JHEAD_PAGE 100                /* the journal header */
 #define RAMDISK_PAGE 101              /* without a card: the disk, 128 pages */
+#define SHADOW_PAGE 229               /* 20 pages: the bitmap and inodes as the card has them */
 #define STAGES 16
 #define MAX_CLUSTERS (4 * 4096 * 8)
 #define MAX_INODES 1024
@@ -82,7 +83,7 @@ struct jhead {
    under it if it is a folder, with read and/or write. Terminal, Files and Apps give; the
    kernel's badges say who asks (`file_server_knows_the_sender`), so a program reaches
    nothing else. Given paths are kept normalized: no leading, trailing or doubled '/'. */
-#define MAX_GRANTS 48
+#define MAX_GRANTS (6 * FS_GRANTS_PER_SLOT)    /* FS_GRANTS_PER_SLOT for each open slot */
 struct grant { unsigned char slot, rights; char path[FS_PATH_MAX + 1]; };
 
 /* Clusters in memory: a small cache of STAGES pages. A changed cluster stays until the
@@ -100,6 +101,7 @@ struct server {
     unsigned tx_target[JMAX];
     const char *tx_src[JMAX];
     int ntx, overflow;
+    int shadow_ok;                               /* the shadow is the card's metadata, exactly */
     unsigned char seen_ino[MAX_INODES / 8];      /* the check: inodes found in the tree */
     struct grant grants[MAX_GRANTS];
     unsigned char refusals[16];                  /* per open slot, for the log */
@@ -110,6 +112,7 @@ struct server {
 #define BITMAP ((unsigned char *)PAGE(BITMAP_PAGE))
 #define INODES ((struct inode *)PAGE(INODE_PAGE))
 #define JHEAD ((struct jhead *)PAGE(JHEAD_PAGE))
+#define SHADOW ((char *)PAGE(SHADOW_PAGE))
 static char *stage_page(int i) { return (char *)PAGE(STAGE_PAGE + (u64)i); }
 static char *ram_block(u64 b) { return (char *)PAGE(RAMDISK_PAGE) + 512 * b; }
 
@@ -137,6 +140,36 @@ static int bwrite(u64 b, const void *src) {
 }
 
 static u64 cluster_block(unsigned cl) { return S->sb.data_start + (u64)cl * PER_CLUSTER; }
+
+/* ---- the metadata, and its shadow ----
+
+   The bitmap and the inode table are kept in memory whole (BITMAP, INODES), and changed
+   there by a request before its commit. The shadow is a second copy, of exactly what the
+   card holds in those blocks: it is filled when they are read from the card, and a block of
+   it changes only when that block's write to its place on the card went through (commit,
+   format). A write that fails leaves the card's block unknown, so the shadow is marked
+   stale until the next read of the whole metadata from the card. */
+
+/* Where block `b` of the card's metadata (the bitmap's blocks, then the inodes') is in the
+   copy at `base` (BITMAP, with INODES after it, or SHADOW); 0 if `b` is not metadata. */
+static char *meta_at(char *base, u64 b) {
+    const struct super *sb = &S->sb;
+    if (b >= sb->bitmap_start && b < (u64)sb->bitmap_start + sb->bitmap_blocks)
+        return base + 512 * (b - sb->bitmap_start);
+    if (b >= sb->inode_start && b < (u64)sb->inode_start + sb->inode_count / 8)
+        return base + 4 * 4096 + 512 * (b - sb->inode_start);
+    return 0;
+}
+
+/* Every block of metadata from one copy to the other, 8 bytes at a time. */
+__attribute__((no_builtin)) static void meta_copy(char *to, const char *from) {
+    for (unsigned b = 0; b < S->sb.bitmap_blocks + S->sb.inode_count / 8; b++) {
+        u64 at = b < S->sb.bitmap_blocks ? 512 * (u64)b : 4 * 4096 + 512 * (u64)(b - S->sb.bitmap_blocks);
+        u64 *d = (u64 *)(to + at);
+        const u64 *s = (const u64 *)(from + at);
+        for (int i = 0; i < 64; i++) d[i] = s[i];
+    }
+}
 
 /* ---- the transaction ---- */
 
@@ -187,7 +220,13 @@ static int commit(void) {
     h->sum = tx_sum(h, S->tx_src, 0);
     if (ok) ok &= bwrite(S->sb.journal_start, h);             /* the commit */
     if (ok)
-        for (int i = 0; i < S->ntx; i++) ok &= bwrite(S->tx_target[i], S->tx_src[i]);
+        for (int i = 0; i < S->ntx; i++) {
+            int w = bwrite(S->tx_target[i], S->tx_src[i]);
+            char *sh = meta_at(SHADOW, S->tx_target[i]);
+            if (sh && w) copy(sh, S->tx_src[i], 512);         /* the card has it now */
+            else if (sh) S->shadow_ok = 0;                    /* the card has who knows what */
+            ok &= w;
+        }
     h->n = 0;
     if (ok) ok &= bwrite(S->sb.journal_start, h);             /* done */
     if (!ok) S->errors++;
@@ -575,24 +614,57 @@ static int inside(const char *to, unsigned ino) {
 
 /* ---- requests ---- */
 
+/* Free clusters in the bitmap in memory (cluster 0 means "none": never counted). */
+static unsigned count_free(void) {
+    unsigned n = S->sb.clusters, taken = 0;
+    for (unsigned cl = 1; cl < n;) {
+        if (cl % 64 == 0 && cl + 64 <= n) {           /* 64 at once: a word's bits counted */
+            u64 x = *(const u64 *)(BITMAP + cl / 8);
+            x = x - ((x >> 1) & 0x5555555555555555UL);
+            x = (x & 0x3333333333333333UL) + ((x >> 2) & 0x3333333333333333UL);
+            x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0FUL;
+            taken += (unsigned)((x * 0x0101010101010101UL) >> 56);
+            cl += 64;
+        } else taken += !!used(cl++);
+    }
+    return n > 1 ? n - 1 - taken : 0;
+}
+
+/* Everything from the card: the bitmap, the inodes, and the shadow with them. */
 static int load_metadata(void) {
+    S->shadow_ok = 0;
     for (unsigned b = 0; b < S->sb.bitmap_blocks; b++)
         if (!bread(S->sb.bitmap_start + b, (char *)BITMAP + 512 * b)) return 0;
     for (unsigned b = 0; b < S->sb.inode_count / 8; b++)
         if (!bread(S->sb.inode_start + b, (char *)INODES + 512 * b)) return 0;
-    unsigned free = 0;
-    for (unsigned cl = 1; cl < S->sb.clusters; cl++) free += !used(cl);
-    S->free_clusters = free;
+    S->free_clusters = count_free();
+    meta_copy(SHADOW, (const char *)BITMAP);
+    S->shadow_ok = 1;
     return 1;
 }
 
+/* A change that failed: what it changed in the metadata in memory is dropped, and the
+   metadata becomes what the card holds, as reading all of it from the card again would
+   make it. The shadow is exactly that (unless a write to the card failed: then it is read
+   from the card, as it always was), so it is copied whole, and the free clusters counted
+   again. That takes about 45 microseconds (in QEMU), where the read took 13 to 17 ms, and
+   any program could make the file server spend those again and again, with requests that
+   fail. */
+static void rollback(void) {
+    if (S->shadow_ok) {
+        meta_copy((char *)BITMAP, SHADOW);
+        S->free_clusters = count_free();
+    } else load_metadata();
+    op_begin();
+}
+
 static u64 serve_op(u64 op, u64 arg, char *buf, u64 *value, u64 *more);
-static u64 share_op(u64 badge, u64 op, u64 arg, char *buf, u64 *value);
+static u64 share_op(u64 badge, u64 op, u64 arg, char *buf, u64 *value, struct line *l);
 
 /* A request that fails part way leaves the card as it was (nothing was committed), and
-   its changes to the copies in memory are dropped: they are read back from the card. */
+   its changes to the copies in memory are dropped (rollback). */
 static u64 serve(u64 badge, u64 op, u64 arg, char *buf, u64 *value, u64 *more, struct line *l) {
-    if (op >= FS_SHARE) return share_op(badge, op, arg, buf, value);
+    if (op >= FS_SHARE) return share_op(badge, op, arg, buf, value, l);
     if (!terminated(buf)) return FS_BAD;                          /* a path too long */
     if (op == FS_RENAME && !terminated(buf + FS_DATA_OFF)) return FS_BAD;
     unsigned need = op == FS_LIST || op == FS_READ || op == FS_STAT ? FS_R : FS_W;
@@ -609,10 +681,7 @@ static u64 serve(u64 badge, u64 op, u64 arg, char *buf, u64 *value, u64 *more, s
         return FS_DENIED;
     }
     u64 code = serve_op(op, arg, buf, value, more);
-    if (code != FS_OK && op != FS_LIST && op != FS_READ && op != FS_STAT) {
-        load_metadata();
-        op_begin();
-    }
+    if (code != FS_OK && op != FS_LIST && op != FS_READ && op != FS_STAT) rollback();
     return code;
 }
 
@@ -718,7 +787,7 @@ static u64 serve_op(u64 op, u64 arg, char *buf, u64 *value, u64 *more) {
 }
 
 /* SHARE, UNSHARE, GRANTS. */
-static u64 share_op(u64 badge, u64 op, u64 arg, char *buf, u64 *value) {
+static u64 share_op(u64 badge, u64 op, u64 arg, char *buf, u64 *value, struct line *l) {
     char p[FS_PATH_MAX + 1];
     if (!terminated(buf)) return FS_BAD;
     normalize(buf, p);
@@ -742,11 +811,36 @@ static u64 share_op(u64 badge, u64 op, u64 arg, char *buf, u64 *value) {
     u64 slot = arg & 255;
     if (!open_slot(slot)) return FS_BAD;
     if (op == FS_UNSHARE) {
-        for (int g = 0; g < MAX_GRANTS; g++) if (S->grants[g].slot == slot) S->grants[g].slot = 0;
+        u64 n = 0;
+        for (int g = 0; g < MAX_GRANTS; g++)
+            if (S->grants[g].slot == slot) { S->grants[g].slot = 0; n++; }
         S->refusals[slot] = 0;
+        if (n) {
+            put_s(l, "fs: took back ");
+            put_dec(l, n);
+            put_s(l, n == 1 ? " path from slot " : " paths from slot ");
+            put_dec(l, slot);
+            put_s(l, "\n");
+            flush(l);
+        }
         return FS_OK;
     }
     if (op != FS_SHARE || !p[0]) return FS_BAD;
+    /* The record: the slot's own for this path (its rights change), or a free one if the
+       slot holds fewer than its share. Each open slot may hold FS_GRANTS_PER_SLOT, and the
+       table has that many for every slot, so however many files one program is given, and
+       however long the records of a program that stopped wait for its slot to start again,
+       every other slot still has room for its folder and its files. */
+    int rec = -1, free = -1, held = 0;
+    for (int g = 0; g < MAX_GRANTS; g++) {
+        struct grant *gr = &S->grants[g];
+        int i = 0;
+        while (gr->path[i] && gr->path[i] == p[i]) i++;
+        if (gr->slot == slot && !gr->path[i] && !p[i]) rec = g;
+        held += gr->slot == slot;
+        if (!gr->slot && free < 0) free = g;
+    }
+    if (rec < 0 && (held >= FS_GRANTS_PER_SLOT || free < 0)) return FS_FULL;
     if ((arg >> 16) & 1) {                /* the folder, and the folders it is in */
         char part[FS_PATH_MAX + 1];
         u64 v, m;
@@ -759,26 +853,17 @@ static u64 share_op(u64 badge, u64 op, u64 arg, char *buf, u64 *value) {
                 if (code == FS_NOT_FOUND) code = serve_op(FS_MKDIR, 0, buf, &v, &m);
                 else if (m != FS_DIR) code = FS_NOT_DIR;
                 if (code != FS_OK) {      /* a folder not made (the card full): as serve() does */
-                    load_metadata();
-                    op_begin();
+                    rollback();
                     return code;
                 }
             }
             if (!p[i]) break;
         }
     }
-    int free = -1;
-    for (int g = 0; g < MAX_GRANTS; g++) {
-        struct grant *gr = &S->grants[g];
-        int i = 0;
-        while (gr->path[i] && gr->path[i] == p[i]) i++;
-        if (gr->slot == slot && !gr->path[i] && !p[i]) { gr->rights = (unsigned char)((arg >> 8) & 3); return FS_OK; }
-        if (!gr->slot && free < 0) free = g;
-    }
-    if (free < 0) return FS_FULL;
-    struct grant *gr = &S->grants[free];
-    gr->slot = (unsigned char)slot;
+    struct grant *gr = &S->grants[rec >= 0 ? rec : free];
     gr->rights = (unsigned char)((arg >> 8) & 3);
+    if (rec >= 0) return FS_OK;
+    gr->slot = (unsigned char)slot;
     for (int i = 0; i <= FS_PATH_MAX; i++) { gr->path[i] = p[i]; if (!p[i]) break; }
     return FS_OK;
 }
@@ -948,6 +1033,8 @@ static int format(unsigned total) {
     if (ok) ok &= bwrite(0, z);                      /* last: the superblock makes it real */
     S->seq = 0;
     S->free_clusters = sb->clusters - 1;
+    meta_copy(SHADOW, (const char *)BITMAP);
+    S->shadow_ok = ok;
     return ok;
 }
 
@@ -985,6 +1072,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     sys2(SYS_MAP, SPARE, BITMAP_PAGE);
     sv->errors = 0;
     sv->ram = 0;
+    sv->shadow_ok = 0;
     for (int g = 0; g < MAX_GRANTS; g++) sv->grants[g].slot = 0;
     for (int i = 0; i < 16; i++) sv->refusals[i] = 0;
     sv->rover = 1;

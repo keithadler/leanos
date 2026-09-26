@@ -26,6 +26,8 @@
      fsfuzz2, fsfuzz3: 3 alone, at the same time, each in its own folder.
      fsfuzz4: given apps as well (run fsfuzz4 apps), fills it to 64 entries, one cluster.
      fsfuzz5: says what it was given (nothing, on a full card).
+     fsg*:    (test/grants.sh) says how many paths it was given and how many of them it
+              reaches, then waits to be stopped; fsgx ends by itself instead.
      fsfuzz, when its folder has expect (after a restart): every file as expect says.
 
    Every answer must come, and a refused request must leave the buffer as it was and say
@@ -729,6 +731,48 @@ static void fixed_bigdir(struct fz *f) {
     at(f, d, FS_DELETE, 0, FS_OK, "a big folder, emptied");
 }
 
+/* Failed changes, timed, then stats of the same paths: a change that fails must cost about
+   what the stat does (test/fsfuzz.sh compares). The file server used to read all its
+   metadata back from the card after every change that failed (about 129 blocks, 13 to 17
+   ms), so a program could slow it for everyone by asking for changes that fail, in a loop.
+   `full`: on a full card, a new file, whose inode and entry are taken in memory before the
+   write finds no room. Else changes that fail at once: a folder made twice, a file deleted
+   that is not there, a folder written, a rename of nothing, a write longer than the buffer. */
+#define TIMED 200
+static void timed_failures(struct fz *f, int full) {
+    char p[64], q[64];
+    full_path(f, full ? "r2/new" : "gone", p);
+    full_path(f, "gone2", q);
+    u64 us[2];
+    for (int stat = 0; stat < 2; stat++) {         /* then stats of the same paths, to compare */
+        u64 t0 = ticks();
+        for (int i = 0; i < TIMED; i++) {
+            int k = full ? 5 : i % 5;
+            set_path(f, k == 0 || k == 2 ? f->root : p);
+            set_off(f, 0);
+            set_to(f, q);                                       /* a rename's; a write's byte */
+            static const u64 op[] = {FS_MKDIR, FS_DELETE, FS_WRITE, FS_RENAME, FS_WRITE, FS_WRITE};
+            static const u64 arg[] = {0, 0, 1, 0, FS_CHUNK + 1, 1};
+            static const u64 want[] = {FS_EXISTS, FS_NOT_FOUND, FS_IS_DIR, FS_NOT_FOUND, FS_BAD, FS_FULL};
+            u64 o = stat ? FS_STAT : op[k], w = stat ? (k == 0 || k == 2 ? FS_OK : FS_NOT_FOUND) : want[k];
+            struct res r = raw(f, o, arg[k], f->fs.cap);       /* not ask: its sums would count */
+            if (code(r) != w) wrong(f, "a change that fails", o, r, w);
+        }
+        us[stat] = (ticks() - t0) * 1000000 / tick_rate();
+    }
+    struct line l = {.n = 0};
+    put_s(&l, "fsfuzz: ");
+    put_s(&l, f->name);
+    put_s(&l, " in slot ");
+    put_dec(&l, f->me);
+    put_s(&l, full ? ": failed changes on a full card: 200 in " : ": failed changes: 200 in ");
+    put_dec(&l, us[0]);
+    put_s(&l, " us, 200 stats of the same paths in ");
+    put_dec(&l, us[1]);
+    put_s(&l, " us\n");
+    flush(&l);
+}
+
 /* ---- 2. regressions ---- */
 
 /* The regressions found on a card filled until the file server says full:
@@ -800,6 +844,8 @@ static void regress_full(struct fz *f) {
     fill_data(f, 1, 3);
     at(f, nf, FS_WRITE, 1, FS_FULL, "a new file on a full card");
     at(f, nf, FS_STAT, 0, FS_NOT_FOUND, "a write that did not fit");
+    timed_failures(f, 1);
+    at(f, nf, FS_STAT, 0, FS_NOT_FOUND, "a write that did not fit, 200 times");
     char want[CL];
     for (u64 i = 0; i < 3 * CL; i += CL) {
         fill_data(f, 3 * CL, 1);
@@ -1205,7 +1251,8 @@ static void find_name(struct fz *f) {
     f->name[1] = 0;
     if (*(const volatile unsigned *)p == ICON_MAGIC)
         for (int i = 0; i < 16; i++) f->name[i] = i < 15 ? (char)p[ICON_NAME_AT + i] : 0;
-    f->mode = same(f->name, "fsfuzz") ? MAIN : same(f->name, "fsfuzz4") ? PAD : same(f->name, "fsfuzz5") ? LATE : HELPER;
+    f->mode = same(f->name, "fsfuzz") ? MAIN : same(f->name, "fsfuzz4") ? PAD
+            : same(f->name, "fsfuzz5") || starts(f->name, "fsg") ? LATE : HELPER;
     cpy(f->root, "apps/");
     for (int i = 0; f->name[i] && i < 15; i++) f->root[5 + i] = f->name[i], f->root[6 + i] = 0;
 }
@@ -1264,7 +1311,27 @@ __attribute__((section(".text.start"))) void _start(void) {
         set_path(f, "");
         struct res r = raw(f, FS_GRANTS, 0, f->fs.cap);
         u64 given = code(r) == FS_OK ? r.x[2] : 0;
-        if (f->mode == LATE) say(f, "given ", given, given ? " paths" : " paths (the card was full)");
+        if (f->mode == LATE && starts(f->name, "fsg")) {
+            /* each path it was given (a rights byte, the path, a 0), asked about */
+            char *got = content(0);                         /* the model's room: not used here */
+            for (u64 i = 0; i < FS_CHUNK; i++) got[i] = data(f)[i];
+            u64 reach = 0, at = 0;
+            for (u64 k = 0; k < given && at < FS_CHUNK; k++) {
+                set_path(f, got + at + 1);
+                reach += code(raw(f, FS_STAT, 0, f->fs.cap)) == FS_OK;
+                at += 2 + slen(got + at + 1);
+            }
+            struct line l = {.n = 0};
+            put_s(&l, "fsfuzz: ");
+            put_s(&l, f->name);
+            put_s(&l, ": given ");
+            put_dec(&l, given);
+            put_s(&l, " paths, ");
+            put_dec(&l, reach);
+            put_s(&l, " reachable\n");
+            flush(&l);
+            if (same(f->name, "fsgx")) exit_task();
+        } else if (f->mode == LATE) say(f, "given ", given, given ? " paths" : " paths (the card was full)");
         else {
             /* given apps too (Terminal: run fsfuzz4 apps): fill apps to 64 entries, one cluster */
             u64 total = 0;
@@ -1289,6 +1356,7 @@ __attribute__((section(".text.start"))) void _start(void) {
         fixed_offsets(f);
         fixed_folders(f);
         fixed_bigdir(f);
+        timed_failures(f, 0);
         done(f, "fixed requests");
         regress_full(f);
         done(f, "regressions and a full card");

@@ -97,6 +97,14 @@ echo "$out" | grep -q "WRONG" && fail "a wrong answer: $(echo "$out" | grep WRON
 # the file server answered each request in time (the slowest is the fill's, a few ms)
 slow=$(echo "$out" | sed -n 's/^fsfuzz: .* slowest answer \([0-9]*\) ms, .*/\1/p' | sort -n | tail -1)
 [ -n "$slow" ] && [ "$slow" -le 2000 ] || fail "an answer took ${slow:-?} ms"
+# a change that fails costs about what a stat of the same path does, not a reload of every
+# block of metadata from the card as well (17 ms each, before): 200 of each, timed, and the
+# failed changes may take at most 1.5 times as long, however they fail
+for what in "failed changes" "failed changes on a full card"; do
+  t=$(echo "$out" | sed -n "s/^fsfuzz: fsfuzz in slot 11: $what: 200 in \([0-9]*\) us, 200 stats of the same paths in \([0-9]*\) us$/\1 \2/p")
+  read -r us stat <<<"$t"
+  [ -n "${stat:-}" ] && [ $((us * 2)) -le $((stat * 3)) ] || fail "200 $what took ${us:-?} us, 200 stats ${stat:-?} us"
+done
 
 # Terminal, a client beside them, got its files back whole
 for i in 0 1 2; do

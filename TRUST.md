@@ -508,6 +508,30 @@ QEMU's model of them, because leanos has only run under QEMU.
     drop what a failed attempt changed in memory, as every other request does: on a full
     card the inode it took stayed taken, until a later change wrote it to the card and the
     next start repaired it.
+- A request that changes something and then fails must leave the file server's copies of
+  the metadata (the bitmap and the inodes) as the card holds them. The file server used to
+  read them all back from the card after every change that failed, however it failed:
+  about 129 blocks, 13 to 17 ms, so any program could slow the file server for everyone
+  with a loop of requests that fail. It now keeps a second copy of exactly what those
+  blocks hold on the card (the shadow: filled when they are read, and changed a block at a
+  time only when that block's write to its place on the card went through) and copies it
+  back, with the free clusters counted again: what reading the card again would give,
+  about 45 microseconds in QEMU. If a write to the card failed, the shadow no longer says
+  what the card holds, and the metadata is read from the card, as before. This is tested,
+  not proved: `test/fsfuzz.sh` times 200 failed changes of each kind, and 200 on a full
+  card, against 200 stats of the same paths, and allows them 1.5 times as long (they took
+  4 to 5 times as long before; now within 10 percent); and a build that read the card after
+  each of these copies and compared found no difference, through three runs of the fuzzer.
+- The file server keeps 48 records of what the open slots were given (SHARE). One `run`
+  could take them all by naming many files, and a program started after it got no folder.
+  Each open slot may now hold 8 (its folder and 7 more), and there are 8 for each of the 6,
+  so no slot can crowd out another; Terminal's `run` refuses more than 7 files and says so.
+  What a slot was given is taken back when Terminal kills its program and before anything
+  starts in the slot again. A program that ends by itself keeps its 8 until one of those,
+  unused, since no program runs there. `test/grants.sh` refuses a run naming 20 files,
+  fills all six slots twice with a program and 7 files each, kills them in a jumbled order
+  (each kill takes back 8 at once), and then, with a program that ended by itself holding
+  its 8, the table full, starts another in its slot that is given and reaches all it names.
 - Capability lists are bounded (64 per task) but a server that is sent grants it does not
   want must drop them, from a plain send as from a call; the display server, the file
   server and the network service do. The file server did not, for a plain send (which
