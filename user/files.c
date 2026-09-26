@@ -496,6 +496,12 @@ COLD static void edit_key(struct files *st, struct line *l, u64 k) {
     else if (k == 127 || k == 8) {
         if (st->sel) cut(st, 0, st->sel);
         else if (st->cur > 0) cut(st, st->cur - 1, st->cur);
+    } else if (k == KEY_DELETE) {                    /* forward: the letter after the cursor */
+        if (st->sel) cut(st, 0, st->sel);
+        else if (st->cur < st->elen) cut(st, st->cur, st->cur + 1);
+    } else if (k == KEY_HOME || k == KEY_END) {
+        st->cur = k == KEY_HOME ? 0 : st->elen;
+        st->sel = 0;
     } else if (k == KEY_LEFT) {
         st->cur = st->sel ? 0 : st->cur - (st->cur > 0);
         st->sel = 0;
@@ -654,7 +660,7 @@ COLD static void delete_key(struct files *st, struct line *l) {
 
 /* A key with no name being edited. */
 COLD static void key(struct files *st, struct line *l, u64 k) {
-    if (k == 127 || k == 8) { delete_key(st, l); return; }
+    if (k == 127 || k == 8 || k == KEY_DELETE) { delete_key(st, l); return; }
     int was = st->confirm;
     st->confirm = 0;
     if (k >= 'A' && k <= 'Z') k += 'a' - 'A';

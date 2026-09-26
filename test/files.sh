@@ -85,8 +85,9 @@ steps = [wait_for("usb: ready"), *click(*DOCK["Files"]), wait_for("files: opened
          b"v", after("files: moved "), LEFT,
          *row(4), b"x", after("files: marked "), b"\r", after("files: opened sub"), b"v", after("files: moved "),
          *ESC, after("files: forgot "), LEFT,
-         # the empty untitled folder goes at once
-         *row(3), DEL, after("files: deleted "),
+         # the empty untitled folder goes at once, by the USB keyboard's Delete (forward
+         # delete) key, as Backspace does
+         *row(3), *usb_key("delete"), after("files: deleted "),
          # what Terminal sees
          *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *cmd("find"), *shown(), *cmd("ls"), *cmd("cat sub/box/pear.txt"), *shown(), *cmd("cat sub/box/b.txt"), *shown(),
