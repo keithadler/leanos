@@ -172,7 +172,7 @@ build/user/font.h: user/font5x7.txt tools/mkfont.py
 	python3 tools/mkfont.py $< $@
 
 build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/fs.h user/elf.h user/date.h user/zone.h \
-  user/user.ld build/user/font.h
+  user/prefs.h user/user.ld build/user/font.h
 	@mkdir -p build/user
 	$(CC) $(UCFLAGS) -Ibuild/user -c $< -o build/user/$*.o
 	$(LD) -T user/user.ld --gc-sections build/user/$*.o -o $@

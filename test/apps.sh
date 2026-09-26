@@ -72,14 +72,18 @@ check_order settings \
   "settings: opened a window -> ok" \
   "settings: Raspberry Pi 4 Model B, revision 0xb03115, 25.0 C, CPU at 700 MHz" \
   "settings: time zone UTC" \
+  "settings: background Indigo" \
   "settings: background set to Graphite -> ok" \
   "settings: CPU speed 600 MHz -> ok" \
   "settings: the firmware reports the CPU at 600 MHz" \
   "settings: activity light on -> ok"
 
-# Files: the list (the programs' ten icons left out), then the down arrow through the files,
-# past the 12 rows it shows at once, to hello.txt
-echo "$out" | grep -qx "files: listed 16 files" || fail "files did not list the card"
+# Files: the list (the programs' ten icons left out; settings.txt, where Apps saved the
+# background Settings chose, included), then the down arrow through the files, past the 12
+# rows it shows at once, to hello.txt
+echo "$out" | grep -qx "files: listed 17 files" || fail "files did not list the card"
+echo "$out" | grep -qx "apps: saved the time zone, UTC, and the background, Graphite, in settings.txt -> ok" \
+  || fail "Apps did not save the background Settings chose"
 [ "$(echo "$out" | grep -c "^files: showing ")" = 14 ] || fail "the down arrow did not walk the list"
 echo "$out" | grep -E "^files: showing " | tail -1 | grep -qx "files: showing hello.txt (19 bytes)" || fail "files did not reach hello.txt"
 
@@ -101,7 +105,7 @@ done
 display=$(echo "$out" | grep -E "^display: (start|closed|background)")
 expected=$(printf '%s\n' "display: start Apps -> ok" "display: closed alice's window" "display: start Notes -> ok" \
   "display: start Terminal -> ok" "display: start Settings -> ok" \
-  "display: background 1, as Settings asked" "display: closed Terminal's window" \
+  "display: background 1, as Settings asked" "display: start Apps -> ok" "display: closed Terminal's window" \
   "display: start Terminal -> ok" "display: start Files -> ok" "display: start Security -> ok")
 echo "$out" | grep -qE "^leanos: slot 10 runs a program from its starter, not the manifest; sha256 " \
   || fail "the kernel did not load hello into slot 10"
@@ -159,8 +163,10 @@ PY
 # Restart the Pi with the same SD card: the files are still there.
 again=$(python3 test/run.py 40 --keep-sd)
 [ $? -eq 0 ] || fail "the second boot did not reach idle"
-echo "$again" | grep -E "^(fs|alice): " | sed 's/^/  | /'
-echo "$again" | grep -qx "fs: ready, 25 files on the SD card" || fail "the files did not survive a restart"
+echo "$again" | grep -E "^(fs: |alice: |apps: time zone|display: background)" | sed 's/^/  | /'
+echo "$again" | grep -qx "fs: ready, 26 files on the SD card" || fail "the files did not survive a restart"
+echo "$again" | grep -qx "apps: time zone UTC, background Graphite, from settings.txt -> ok" || fail "Apps did not read the background back"
+echo "$again" | grep -qx "display: background 1, saved on the card" || fail "the Graphite background did not survive a restart"
 echo "$again" | grep -qx "alice: 1 note; loaded notes/1.txt, 2 bytes" || fail "Notes did not get its note back after a restart"
 
 # And with no card at all, the system still comes up, with files in memory only.

@@ -150,6 +150,14 @@ static inline long app_zone(void) {
     return m % 15 ? 0 : m;
 }
 
+/* The background the display shows (SET_BACKGROUND's number: 0 Indigo, 1 Graphite, 2 Dawn,
+   user/prefs.h), which comes in the same answer as the zone. Anyone may ask; only Settings
+   may change it. 0 if the display does not answer. */
+static inline u64 app_background(void) {
+    struct res r = sys(SYS_CALL, ENDPOINT, OP_ZONE, 0, 0, 0);
+    return r.status == OK && r.x[1] == 0 && r.x[3] < 16 ? r.x[3] : 0;
+}
+
 /* Copy and paste. The display server keeps what was copied: up to CLIP_MAX bytes of text,
    printable ASCII and line breaks. Text moves between programs only by the user's hand:
 

@@ -4,10 +4,11 @@
 
    Settings chooses it and tells the display server (SET, as it does the background; only
    Settings may). The display server keeps it, shows the menu bar's clock in it, and tells
-   any program that asks (ZONE): Clock asks every second. It is kept on the card in
-   timezone.txt ("UTC+5:30") by Apps, which the display asks to save it, and which reads it
-   back when the display starts it at boot. A message word cannot carry a negative number,
-   so the zone travels as minutes + ZONE_BIAS. */
+   any program that asks (ZONE): Clock asks every second. It is kept on the card, with the
+   background, in settings.txt (user/prefs.h) by Apps, which the display asks to save them,
+   and which reads them back when the display starts it at boot; an older card's
+   timezone.txt ("UTC+5:30") is read too. A message word cannot carry a negative number, so
+   the zone travels as minutes + ZONE_BIAS. */
 #pragma once
 #include "date.h"
 

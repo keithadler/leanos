@@ -4,7 +4,8 @@ The dock
   Notes     notes, saved to the SD card as you type (more under Notes below)
   Files     the files on the card; click one to read it (more under Files below)
   Terminal  commands; type help
-  Settings  the background, the time zone, and the Raspberry Pi's speed and light
+  Settings  the background and the time zone (both kept on the card, in settings.txt),
+            and the Raspberry Pi's speed and light
   Security  what every program's boot check found, and what is proved
   Apps      every program, built in or on the card, with its icon; click one to start it
 

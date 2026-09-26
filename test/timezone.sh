@@ -5,11 +5,18 @@
 # clock in each zone at once, Clock follows within a second, and Apps saves the choice on the
 # card. Each program logs the local time it shows beside the Unix time it read, so the check
 # below needs no real clock: it works out what each should show, the date turning over at
-# local midnight included (UTC+5:30 is already 2027 there). Then the Pi starts again from the
-# same card: Apps gives the display the saved zone at boot, and Settings, Clock and the menu
-# bar show it.
+# local midnight included (UTC+5:30 is already 2027 there). Last, Settings chooses the Dawn
+# background, and Apps saves it with the zone in settings.txt. Then the Pi starts again from
+# the same card: Apps gives the display the saved zone and background at boot, and Settings,
+# Clock, the menu bar and the desktop show them. Terminal then makes the card an older one:
+# no settings.txt, the zone alone in timezone.txt (UTC+9). The Pi starts a third time: the
+# zone comes back from timezone.txt and the background is the first, Indigo; Settings
+# chooses Graphite, and Apps saves both in settings.txt and removes timezone.txt.
 set -u
 cd "$(dirname "$0")/.."
+T=${LEANOS_TEST_DIR:-build}
+mkdir -p "$T"
+rm -f "$T/bg-dawn.ppm" "$T/bg-graphite.ppm"
 fail() { echo "FAIL: $*"; exit 1; }
 
 ntp_port=$((20000 + RANDOM % 20000))
@@ -28,16 +35,16 @@ trap 'kill $ntp 2>/dev/null; wait $ntp 2>/dev/null' EXIT
 sleep 1
 
 # In Settings' pixels (below its title bar), the stepper's - and + are at (318 + 17, 62) and
-# (318 + 138 - 17, 62), and Indigo at (64, 62). Terminal's date shows the time in the zone
-# and, beside it, in UTC.
+# (318 + 138 - 17, 62), and Indigo, Graphite and Dawn at (64, 62), (160, 62) and (256, 62).
+# Terminal's date shows the time in the zone and, beside it, in UTC.
 out=$(NTP=$ntp_port python3 - <<'PY'
 import os, sys
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for, wclick, TITLE_H, DOCK, TEST_CARD
+from run import boot, mouse, wait_for, wclick, pause, snap, TITLE_H, DOCK, TEST_CARD
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [c.encode() for c in s]
 MINUS, PLUS = wclick("Settings", 335, TITLE_H + 62), wclick("Settings", 439, TITLE_H + 62)
-INDIGO = wclick("Settings", 64, TITLE_H + 62)
+GRAPHITE, DAWN = wclick("Settings", 160, TITLE_H + 62), wclick("Settings", 256, TITLE_H + 62)
 first = [wait_for("usb: network: ", 2), *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *keys(f"ntp 10.0.2.2:{os.environ['NTP']}\r"), wait_for("terminal: ntp"),
          wait_for("display: time zone UTC; the menu bar"),
@@ -51,8 +58,8 @@ for i in range(12):                 # +5, +4:30, +4, +3:30, +3, +2, +1, UTC, -1,
     first += [*MINUS, wait_for("settings: time zone set to", 8 + i + 1)]
 first += [wait_for("clock: in UTC-3:30 it is"), wait_for("apps: saved the time zone, UTC-3:30"),
           *click(*DOCK["Terminal"]), *keys("date\r"), wait_for("terminal: date", 2),
-          *click(*DOCK["Settings"]), *INDIGO]    # then Indigo, the background already chosen: a last line
-status = boot(240, net=True, steps=first, until="settings: background set to Indigo", settle=1.5)
+          *click(*DOCK["Settings"]), *DAWN, wait_for("settings: background set to Dawn")]
+status = boot(240, net=True, steps=first, until="apps: saved the time zone, UTC-3:30, and the background, Dawn", settle=1.5)
 print("--- restart ---", flush=True)
 if status:
     sys.exit(status)
@@ -61,16 +68,32 @@ again = [wait_for("usb: network: ", 2), *click(*DOCK["Terminal"]), wait_for("ter
          *keys(f"ntp 10.0.2.2:{os.environ['NTP']}\r"), wait_for("terminal: ntp"),
          wait_for("display: time zone UTC-3:30, saved on the card"), *keys("date\r"), wait_for("terminal: date"),
          *keys("run clock\r"), wait_for("clock: in "),
-         *click(*DOCK["Settings"]), wait_for("settings: time zone UTC")]
-sys.exit(boot(240, net=True, sd=TEST_CARD, steps=again, until="settings: time zone UTC", settle=1.5))
+         *click(*DOCK["Settings"]), wait_for("settings: background"), pause(0.5), snap("bg-dawn"),
+         *click(*DOCK["Terminal"]), *keys("cat timezone.txt\r"), wait_for("terminal: cat timezone.txt"),
+         *keys("grep Dawn settings.txt\r"), wait_for("terminal: grep Dawn"),
+         *keys("rm settings.txt\r"), wait_for("terminal: rm settings.txt"),
+         *keys("write timezone.txt UTC+9\r")]
+status = boot(240, net=True, sd=TEST_CARD, steps=again, until="terminal: write timezone.txt", settle=1.5)
+print("--- old card ---", flush=True)
+if status:
+    sys.exit(status)
+# The card as an older leanos left it: the zone alone, in timezone.txt.
+old = [wait_for("display: time zone UTC+9, saved on the card"),
+       *click(*DOCK["Settings"]), wait_for("settings: background"), *GRAPHITE,
+       wait_for("apps: saved the time zone"), pause(1), snap("bg-graphite"),
+       *click(*DOCK["Terminal"]), wait_for("terminal: opened"), *keys("cat timezone.txt\r"), wait_for("terminal: cat"),
+       *keys("grep UTC+9 settings.txt\r"), wait_for("terminal: grep UTC+9"),
+       *keys("grep Graphite settings.txt\r")]
+sys.exit(boot(120, sd=TEST_CARD, steps=old, until="terminal: grep Graphite", settle=1))
 PY
 )
 status=$?
-echo "$out" | grep -E "^(--- restart|terminal: (ntp|date)|settings: time zone|display: (time zone|start Apps)|apps: (saved|time zone)|clock: in )" \
+echo "$out" | grep -E "^(--- (restart|old card)|terminal: (ntp|date|cat|grep|rm|write)|settings: (time zone|background)|display: (time zone|start Apps|background)|apps: (saved|time zone|removed)|clock: in )" \
   | sed "s/:$ntp_port/:NTP/; s/^/  | /"
 [ $status -eq 0 ] || fail "the runs did not finish (status $status)"
 first=$(echo "$out" | sed '/^--- restart ---$/q')
-again=$(echo "$out" | sed '1,/^--- restart ---$/d')
+again=$(echo "$out" | sed '1,/^--- restart ---$/d; /^--- old card ---$/,$d')
+old=$(echo "$out" | sed '1,/^--- old card ---$/d')
 
 echo "$first" | grep -qx "terminal: ntp 10.0.2.2:$ntp_port -> 2026-12-31 20:00:00 UTC" || fail "the time server's time was not set"
 
@@ -128,9 +151,9 @@ print(f"ok: {checked['bar']} menu bar times, {checked['clock']} Clock times and 
 CHECK
 
 # The last choice was saved on the card, and came back after the restart.
-echo "$first" | grep -E "^apps: saved the time zone" | tail -1 | grep -qx "apps: saved the time zone, UTC-3:30, in timezone.txt -> ok" \
+echo "$first" | grep -E "^apps: saved the time zone" | tail -1 | grep -qx "apps: saved the time zone, UTC-3:30, and the background, Dawn, in settings.txt -> ok" \
   || fail "Apps did not save the last zone"
-echo "$again" | grep -qx "apps: time zone UTC-3:30, from timezone.txt -> ok" || fail "Apps did not read the zone back"
+echo "$again" | grep -qx "apps: time zone UTC-3:30, background Dawn, from settings.txt -> ok" || fail "Apps did not read the zone back"
 echo "$again" | grep -qE "^display: time zone UTC-3:30, saved on the card; " || fail "the display did not take the saved zone"
 echo "$again" | grep -qE "^display: time zone UTC-3:30(, saved on the card)?; the menu bar shows " \
   || fail "the menu bar did not show the saved zone"
@@ -138,6 +161,41 @@ echo "$again" | grep -qE "^clock: in UTC-3:30 it is 2026-12-31 16:3[0-9]:[0-9][0
 echo "$again" | grep -qx "settings: time zone UTC-3:30" || fail "Settings did not show the saved zone"
 echo "$again" | grep -q "^apps: saved" && fail "Apps saved a zone nobody changed"
 
+# The background was saved with the zone, came back after the restart, and shows.
+echo "$again" | grep -qx "display: background 2, saved on the card" || fail "the display did not take the saved background"
+echo "$again" | grep -qx "settings: background Dawn" || fail "Settings did not show the saved background"
+echo "$again" | grep -qx "terminal: cat timezone.txt -> no such file" || fail "a timezone.txt was written"
+echo "$again" | grep -qx "terminal: grep Dawn -> 1 line" || fail "settings.txt does not name the background"
+[ "$(echo "$first$again" | grep -c "^display: background ")" = 2 ] || fail "the background changed when nobody asked"
+
+# An older card, with the zone alone in timezone.txt: the zone comes back, the background is
+# the first; the next save puts both in settings.txt, and timezone.txt goes.
+echo "$old" | grep -qx "apps: time zone UTC+9, from timezone.txt -> ok" || fail "Apps did not read an older card's zone"
+echo "$old" | grep -qE "^display: time zone UTC\+9, saved on the card; " || fail "the display did not take an older card's zone"
+echo "$old" | grep -qx "settings: time zone UTC+9" || fail "Settings did not show an older card's zone"
+echo "$old" | grep -qx "settings: background Indigo" || fail "an older card gave a background"
+echo "$old" | grep -q "^display: background .*saved on the card" && fail "an older card gave a background"
+echo "$old" | grep -qx "apps: saved the time zone, UTC+9, and the background, Graphite, in settings.txt -> ok" \
+  || fail "Apps did not save the zone and the background from an older card"
+echo "$old" | grep -qx "apps: removed timezone.txt: settings.txt holds the time zone now" || fail "timezone.txt was not removed"
+echo "$old" | grep -qx "terminal: cat timezone.txt -> no such file" || fail "timezone.txt is still there"
+echo "$old" | grep -qx "terminal: grep UTC+9 -> 1 line" || fail "settings.txt does not hold the zone"
+echo "$old" | grep -qx "terminal: grep Graphite -> 1 line" || fail "settings.txt does not hold the background"
+
+python3 - "$T" <<'PIX' || fail "the desktop is not the background chosen"
+import os, sys
+def at(name, x, y):
+    data = open(os.path.join(sys.argv[1], name + ".ppm"), "rb").read()
+    _, dims, _, px = data.split(b"\n", 3)
+    w, h = map(int, dims.split())
+    return tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
+r, g, b = at("bg-dawn", 2, 597)                  # the far bottom-left corner: the desktop
+assert r > b + 60, ("the saved Dawn background", (r, g, b))
+r, g, b = at("bg-graphite", 2, 597)
+assert abs(b - r) < 20 and max(r, g, b) < 60, ("the Graphite background", (r, g, b))
+print("ok: the desktop shows Dawn after the restart, and Graphite once chosen")
+PIX
+
 echo "$out" | grep -q "PANIC" && fail "kernel panicked"
 echo "$out" | grep -qE "SHOULD NOT|CHANGED" && fail "a protection failed"
-echo "ok: the time zone applies at once to the menu bar and Clock, and survives a restart"
+echo "ok: the time zone applies at once to the menu bar and Clock, and survives a restart with the background; an older card's zone still comes back"

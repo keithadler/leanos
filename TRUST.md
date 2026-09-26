@@ -268,10 +268,12 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   question, no authentication: anyone on the network path could send a wrong time). The
   proofs say only who can set it and that it then moves with the kernel's own clock.
 - The time zone changes only what the menu bar and Clock show; the kernel's time stays UTC.
-  The display server keeps it and takes a new one only from Settings' badge (and once at
-  boot from Apps, which reads back the one it saved on the card), a quarter hour between
-  -12:00 and +14:00. That rule is the display server's C (`on_set` in `user/display.c`),
-  trusted, not proved.
+  The display server keeps it, and the background, and takes a new one of either only from
+  Settings' badge (and, for each, once at boot from Apps, which reads back what it saved on
+  the card in `settings.txt`, or an older card's `timezone.txt`, unless Settings has chosen
+  one since), a zone a quarter hour between -12:00 and +14:00, a background one of the
+  three. That rule is the display server's C (`on_set` in `user/display.c`), trusted, not
+  proved.
 - The clipboard, and its rule that text moves between programs only by the user's hand, is
   the display server's C (`copy_ask`, `on_copy` and `paste_to` in `user/display.c`),
   trusted, not proved. What it guarantees: it takes a copy only after Ctrl+C (or Edit,
@@ -398,7 +400,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   held calls), a redraw it asks for is not drawn, and it may close the window, which goes as
   any other. While minimized it hears no event but EV_CLOSE (when it closes that window, or
   stops) and EV_LAUNCH if it is Apps (the display's own request to start a pinned program or
-  save the time zone, which the user asked for elsewhere; it is not input to the window);
+  save the settings, which the user asked for elsewhere; it is not input to the window);
   events queued before the click are still handed out. Its program's dock icon (built-in,
   pinned or from the card) and RAISE (`run` in Terminal and Apps) bring back all its
   minimized windows, where they were, in front; its dot in the dock is amber while any is

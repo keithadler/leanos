@@ -46,10 +46,11 @@
    the server drops that window before it asks. SET (w0 = 3) changes the desktop, and only
    Settings (badge 6) may ask: the background, or the time zone (user/zone.h).
 
-   The time zone is the display's to keep. ZONE (9): anyone may ask it, and hears the minutes
-   east of UTC (biased); Clock asks every second. The display cannot write the card, so when
-   Settings changes the zone it asks Apps, which can, to save it (as it asks Apps to start a
-   pinned program); at boot Apps reads it back and gives it here, once.
+   The time zone and the background are the display's to keep. ZONE (9): anyone may ask, and
+   hears the minutes east of UTC (biased) and the background's number; Clock asks every
+   second. The display cannot write the card, so when Settings changes either it asks Apps,
+   which can, to save both (as it asks Apps to start a pinned program; user/prefs.h); at
+   boot Apps reads them back and gives each here, once.
 
    The clipboard is the display's too, and text moves between programs only by the user's
    hand (user/app.h). Ctrl+C (byte 3), or Edit, Copy in the menu bar, asks the window in
@@ -204,8 +205,10 @@ struct state {
     char bar_time[24];          /* the menu bar's clock ("Wed Sep 23  14:05"), empty until known */
     u64 bar_minute;             /* the minute it shows */
     long zone;                  /* the time zone, minutes east of UTC (user/zone.h) */
-    int zone_unsaved;           /* Settings changed it, and Apps has not been asked to save it */
-    int zone_restore;           /* Apps, started at boot, may give the zone saved on the card */
+    int unsaved;                /* Settings changed the zone or the background, and Apps has
+                                   not been asked to save them */
+    int restore;                /* what Apps, started at boot, may still give as saved on the
+                                   card: 1 the zone, 2 the background */
     /* the background pattern: a color per row, a glow per column, and a 32 x 32 tile */
     unsigned bg_row[H];
     /* the glow, per column, ready to blend: the weight left for the row's color, and the
@@ -1384,8 +1387,8 @@ COLD static void open_pinned(struct state *st, struct line *l, int p) {
 COLD static void on_pending(struct state *st, struct res *r) {
     u64 w[2] = {0, 0};
     if (r->x[1] == 16) {
-        st->zone_restore = same_name(st->pending, "@startup");
-        if (same_name(st->pending, "@zone")) st->zone_unsaved = 0;
+        st->restore = same_name(st->pending, "@startup") ? 3 : 0;
+        if (same_name(st->pending, "@prefs")) st->unsaved = 0;
         for (int i = 0; i < 15 && st->pending[i]; i++) w[i / 8] |= (u64)(unsigned char)st->pending[i] << (8 * (i % 8));
         st->pending[0] = 0;
     }
@@ -2060,44 +2063,39 @@ COLD static void on_start(struct state *st, struct line *l, struct res *r) {
     launch(st, l, (int)which);
 }
 
-/* Ask Apps to save the time zone on the card: as an event if its window is open, else by
-   starting it with "@zone" waiting (OP_PENDING). If Apps is busy starting, or another request
-   is waiting for it, this is tried again once it is done. */
-COLD static void save_zone(struct state *st, struct line *l) {
+/* Ask Apps to save the time zone and the background on the card: as an event if its window
+   is open, else by starting it with "@prefs" waiting (OP_PENDING). If Apps is busy starting,
+   or another request is waiting for it, this is tried again once it is done. */
+COLD static void save_prefs(struct state *st, struct line *l) {
     for (int k = 0; k < MAX_WIN; k++) {
         struct win *w = &st->win[k];
         if (w->used && !w->closing && slot_of(w->badge) == 16) {
-            deliver_event(st, k, EV_LAUNCH, 0x6e6f7a40 /* "@zon" */, 'e');
-            st->zone_unsaved = 0;
+            deliver_event(st, k, EV_LAUNCH, 0x65727040 /* "@pre" */, 0x7366 /* "fs" */);
+            st->unsaved = 0;
             return;
         }
     }
-    if (run_state(16) == 1 || (st->pending[0] && !same_name(st->pending, "@zone"))) return;
-    const char *z = "@zone";
-    for (int i = 0; i < 6; i++) st->pending[i] = z[i];
+    if (run_state(16) == 1 || (st->pending[0] && !same_name(st->pending, "@prefs"))) return;
+    const char *z = "@prefs";
+    for (int i = 0; i < 7; i++) st->pending[i] = z[i];
     launch(st, l, APPS_DOCK);   /* Apps takes it from pending (on_pending) */
 }
 
-/* ZONE: the time zone, for anyone who asks. */
+/* ZONE: the time zone and the background, for anyone who asks. */
 COLD static void on_zone(struct state *st, struct res *r) {
-    sys(SYS_REPLY, r->x[6] - 1, 0, (u64)(st->zone + ZONE_BIAS), 0, 0);
+    sys(SYS_REPLY, r->x[6] - 1, 0, (u64)(st->zone + ZONE_BIAS), (u64)st->theme, 0);
 }
 
-/* SET: only Settings may change the desktop. Apps, started at boot, may give the time zone
-   it read from the card, once, unless Settings has chosen one since. */
+/* SET: only Settings may change the desktop: the background or the time zone. Apps, started
+   at boot, may give each as it read it from the card, once, unless Settings has chosen one
+   since (restore). */
 COLD static void on_set(struct state *st, struct line *l, struct res *r) {
     u64 badge = r->x[1], what = r->x[3], value = r->x[4], slot = r->x[6];
-    if (what == SET_ZONE && value <= (u64)(ZONE_MAX + ZONE_BIAS) && zone_ok((long)value - ZONE_BIAS) &&
-        (badge == BADGE_SETTINGS || (badge == 16 && st->zone_restore))) {
-        st->zone = (long)value - ZONE_BIAS;
-        if (badge == BADGE_SETTINGS) st->zone_unsaved = 1;
-        st->zone_restore = 0;
-        sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
-        if (badge == BADGE_SETTINGS) say_zone(st, l, ", as Settings asked");
-        else if (st->zone) say_zone(st, l, ", saved on the card");
-        return;
-    }
-    if (badge != BADGE_SETTINGS || what != SET_BACKGROUND || value >= NTHEME) {
+    int bit = what == SET_ZONE ? 1 : what == SET_BACKGROUND ? 2 : 0;
+    int fits = what == SET_ZONE ? value <= (u64)(ZONE_MAX + ZONE_BIAS) && zone_ok((long)value - ZONE_BIAS)
+                                : what == SET_BACKGROUND && value < NTHEME;
+    int saved = badge == 16 && (st->restore & bit);           /* Apps, at boot */
+    if (!fits || !(badge == BADGE_SETTINGS || saved)) {
         if (st->ignored[badge & 31] < 3) {
             st->ignored[badge & 31]++;
             put_s(l, "display: ");
@@ -2108,13 +2106,26 @@ COLD static void on_set(struct state *st, struct line *l, struct res *r) {
         sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
         return;
     }
-    st->theme = (int)value;
-    make_background(st);
-    redraw_all(st);
-    put_s(l, "display: background ");
-    put_dec(l, value);
-    put_s(l, ", as Settings asked");
-    say(l);
+    st->restore &= ~bit;
+    if (!saved) st->unsaved = 1;
+    if (what == SET_ZONE) {
+        st->zone = (long)value - ZONE_BIAS;
+        sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
+        if (!saved) say_zone(st, l, ", as Settings asked");
+        else if (st->zone) say_zone(st, l, ", saved on the card");
+        return;
+    }
+    if (!saved || (int)value != st->theme) {
+        st->theme = (int)value;
+        make_background(st);
+        redraw_all(st);
+    }
+    if (!saved || value) {
+        put_s(l, "display: background ");
+        put_dec(l, value);
+        put_s(l, saved ? ", saved on the card" : ", as Settings asked");
+        say(l);
+    }
     sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
 }
 
@@ -2164,7 +2175,7 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
     st->bar_time[0] = 0;
     st->bar_minute = 0;
     st->zone = 0;
-    st->zone_unsaved = st->zone_restore = 0;
+    st->unsaved = st->restore = 0;
     st->waits = 0;
     st->events = 0;
     for (int p = 0; p < NSLOT; p++) st->hold[p] = st->parked[p] = 0;
@@ -2200,7 +2211,7 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
             bar_wait = bar_clock(st);
             bar_at = millis();
         }
-        if (st->zone_unsaved) save_zone(st, &l);
+        if (st->unsaved) save_prefs(st, &l);
         if (st->drag_pending) {
             r = sys(SYS_RECVT, ENDPOINT, 0, 0, 0, 0);   /* anything else waiting? */
             if (r.status != OK) {
@@ -2209,9 +2220,9 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
             }
         } else {
             /* wait for a message, or until the menu bar's clock turns over (or, while the
-               time zone waits for Apps to save it, a moment) */
+               settings wait for Apps to save them, a moment) */
             u64 left = bar_wait - (millis() - bar_at);
-            if (st->zone_unsaved && left > 100) left = 100;
+            if (st->unsaved && left > 100) left = 100;
             r = sys(SYS_RECVT, ENDPOINT, left ? left : 1, 0, 0, 0);
             if (r.status == FULL) park_oldest(st, &l);    /* a caller waits for a reply slot */
             if (r.status != OK) continue;

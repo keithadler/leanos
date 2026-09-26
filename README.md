@@ -176,6 +176,7 @@ Things to try once it is up:
   `history | tail -n 3`: `>` puts a command's output in a file, `>>` adds it at the end, and
   `|` hands it to grep, head, tail, wc or cat.
 - Pick a time zone in **Settings**: the menu bar, Clock and Terminal's `date` show the time there.
+  The zone and the background you pick there are kept on the card (`settings.txt`).
 - Click the **globe** in the dock and go to `info.cern.ch`.
 - In **Notes**, Ctrl+N (or +) makes a new note and the list on the left shows each one's
   first line. The arrows, Home, End, Page Up and Page Down move the cursor (Delete deletes

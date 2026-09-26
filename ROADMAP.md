@@ -353,6 +353,8 @@ Apps, which can, to keep the zone in `timezone.txt`, as it already asks Apps to 
 dock's programs; at boot Apps reads it back and hands it to the display, which takes that
 once. The time itself stays UTC, set only by the USB driver. `test/timezone.sh` checks what
 the menu bar and Clock show against the time each read, across midnight, and after a restart.
+The background is kept the same way now, with the zone, in `settings.txt`; a card with only
+the older `timezone.txt` still gives its zone back, and the next save moves it over.
 
 Done too: copy and paste, with one rule: text moves between programs only by the user's
 hand. The display server keeps the clipboard, up to 4 KiB of text. Ctrl+C, or Copy in the

@@ -322,13 +322,15 @@ static void fixed(struct df *f, const char *when) {
     want1(f, "raise nothing", OP_RAISE, dcall(f, OP_RAISE, 0x6f6f666162, 0x7a, 0), 1, -1);
     want1(f, "pending", OP_PENDING, dcall(f, OP_PENDING, 0, 0, 0), 0, -1);
 
-    /* ZONE: anyone may ask. The answer is a quarter hour between -12:00 and +14:00, biased. */
+    /* ZONE: anyone may ask. The answer is a quarter hour between -12:00 and +14:00, biased,
+       and one of the three backgrounds. */
     {
         struct res r = dcall(f, OP_ZONE, 0, 0, 0);
         if (answered(f, "zone", OP_ZONE, r)) {
             long m = (long)r.x[2] - 12 * 60;
             if (r.x[1] != 0 || r.x[2] > 26 * 60 || m < -12 * 60 || m > 14 * 60 || m % 15)
                 wrong(f, "zone out of range", OP_ZONE, r);
+            if (r.x[3] > 2) wrong(f, "background out of range", OP_ZONE, r);
         }
     }
 

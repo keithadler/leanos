@@ -1,9 +1,9 @@
 /* Settings: the desktop's background and time zone, and the Raspberry Pi itself.
 
    The background and the time zone go to the display server, which takes them only from the
-   badge the manifest gives Settings. The time zone is a real one, from UTC-12 to UTC+14,
-   quarter hours included; the display keeps it, shows the menu bar's clock in it, tells
-   Clock, and has Apps save it on the card (user/zone.h). The kernel's time itself stays UTC,
+   badge the manifest gives Settings, keeps them, and has Apps save both on the card
+   (user/prefs.h). The time zone is a real one, from UTC-12 to UTC+14, quarter hours
+   included; the display shows the menu bar's clock in it and tells Clock (user/zone.h). The kernel's time itself stays UTC,
    and only the USB driver sets it. The Pi's own settings go to the kernel, through the board
    capability (its capability 5), which only Settings holds and which cannot be passed on
    (only frames can be granted). The kernel lets it read the board and its sensors, set the
@@ -11,7 +11,7 @@
    green activity LED on or off; LeanOS/Proofs.lean proves those are the only requests that
    ever reach the hardware, and only from here. */
 #include "app.h"
-#include "zone.h"
+#include "prefs.h"
 
 #define SW 480
 #define SH 340             /* 160 pages of pixels: an app has 164 after its assets */
@@ -19,8 +19,6 @@ enum { F_UI = 1, F_BOLD = 2, F_SMALL = 3 };
 #define BOARD 5              /* the board capability */
 enum { BOARD_INFO = 0, BOARD_SENSORS = 1, BOARD_CPU = 2, BOARD_LED = 3 };
 
-#define NBG 3
-static const char *const bg_names[NBG] = {"Indigo", "Graphite", "Dawn"};
 static const unsigned bg_top[NBG] = {0x1e204e, 0x24262c, 0x3a2a5a};
 static const unsigned bg_bottom[NBG] = {0x0e4656, 0x0c0d10, 0xd98a5c};
 
@@ -197,8 +195,8 @@ static void draw(struct settings *st) {
         if (i == st->chosen) round_rect(s, x - 4, SWATCH_Y - 4, SWATCH_W + 8, SWATCH_H + 8, 13, rgb(58, 110, 230), 255);
         round_rect(s, x - 1, SWATCH_Y - 1, SWATCH_W + 2, SWATCH_H + 2, 10, rgb(246, 246, 248), 255);
         round_gradient(s, x, SWATCH_Y, SWATCH_W, SWATCH_H, 9, bg_top[i], bg_bottom[i]);
-        int lw = font_width(&st->ui, bg_names[i]);
-        font_text(s, &st->ui, x + SWATCH_W / 2 - lw / 2, SWATCH_Y + SWATCH_H + 20, bg_names[i],
+        int lw = font_width(&st->ui, bg_name((u64)i));
+        font_text(s, &st->ui, x + SWATCH_W / 2 - lw / 2, SWATCH_Y + SWATCH_H + 20, bg_name((u64)i),
                   i == st->chosen ? rgb(30, 30, 36) : rgb(110, 110, 120));
     }
 
@@ -291,7 +289,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->bold = font_of(assets, F_BOLD);
     st->small = font_of(assets, F_SMALL);
     st->win = app_surface(SW, SH);
-    st->chosen = 0;
+    st->chosen = (int)app_background();          /* as the display shows it (below NBG) */
+    if (st->chosen >= NBG) st->chosen = 0;
     st->zone = app_zone();
     st->speed = -1;
     st->led = -1;
@@ -322,6 +321,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     flush(&l);
     put_s(&l, "settings: time zone ");
     put_zone(&l, st->zone);
+    put_s(&l, "\nsettings: background ");
+    put_s(&l, bg_name((u64)st->chosen));
     put_s(&l, "\n");
     flush(&l);
 
@@ -352,7 +353,7 @@ __attribute__((section(".text.start"))) void _start(void) {
             struct res r = sys(SYS_CALL, ENDPOINT, OP_SET, SET_BACKGROUND, (u64)i, 0);
             u64 ok = r.status == OK && r.x[1] == 0 ? OK : BAD_ARG;
             put_s(&l, "settings: background set to ");
-            put_s(&l, bg_names[i]);
+            put_s(&l, bg_name((u64)i));
             put_s(&l, outcome(ok));
             put_s(&l, "\n");
             flush(&l);
