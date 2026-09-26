@@ -46,5 +46,5 @@ static inline const char *elf_load(struct fs_client *c, const char *path, unsign
     }
     if (end == 0) return "has nothing to load";
     *len = end;
-    return 0;
+    return image_marked(image);
 }

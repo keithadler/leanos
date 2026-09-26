@@ -297,22 +297,22 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   slots (`user/progs/dfuzz.c`), two at once: fixed requests for every op (sizes 0, huge and
   past 16 bits, too few pages and more than a window's slot, no grant, the code run and the
   stack as pixels, an endpoint as the grant, a window taller than the room, one a pixel wide;
-  icons with bad markers, sizes and page counts; SET, START, RAISE and PENDING a card
-  program may not make; ZONE; unknown ops; grants by plain send), without a window and with
-  one; windows and icons near every limit checked against the rule; floods; thousands of
-  random requests, calls and plain sends; windows until the table is full. Then one is
-  killed while the display holds its call, one killed in the middle, one exits and one
-  faults just after grants sent by plain send, and the kernel heap after each start of the
-  slot must be the same; and copy and paste by hand into one window: an answer past the
-  clipboard's 4 KiB, a late one and one after the close button must be refused, and the
-  paste must be exactly what was taken. The screen is checked too: with every fuzzer window
-  up, the menu bar and the dock's opaque icon pixels are as at the end, and a window a pixel
-  wide changes nothing past its frame and shadow. The seed is printed, so a run can be
-  repeated. What it does not show: that its requests reach every path through the code,
-  events from the input and USB drivers other than a few keys and clicks (`test/restart.sh`
-  and `test/freeze.sh` check which window gets them), or a display that holds a program's
-  pixels and draws them wrongly without drawing past its frame. It found five bugs, now
-  fixed and kept in its fixed requests:
+  icons with bad markers, sizes and page counts, and not from the loader's four pages; SET,
+  START, RAISE and PENDING a card program may not make; ZONE; unknown ops; grants by plain
+  send), without a window and with one; windows and icons near every limit checked against
+  the rule; floods; thousands of random requests, calls and plain sends; windows until the
+  table is full. Then one is killed while the display holds its call, one killed in the
+  middle, one exits and one faults just after grants sent by plain send, and the kernel heap
+  after each start of the slot must be the same; and copy and paste by hand into one window:
+  an answer past the clipboard's 4 KiB, a late one and one after the close button must be
+  refused, and the paste must be exactly what was taken. The screen is checked too: with
+  every fuzzer window up, the menu bar and the dock's opaque icon pixels are as at the end,
+  and a window a pixel wide changes nothing past its frame and shadow. The seed is printed,
+  so a run can be repeated. What it does not show: that its requests reach every path
+  through the code, events from the input and USB drivers other than a few keys and clicks
+  (`test/restart.sh` and `test/freeze.sh` check which window gets them), or a display that
+  holds a program's pixels and draws them wrongly without drawing past its frame. It found
+  five bugs, now fixed and kept in its fixed requests:
   - A window took a grant of any size and the display mapped all of it at the window's
     slot, so a small window from a grant of 200 pages reached 16 pages into the next
     window's slot: that window then showed this program's pixels (a red band over the top of
@@ -328,15 +328,58 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   - A window narrower than its buttons and title drew them past its frame, over whatever
     was beside it, where a click reaches another window. They are now drawn only inside the
     frame (a window 12 pixels wide or less has no close button to click; `kill` stops it).
-  Found and not fixed, since the fix is the protocol's, not the display's: the name a
-  window takes from its icon (which RAISE, `run` and the dock's pinned programs look for) is
-  whatever name any four pages with the icon's marker hold, not only the name the
-  loader wrote into the program's code run. So a program can take another's name (a
-  `clock` that is not Clock), and then clicking Clock in the dock, or `run clock`, brings its
-  window forward instead of starting Clock. The display cannot tell a program's code pages
-  from its other pages by the grant alone; lending the icon with its execute right
-  (`app_open` in `user/app.h`), which only the code run has, would let it. And a program
-  with several windows hears only its first window's events (WAIT and POLL name no window).
+  It found a sixth, now fixed as the next entry says (`test/spoof.sh`): the name a window
+  took from its icon was whatever name any four pages with the icon's marker held, so a
+  program could take another's. Found and not fixed: a program with several windows hears
+  only its first window's events (WAIT and POLL name no window).
+- A window's name. The display names the window of a program from the card after the file
+  it was run from, and RAISE, `run` and the dock's pinned programs look for that name: while
+  a window is named clock, clicking Clock in the dock or typing `run clock` brings that
+  window forward instead of starting Clock. So the name must be the one the loader wrote,
+  and no program may write one. What is enforced:
+  - The loaders, Terminal's `run` and Apps (`elf_load` in `user/elfload.h`), write the
+    icon's marker, the icon from NAME.icon and the name of the file they ran at pages 12 to
+    15 of the image (`image_add_icon` in `user/elf.h`; an image over 48 KiB gets neither),
+    and refuse an image in which a page already starts with the marker (`image_marked`).
+  - `app_open` (`user/app.h`) lends those four pages with the code run's read and execute
+    rights.
+  - The display (`on_icon` in `user/display.c`) takes an icon and a name only from a
+    program in an open slot (badges 10 to 15), only from a grant of exactly four pages that
+    carries the execute right (it asks `capinfo`), and only if they start with the marker.
+    It maps a read-only copy in the grant's place, so nothing a program lends ever runs in
+    the display.
+
+  Why a program cannot get around it, from the proofs. A program in an open slot holds
+  capabilities only to its own 256 frames (`confined`), each with no more rights than a
+  capability to that frame the manifest gave its slot (`frame_flow`), and the manifest gives
+  the execute right only on the code run (`frameCaps`: the code run read and execute; the
+  data, stack and spare runs read and write). `derive` never adds a right
+  (`derive_never_amplifies`): asking for execute on a run that lacks it gives read only.
+  So the only pages a program can lend with the execute right are its own code run's. No
+  task can write those: by `frame_flow` every capability to them has at most read and
+  execute, and every mapping has its capability's rights (`maps_backed`), so no page of a
+  code run is ever mapped writable (and none is both, `no_write_execute`). The code run
+  holds only the image the loader built, loaded when the slot starts
+  (`exec_reads_only_readable`; the machine layer clears the frames first). In that image
+  the only page starting with the marker is the loader's, which ends with the name it
+  wrote. So a window's name is the name of the file the loader ran, or none.
+
+  What is trusted: the loaders (user-space C in Terminal and Apps, in the kernel image and
+  measured) to write the name of the file they ran and to refuse an image with a marker of
+  its own; the display's check; and the machine layer's loading of the image. And the name
+  is a file name, no more: a program called `evil` cannot make its window `clock`, but any
+  file called `clock` that the user runs is `clock` to the display, whatever it holds (a
+  program can write files in its own folder, `apps/NAME`, and a user who runs one of them
+  by that name runs what it wrote). A window's title (8 bytes) is still the program's own
+  words, and its pixels are whatever it draws. `test/spoof.sh`: a program lends a forged
+  icon named clock from its spare pages (read-only, read-write, and asking for execute),
+  its data pages and its stack, and its code run without the execute right or from pages
+  the loader did not write; every claim is refused, while its own name, lent as app_open
+  lends it, is taken. A program whose code carries the marker at the start of a page is not
+  run. Then Clock in the dock starts the real Clock, `run clock` finds it by its name, and
+  after `kill` starts it again. Before the fix, the first claim from the spare pages named
+  its window clock, a program with a forged code run named its window clock the same way,
+  and the dock's Clock only brought the impostor forward.
 - The panic screen: `kpanic` writes the reason to the serial port and the framebuffer,
   then stops.
 - Interrupts stay masked while the kernel runs, so the Lean kernel is never re-entered.

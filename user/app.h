@@ -45,10 +45,12 @@ static inline u64 app_open_at(u64 offset, int w, int h, const char *title) {
     if (ro.status != OK) return ro.status;
     struct res r = sys(SYS_CALL, ENDPOINT, OP_OPEN, (u64)w << 16 | (u64)h, t, ro.x[1] + 1);
     if (r.status != OK || r.x[1] != 0) return BAD_ARG;
-    /* If the loader put this program's icon in its image (pages 12-15 of the code run, see
-       elf.h), lend the display a read-only view of those pages, for the title bar and dock. */
+    /* If the loader put this program's icon and name in its image (pages 12-15 of the code
+       run, see elf.h), lend the display those pages, for the title bar and the dock, with the
+       code run's read and execute rights: the display takes a name only from pages that can
+       execute, and those are only ever a program's own code run, which nothing can write. */
     if (*(const volatile unsigned *)PAGE(12) == 0x43494e4cu) {
-        struct res ic = sys(SYS_DERIVE, 0, R, 12, 4, 0);
+        struct res ic = sys(SYS_DERIVE, 0, R | X, 12, 4, 0);
         if (ic.status == OK) sys(SYS_CALL, ENDPOINT, OP_ICON, 0, 0, ic.x[1] + 1);
     }
     return OK;

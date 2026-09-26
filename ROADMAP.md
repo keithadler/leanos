@@ -426,8 +426,11 @@ in `user/display.c`, fixed and kept as regressions: a window's grant longer than
 was mapped over the next window's (its pixels showed in another program's window), and an
 icon's over the next icons'; refused windows and raises were logged every time, each line
 holding the kernel; a tall window opened over the menu bar; and a narrow window drew its
-buttons and title past its frame. One it found is left for the protocol: a program can take
-another's name through a made-up icon. TRUST.md says what the display is trusted to do and
+buttons and title past its frame. A sixth, a program taking another's name through a
+made-up icon (so the dock's Clock brought it forward instead of starting Clock), is fixed
+too: the display takes a name only from four pages lent with the execute right, which are
+only ever the program's own code run, and the loaders run no image that carries an icon
+marker of its own (`test/spoof.sh`). TRUST.md says what the display is trusted to do and
 what the fuzzer checks.
 
 Next: the first boot on real Pi 4 hardware (EMMC2, colors, timings), the USB-A ports

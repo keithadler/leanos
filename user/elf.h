@@ -37,6 +37,18 @@ enum { PT_LOAD = 1, PF_W = 2, EM_AARCH64 = 183, ET_EXEC = 2 };
 #define ICON_NAME_AT (4 * 4096UL - 16)  /* the name: 15 bytes and a 0 */
 #define ICON_MAX (ICON_NAME_AT - 8)
 
+/* The display server takes a window's name (which `run`, Apps and the dock's pinned programs
+   look for) only from four pages of the program's code run, the one run nothing can write,
+   that start with the marker. The program chooses which four pages it lends, so no page of
+   the image may start with the marker but the one image_add_icon writes: an image with one
+   of its own could name itself after any program, and is not run. */
+static inline const char *image_marked(const unsigned char *image) {
+    for (u64 p = 0; p < IMAGE_MAX / 4096; p++)
+        if (*(const unsigned *)(image + p * 4096) == ICON_MAGIC)
+            return "has an icon marker of its own (only the loader writes one)";
+    return 0;
+}
+
 /* Add an icon file's bytes (tools/mkicon.py, or none: size 0) and the program's name to an
    image; the image grows to the whole code run. Nothing happens if the program itself
    reaches into those pages. */
@@ -79,5 +91,5 @@ static inline const char *elf_image(const unsigned char *file, u64 size, unsigne
     }
     if (end == 0) return "has nothing to load";
     *len = end;
-    return 0;
+    return image_marked(image);
 }

@@ -1463,17 +1463,31 @@ COLD static void on_wait(struct state *st, struct line *l, struct res *r, int po
     sys(SYS_REPLY, slot - 1, 0, 0, 0, 0); /* no window: nothing to wait for */
 }
 
-/* ICON: a program lends the icon its loader gave it (read-only, 4 pages: a marker, the size,
-   then the icon asset). It is shown in the program's title bar and in the dock. */
+/* ICON: a program from the card lends the icon and name its loader gave it: 4 pages of its
+   code run (a marker, the size, the icon asset, and at the end the name of the file it was
+   run from). The icon is shown in its title bar and in the dock; the name is what RAISE,
+   `run` and the dock's pinned programs look for, so it must be the loader's. A program can
+   write any of its runs but its code run, which alone may execute (every run it holds is
+   its own, with no more rights than the manifest gave: `confined`, `frame_flow`, and
+   `derive_never_amplifies`), and the loader puts the marker at the start of no page of it
+   but its icon's (image_marked in elf.h). So the grant must carry the execute right, be
+   exactly four pages and start with the marker. It is mapped read-only: a copy without the
+   execute right takes the grant's place, so nothing a program lends ever runs here. */
 COLD static void on_icon(struct state *st, struct res *r) {
     u64 badge = r->x[1], cap = r->x[5], slot = r->x[6];
     u64 ok = 1;
-    for (int k = 0; k < MAX_WIN && cap; k++) {
+    for (int k = 0; k < MAX_WIN && cap && badge >= 10 && badge <= 15; k++) {
         struct win *w = &st->win[k];
         if (!w->used || w->closing || w->badge != badge || w->icon.px) continue;
         struct res info = sys1(SYS_CAPINFO, cap - 1);
-        /* exactly its four pages: a longer run would be mapped over the next window's icon */
-        if (info.x[2] != 0 || info.x[3] != 4 || sys2(SYS_MAP, cap - 1, ICON_PAGE + 4 * (u64)k).status != OK) break;
+        /* exactly its four pages (a longer run would be mapped over the next window's icon),
+           of a code run; then the read-only copy, at the grant's place (the grant is last) */
+        if (info.status != OK || !(info.x[1] & X) || info.x[2] != 0 || info.x[3] != 4) break;
+        struct res ro = sys(SYS_DERIVE, cap - 1, R, 0, 0, 0);
+        if (ro.status != OK) break;
+        sys1(SYS_DROP, ro.x[1] == cap ? cap - 1 : ro.x[1]);
+        if (ro.x[1] != cap) break;
+        if (sys2(SYS_MAP, cap - 1, ICON_PAGE + 4 * (u64)k).status != OK) break;
         const unsigned *m = (const unsigned *)PAGE(ICON_PAGE + 4 * (u64)k);
         unsigned wd = m[2], ht = m[3];
         if (m[0] != 0x43494e4cu) break;
@@ -1503,8 +1517,8 @@ COLD static void on_icon(struct state *st, struct res *r) {
 /* RAISE: bring forward the window of the program from card file w1 w2 (up to 15 bytes), if
    one is open. Answers 0 if it did, 1 if there is none (always, for no name: a launcher
    about to start a slot asks that, app_before_start). Anyone may ask: it only moves a
-   window up. The name is the one its icon brought (ICON): the loader writes it into the
-   image, but any four pages with the icon's marker can bring one (TRUST.md). */
+   window up. The name is the one its icon brought (ICON): the name of the file the loader
+   ran, from the program's code run (on_icon). */
 COLD static void on_raise(struct state *st, struct line *l, struct res *r) {
     char want[17];
     for (int i = 0; i < 16; i++) want[i] = (char)(r->x[3 + i / 8] >> (8 * (i % 8)));

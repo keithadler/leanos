@@ -20,22 +20,26 @@
         than a window's slot, no grant, an endpoint as the grant (the kernel refuses it), and
         once: a window taller than the room between the menu bar and the dock, and one from
         the code run or the stack. ICON with a bad marker, a size past 64, no grant, more
-        than its four pages. SET with every `what`, in and out of range (a card program may
+        than its four pages; with a well-formed icon and its own name from pages that are
+        not its code run's (a name comes only from the pages the loader wrote), from its
+        code run without the execute right, and from code pages the loader did not write;
+        then its own icon, as app_open lends it, which must be taken. SET with every `what`, in and out of range (a card program may
         set nothing); START, RAISE and PENDING (a card program is not Apps); ZONE (anyone
         may ask: a quarter hour in range); COPY unasked; unknown ops; every op as a plain
         send with a grant, then a call that must still be answered. Once without a window,
         then again holding one.
      2. Requests near the display's limits: windows of sizes at and around its bounds from
         grants of 1 to 200 pages anywhere in the spare run, read-only or read-write, and
-        icons with good and bad markers, sizes, names and page counts, each checked against
-        the rule (on_open, on_icon): what it must refuse, refused. They open windows until
+        icons with good and bad markers, sizes, names and page counts from the spare run,
+        and from anywhere in the code run with and without the execute right, each checked
+        against the rule (on_open, on_icon): what it must refuse, refused. They open windows until
         the table is full.
      3. Floods: requests it cannot make, and windows that do not fit; the display must
         answer each and log a few.
      4. Random requests: each op with random words, a grant or none, a call or a plain send,
         every answer in the set the protocol allows. WAIT only before it has a window (with
         one, a WAIT with nothing to say is held by design); POLL, which never blocks, after.
-     5. RAISE of its own name (given with a made-up icon), again and again; then windows
+     5. RAISE of its own name (its window has it from its own icon), again and again; then windows
         until the display refuses one, some from runs another window already shows. Then it
         waits on its window, so the display still delivers its own events, and a screenshot
         has something to show.
@@ -133,13 +137,19 @@ static struct res dcall(struct df *f, u64 op, u64 w1, u64 w2, u64 grant) {
     return sys(SYS_CALL, ENDPOINT, op, w1, w2, grant);
 }
 
-/* A read-only capability to `count` pages of the spare run from `off`, granted to a call. */
-static struct res grant_call(struct df *f, u64 op, u64 w1, u64 w2, u64 off, u64 count, u64 rights) {
-    struct res d = sys(SYS_DERIVE, SPARE, rights, off, count, 0);
+/* A capability to `count` pages of run `cap` from `off`, with `rights` (as far as the run
+   has them), granted to a call. */
+static struct res grant_from(struct df *f, u64 cap, u64 op, u64 w1, u64 w2, u64 off, u64 count, u64 rights) {
+    struct res d = sys(SYS_DERIVE, cap, rights, off, count, 0);
     if (d.status != OK) return d;
     struct res r = dcall(f, op, w1, w2, d.x[1] + 1);
     sys1(SYS_DROP, d.x[1]);        /* the display kept its own copy if it took one */
     return r;
+}
+
+/* The same, from the spare run. */
+static struct res grant_call(struct df *f, u64 op, u64 w1, u64 w2, u64 off, u64 count, u64 rights) {
+    return grant_from(f, SPARE, op, w1, w2, off, count, rights);
 }
 
 /* Assert the reply's x1 is one of an allowed pair (b < 0: only a). */
@@ -241,8 +251,24 @@ static void fixed(struct df *f, const char *when) {
     make_icon(ICON_OFF, 0xdeadbeef, 1, 16, 16, f->name);
     want1(f, "icon bad marker", OP_ICON, grant_call(f, OP_ICON, 0, 0, ICON_OFF, 4, R), 1, -1);
     make_icon(ICON_OFF, 0x43494e4cu, 1, 200, 200, f->name);   /* w, h past 64: a name only */
-    want1(f, "icon huge size", OP_ICON, grant_call(f, OP_ICON, 0, 0, ICON_OFF, 4, R), 0, 1);
+    want1(f, "icon huge size", OP_ICON, grant_call(f, OP_ICON, 0, 0, ICON_OFF, 4, R), 1, -1);
     want1(f, "icon no grant", OP_ICON, dcall(f, OP_ICON, 0, 0, 0), 1, -1);
+    /* A name comes only from the four pages of its code run the loader wrote, lent with the
+       execute right (as app_open does). A well-formed icon with its own name from its spare
+       pages, read-write or asking for execute (which the run does not have); the loader's
+       pages without the execute right; code pages the loader did not write (no marker), and
+       eight pages: all refused, with a window or without. (test/spoof.sh claims another
+       program's name the same ways, and from its data pages and stack.) */
+    make_icon(ICON_OFF, 0x43494e4cu, 1, 16, 16, f->name);
+    want1(f, "icon from its spare pages", OP_ICON, grant_call(f, OP_ICON, 0, 0, ICON_OFF, 4, R), 1, -1);
+    want1(f, "icon from its spare pages, read-write", OP_ICON, grant_call(f, OP_ICON, 0, 0, ICON_OFF, 4, R | W), 1, -1);
+    want1(f, "icon from its spare pages, asking for execute", OP_ICON,
+          grant_call(f, OP_ICON, 0, 0, ICON_OFF, 4, R | X), 1, -1);
+    want1(f, "icon from its code run, read-only", OP_ICON,
+          grant_from(f, 0, OP_ICON, 0, 0, ICON_IMAGE_PAGE, 4, R), 1, -1);
+    want1(f, "icon from its code run, no marker", OP_ICON, grant_from(f, 0, OP_ICON, 0, 0, 0, 4, R | X), 1, -1);
+    want1(f, "icon from its code run, eight pages", OP_ICON,
+          grant_from(f, 0, OP_ICON, 0, 0, ICON_IMAGE_PAGE - 4, 8, R | X), 1, -1);
     /* An icon lives in four pages (a marker, a size, the pixels, a name). A grant of more
        than four pages, mapped at the window's four-page icon slot, would overrun into the
        next window's icon slot. With a window in front and a well-formed icon, the display
@@ -351,7 +377,8 @@ static void structured(struct df *f) {
         if (answered(f, "structured open", OP_OPEN, r) && (r.x[1] > 1 || (!allowed && r.x[1] != 1)))
             wrong(f, allowed ? "structured open, allowed" : "structured open the rule refuses", OP_OPEN, r);
         if (r.status == OK && r.x[1] == 0) { f->have_win = 1; f->taken++; }
-    } else {
+    } else if (next(f) & 1) {
+        /* a made-up icon in the spare run, which can be written: refused, however good */
         int good = next(f) % 4 != 0;
         unsigned iw = (unsigned)(next(f) % 80), ih = (unsigned)(next(f) % 80);
         char name[16];
@@ -360,10 +387,20 @@ static void structured(struct df *f) {
         name[15] = 0;
         u64 ipages = next(f) % 3 ? 4 : 1 + next(f) % 12;
         make_icon(ICON_OFF, good ? 0x43494e4cu : (unsigned)next(f), (unsigned)(next(f) % 3), iw, ih, name);
-        struct res r = grant_call(f, OP_ICON, 0, 0, ICON_OFF, ipages, R);
-        int must_refuse = !good || ipages != 4;
-        if (answered(f, "structured icon", OP_ICON, r) && (r.x[1] > 1 || (must_refuse && r.x[1] != 1)))
-            wrong(f, must_refuse ? "structured icon the rule refuses" : "structured icon", OP_ICON, r);
+        struct res r = grant_call(f, OP_ICON, 0, 0, ICON_OFF, ipages, next(f) & 1 ? R : R | X);
+        if (answered(f, "structured icon", OP_ICON, r) && r.x[1] != 1)
+            wrong(f, "structured icon from the spare run", OP_ICON, r);
+    } else {
+        /* pages of its code run, the loader's icon pages mostly: taken only as the four pages
+           the loader wrote, with the execute right (0, or 1 if every window has its icon) */
+        u64 ioff = next(f) % 3 ? ICON_IMAGE_PAGE : next(f) % 16;
+        u64 ipages = next(f) % 3 ? 4 : 1 + next(f) % (16 - ioff);
+        if (ioff + ipages > 16) ipages = 16 - ioff;    /* inside the run: derive refuses past it */
+        u64 rights = next(f) % 4 ? R | X : R;
+        struct res r = grant_from(f, 0, OP_ICON, 0, 0, ioff, ipages, rights);
+        int must_refuse = ioff != ICON_IMAGE_PAGE || ipages != 4 || !(rights & X);
+        if (answered(f, "structured code icon", OP_ICON, r) && (r.x[1] > 1 || (must_refuse && r.x[1] != 1)))
+            wrong(f, must_refuse ? "structured code icon the rule refuses" : "structured code icon", OP_ICON, r);
     }
 }
 
@@ -533,9 +570,17 @@ __attribute__((section(".text.start"))) void _start(void) {
     }
     fixed(f, "no window: ");
 
-    /* open one window, then the fixed cases again (a window in the way) */
+    /* open one window, then the fixed cases again (a window in the way); then its own icon,
+       as app_open lends it: the four pages the loader wrote, with the execute right. The
+       display must take it (the window has none yet), and the window has its name. */
     f->have_win = open_win(f, WIN_OFF, 0x3a6ee6 + (unsigned)f->me) == OK;
     fixed(f, "with a window: ");
+    int named = 0;
+    if (f->have_win) {
+        struct res r = grant_from(f, 0, OP_ICON, 0, 0, ICON_IMAGE_PAGE, 4, R | X);
+        want1(f, "its own icon, as app_open lends it", OP_ICON, r, 0, -1);
+        named = r.status == OK && r.x[1] == 0;
+    }
 
     /* dfuzzx and dfuzzf end here, in the middle of an exchange: grants sent by plain send,
        nobody asked for, then an exit, or a fault (a write to its own code). The display must
@@ -583,11 +628,12 @@ __attribute__((section(".text.start"))) void _start(void) {
 
     say(f, "floods and random requests took ", millis() - f->t0, " ms");
     /* 4. the window limit */
-    /* RAISE of its own name, over and over: the name came with its made-up icon (ICON with a
-       name only). Each is answered (0: brought forward); the display logs a few, not all. */
+    /* RAISE of its own name, over and over: the name came with its own icon. Each is
+       answered (0: brought forward); the display logs a few, not all. */
     u64 nm[2] = {0, 0};
     for (int i = 0; i < 15 && f->name[i]; i++) nm[i / 8] |= (u64)(unsigned char)f->name[i] << (8 * (i % 8));
-    for (int i = 0; i < 100; i++) want1(f, "raise its own name", OP_RAISE, dcall(f, OP_RAISE, nm[0], nm[1], 0), 0, 1);
+    for (int i = 0; i < 100; i++)
+        want1(f, "raise its own name", OP_RAISE, dcall(f, OP_RAISE, nm[0], nm[1], 0), 0, named ? -1 : 1);
     window_limit(f);
 
     struct line l = {.n = 0};
