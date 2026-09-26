@@ -261,7 +261,8 @@ tools/serial.py --keys --mouse
 ```
 
 What you type goes to the window in front; the arrow keys, Return, Backspace, Tab, and
-Ctrl+C / Ctrl+V (leanos's copy and paste) work as in the browser console. With `--mouse`,
+Ctrl+C / Ctrl+V (leanos's copy and paste) and Ctrl+O (the next window) work as in the
+browser console. With `--mouse`,
 this terminal window stands for the Pi's screen: a click or a drag at a spot in the window
 is a click or drag at the same spot on the Pi's screen (`--screen WxH` if it is not
 1024x600). **Ctrl+]** stops it.

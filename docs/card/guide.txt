@@ -11,6 +11,18 @@ The dock
 The leanos menu
   Click the logo at the top left: Restart, or Shut down.
 
+Windows
+  Drag a window by its title bar. Its three buttons, at the top left:
+  red       close it (a program with one window stops)
+  yellow    minimize it: it leaves the screen, and its program keeps running; the dot
+            under its icon in the dock turns amber. Click that icon (or `run` it again
+            in Terminal) to bring it back, where it was, in front.
+  green     zoom it: to the middle of the screen, in front; click again to put it back.
+            Windows keep their size: a program draws its window at one size.
+  Ctrl+O    the next window: the one in front goes to the back, and keys go to the one
+            that comes to the front. Press it again to go through them all.
+  The Window menu, in the menu bar after Edit, has Minimize, Zoom and Next window.
+
 Copy and paste
   Ctrl+C    copy from the window in front (or Edit, Copy: Edit is in the menu bar,
             after the window's name)
@@ -30,7 +42,7 @@ Copy and paste
   within 2 seconds; it hands the text only to the window in front, when you press
   Ctrl+V. No program can read the clipboard, or put text on it, by asking.
 
-  In the browser console, Ctrl+C and Ctrl+V are leanos's (Cmd+V on a Mac types the
+  In the browser console, Ctrl+C, Ctrl+V and Ctrl+O are leanos's (Cmd+V on a Mac types the
   host's clipboard as keys). Under make run, your terminal's Ctrl+C stops QEMU itself.
 
 Terminal

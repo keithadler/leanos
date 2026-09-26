@@ -316,7 +316,10 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   middle, one exits and one faults just after grants sent by plain send, and the kernel heap
   after each start of the slot must be the same; and copy and paste by hand into one window:
   an answer past the clipboard's 4 KiB, a late one and one after the close button must be
-  refused, and the paste must be exactly what was taken. The screen is checked too: with
+  refused, and the paste must be exactly what was taken. While the two fuzz, the user's hand
+  does 30 things at random: Ctrl+O, the yellow and green buttons of the window in front, and
+  the fuzzers' and Terminal's dock icons; then a fuzzer's windows are minimized before it is
+  killed. The screen is checked too: with
   every fuzzer window up, the menu bar and the dock's opaque icon pixels are as at the end,
   and a window a pixel wide changes nothing past its frame and shadow. The seed is printed,
   so a run can be repeated. What it does not show: that its requests reach every path
@@ -354,11 +357,37 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   program can close, and hear the events of, only its own windows; a number it does not
   hold is refused (the whole word counts: 2^32 is not 0). A click on a
   running program in the dock, RAISE (Terminal's `run`), or a pinned program's icon brings
-  all its windows forward, the one of them in front last in front; the dock shows one icon
-  per program. Keys, copy and paste go to the window in front, and the program learns which
+  all its windows forward, the one of them in front last in front, and its minimized ones
+  back (next entry); the dock shows one icon per program. Keys, copy and paste go to the window in front, and the program learns which
   from the event. Trusted C (`on_wait`, `next_event`, `on_close` in `user/display.c`), not
   proved; the grants a window takes, the icon and name rules and the 7 held calls are as
   for one window.
+- Minimize, zoom and the next window (`test/winmgmt.sh`), all the display server's; no
+  program changes and the protocol is the same. A window's yellow button (or Window,
+  Minimize) takes it out of the display's stack of windows: it is not drawn, no click finds
+  it, and keys, copy and paste, which go only to the window in front, go to the next one
+  down. Nothing else about it changes: its program keeps running and waiting, what it lent
+  (its pixels, its icon) stays lent and mapped, its waiting call is held as any other (the 7
+  held calls), a redraw it asks for is not drawn, and it may close the window, which goes as
+  any other. While minimized it hears no event but EV_CLOSE (when it closes that window, or
+  stops) and EV_LAUNCH if it is Apps (the display's own request to start a pinned program or
+  save the time zone, which the user asked for elsewhere; it is not input to the window);
+  events queued before the click are still handed out. Its program's dock icon (built-in,
+  pinned or from the card) and RAISE (`run` in Terminal and Apps) bring back all its
+  minimized windows, where they were, in front; its dot in the dock is amber while any is
+  minimized. No request minimizes a window; RAISE, which anyone may send, brings back the
+  minimized windows of the program it names, as it already brought its windows forward. A
+  slot started again while its window is minimized: the window is forgotten as any other of
+  the last run (previous entries). A new window is placed where it covers least of the
+  windows shown, not of the minimized ones. The green button (or Window, Zoom) moves a
+  window to the middle of the room between the menu bar and the dock, in front, and a second
+  click moves it back (after a drag, it zooms from where it was dragged): a program draws its
+  window at one size, so zoom moves, never resizes. Ctrl+O (byte 15, from the serial line,
+  the browser console or a USB keyboard; no app uses it) or Window, Next window, sends the
+  window in front to the back, so the next comes to the front. Every one of these is logged
+  once per click or key. Trusted C (`minimize`, `zoom`, `next_window` and `raise_program` in
+  `user/display.c`), not proved; `test/dfuzz.sh` does them at random while two fuzzers make
+  their requests.
 - A window's name. The display names the window of a program from the card after the file
   it was run from, and RAISE, `run` and the dock's pinned programs look for that name: while
   a window is named clock, clicking Clock in the dock or typing `run clock` brings that

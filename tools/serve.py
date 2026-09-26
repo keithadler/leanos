@@ -171,13 +171,14 @@ inputEl.addEventListener('mousemove', (e) => {
 });
 /* Text arrives through the field's input events, so typing, pasting and input methods all
    work; Enter, Backspace and Tab come from the key events. A line break inside text (pasted
-   lines) is a Return too. Ctrl+C and Ctrl+V are leanos's copy and paste (bytes 3 and 22,
-   as a serial terminal sends them); the host's own paste (Cmd+V on a Mac) types its text. */
+   lines) is a Return too. Ctrl+C and Ctrl+V are leanos's copy and paste, and Ctrl+O its next
+   window (bytes 3, 22 and 15, as a serial terminal sends them); the host's own paste (Cmd+V
+   on a Mac) types its text. */
 inputEl.addEventListener('keydown', (e) => {
   const arrows = {ArrowUp: 'A', ArrowDown: 'B', ArrowRight: 'C', ArrowLeft: 'D'};
   const k = e.key.toLowerCase();
-  if (e.ctrlKey && !e.metaKey && !e.altKey && (k === 'c' || k === 'v')) {
-    sendBytes(k === 'c' ? '\x03' : '\x16'); e.preventDefault();
+  if (e.ctrlKey && !e.metaKey && !e.altKey && (k === 'c' || k === 'v' || k === 'o')) {
+    sendBytes(k === 'c' ? '\x03' : k === 'v' ? '\x16' : '\x0f'); e.preventDefault();
   }
   else if (arrows[e.key]) { sendBytes('\x1b[' + arrows[e.key]); e.preventDefault(); }
   else if (e.key === 'Enter') { sendBytes('\r'); e.preventDefault(); }

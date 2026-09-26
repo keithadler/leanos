@@ -44,8 +44,8 @@ This is the start. The next steps, in order:
 
 ## What it does
 
-- **A desktop** at 1024×600: windows you can drag, a menu bar with the date and time in the
-  time zone chosen in Settings, and a dock. Built-in apps: Notes, Files, Terminal, Settings,
+- **A desktop** at 1024×600: windows you can drag, minimize, zoom and go through with
+  Ctrl+O, a menu bar with the date and time in the time zone chosen in Settings, and a dock. Built-in apps: Notes, Files, Terminal, Settings,
   Security and Apps; the dock also keeps Clock, Calculator, Tour and Web from the SD card. What
   opens at startup is a list on the SD card (`startup.txt`: Apps and the tour, to begin with).
 - **Copy and paste, by hand only**: Ctrl+C and Ctrl+V (or the Edit menu in the menu bar)
@@ -152,7 +152,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 30 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, windows, USB, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 31 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, windows, USB, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -169,6 +169,9 @@ Things to try once it is up:
 - Type in Notes, press Ctrl+C, click Terminal and press Ctrl+V: the text is on its command
   line, and nothing runs until you press Return.
 - `run web` (without `-net`) and watch the network refuse it.
+- Click a window's yellow button: it leaves the screen, and its dock icon gets an amber dot;
+  click the icon to bring it back. The green button moves a window to the middle and back,
+  and Ctrl+O brings the next window to the front (all three are in the Window menu too).
 
 ## Run it on a Raspberry Pi 4
 

@@ -155,6 +155,40 @@ def wclick(name, dx, dy, win=0):
     return [wmouse("d", name, dx, dy, win), wmouse("u", name, dx, dy, win)]
 
 
+# The title bar's buttons of the window in front, lit (the display draws every other window's
+# gray): red, yellow and green, 20 px apart.
+LIGHTS = (b"\xff\x5f\x57", b"\xfe\xbc\x2e", b"\x28\xc8\x40")
+
+
+def lit_button(ppm_path, which):
+    """Where the lit yellow (which=1) or green (2) button is on a screen capture, or None: the
+    first pixel of the red one with the other two 20 and 40 px to its right."""
+    data = open(ppm_path, "rb").read()
+    magic, dims, maxval, px = data.split(b"\n", 3)
+    w, h = map(int, dims.split())
+    at = px.find(LIGHTS[0])
+    while at >= 0:
+        if at % 3 == 0:
+            x, y = at // 3 % w, at // 3 // w
+            if x + 40 < w and all(px[at + 60 * i:at + 60 * i + 3] == LIGHTS[i] for i in (1, 2)):
+                return x + 20 * which, y
+        at = px.find(LIGHTS[0], at + 1)
+    return None
+
+
+def screen_click(find):
+    """A step that captures the screen and clicks where find(path of the capture, a PPM) says:
+    (x, y), or no click for None."""
+    return ("screen", find)
+
+
+def front_button(which):
+    """A step that clicks the yellow (minimize) or green (zoom) button of the window in front,
+    found on the screen as it is then; no click if no window is in front."""
+    n = {"yellow": 1, "green": 2}[which]
+    return screen_click(lambda ppm: lit_button(ppm, n))
+
+
 def wait_for(prefix, times=1):
     """A step that types nothing: it waits until `times` serial lines start with `prefix`."""
     return ("wait", prefix, times)
@@ -294,6 +328,21 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                                 print(f"run.py: ({x}, {y}) in {name}'s window is past what a mouse report can say", flush=True)
                                 return
                             chunk = mouse(kind, x, y)
+                        if isinstance(chunk, tuple) and chunk[0] == "screen":
+                            time.sleep(0.2)             # what the last step changed, drawn
+                            ppm = os.path.join(SCRATCH, "find.ppm")
+                            qmp.cmd("screendump", filename=ppm)
+                            pos = chunk[1](ppm)
+                            if pos is None or pos[0] > 999:
+                                continue
+                            for kind in "du":
+                                try:
+                                    proc.stdin.write(mouse(kind, *pos))
+                                    proc.stdin.flush()
+                                except (BrokenPipeError, ValueError, OSError):
+                                    return
+                                time.sleep(0.1)
+                            continue
                         if isinstance(chunk, tuple) and chunk[0] == "snap":
                             ppm = os.path.join(SCRATCH, chunk[1] + ".ppm")
                             qmp.cmd("screendump", filename=ppm)

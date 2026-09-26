@@ -35,7 +35,8 @@
    another's window. A click inside a window goes to its client (EV_DOWN, window
    coordinates); a click on the red button asks the client to close (EV_CLOSE, with that
    window's number), and the window goes from the screen at once, and from the table when
-   its client hears it.
+   its client hears it. The yellow button minimizes a window and the green one zooms it;
+   Ctrl+O brings the next window to the front (see "minimize, zoom, and the next window").
 
    It holds a launch capability for each app (capabilities 6 to 10: Notes, Terminal,
    Settings, Security, Files). Clicking an app in the dock starts it if it is not running; the
@@ -108,7 +109,7 @@ enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START 
        OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12 };
 /* 11 is no request: programs ask it to show that no request reads the clipboard (mallory, tour) */
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7, EV_PASTE = 8 };
-enum { KEY_COPY = 3, KEY_PASTE = 22 };   /* Ctrl+C, Ctrl+V */
+enum { KEY_COPY = 3, KEY_PASTE = 22, KEY_NEXT = 15 };   /* Ctrl+C, Ctrl+V, Ctrl+O (the next window) */
 #define CLIP_MAX 4096     /* as user/app.h */
 #define COPY_MS 2000
 enum { BADGE_USB = 17, BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
@@ -155,6 +156,8 @@ struct win {
     struct surface content;
     char title[9];
     int closing;                /* closed on screen; the client hears EV_CLOSE when it next waits */
+    int minimized;              /* off the screen by its yellow button, until the dock or RAISE restores it */
+    int zoomed, zoom_x, zoom_y; /* moved to the middle by its green button, from (zoom_x, zoom_y) */
     unsigned close_seq;         /* when the close button was clicked (the event count) */
     struct picture icon;        /* the icon a program from the card lent (OP_ICON), or none */
     char prog[16];              /* and the card file it came from, or "" */
@@ -208,8 +211,8 @@ struct state {
     /* how long drawing takes, for the log: the first full redraw (when the first window
        opens), the first click on a window, and the frames of each drag */
     int full_reported, click_reported;
-    int menu;                   /* the menu that is open: 0 none, 1 leanos, 2 Edit */
-    int menu_x;                 /* where the Edit menu opened */
+    int menu;                   /* the menu that is open: 0 none, 1 leanos, 2 Edit, 3 Window */
+    int menu_x;                 /* where the Edit or Window menu opened */
     /* the clipboard, and the copy the display asked for: which window (+ 1, or 0), its
        badge, when, and the text so far */
     int clip_len, copy_win, copy_len;
@@ -427,15 +430,24 @@ static void draw_window(struct state *st, int k) {
     s->cy1 = cy1;
 }
 
-/* The Edit menu's name in the menu bar, after the name of the window in front (-1: no window). */
-static int edit_x(struct state *st) {
+/* The Edit menu's name in the menu bar, after the name of the window in front, and the
+   Window menu's after it (m: 2 Edit, 3 Window); -1: no window. */
+static int bar_x(struct state *st, int m) {
     int k = focused(st);
-    return k < 0 ? -1 : 104 + text_w(&st->ui, st->win[k].title) + 22;
+    if (k < 0) return -1;
+    int e = 104 + text_w(&st->ui, st->win[k].title) + 22;
+    return m == 3 ? e + text_w(&st->ui, "Edit") + 22 : e;
 }
 
-COLD static int on_edit(struct state *st, int x) {
-    int e = edit_x(st);
-    return e >= 0 && x >= e - 10 && x < e + text_w(&st->ui, "Edit") + 10;
+static const char *const bar_names[2] = {"Edit", "Window"};
+
+/* Which menu's name (2 Edit, 3 Window) is at x in the menu bar, or 0. */
+COLD static int on_bar_menu(struct state *st, int x) {
+    for (int m = 2; m <= 3; m++) {
+        int e = bar_x(st, m);
+        if (e >= 0 && x >= e - 10 && x < e + text_w(&st->ui, bar_names[m - 2]) + 10) return m;
+    }
+    return 0;
 }
 
 static void top_bar(struct state *st) {
@@ -447,9 +459,11 @@ static void top_bar(struct state *st) {
     int k = focused(st);
     if (k >= 0) {
         font_text(s, &st->ui, 104, 20, st->win[k].title, rgb(200, 204, 214));
-        int e = edit_x(st), ew = text_w(&st->ui, "Edit");
-        if (st->menu == 2) rounded(s, e - 8, 4, ew + 16, BAR_H - 8, 6, rgb(255, 255, 255), 40);
-        font_text(s, &st->ui, e, 20, "Edit", rgb(236, 238, 244));
+        for (int m = 2; m <= 3; m++) {
+            int e = bar_x(st, m), ew = text_w(&st->ui, bar_names[m - 2]);
+            if (st->menu == m) rounded(s, e - 8, 4, ew + 16, BAR_H - 8, 6, rgb(255, 255, 255), 40);
+            font_text(s, &st->ui, e, 20, bar_names[m - 2], rgb(236, 238, 244));
+        }
     }
     const char *right = "access control proved in Lean";
     int rx = W - 12;
@@ -573,6 +587,20 @@ static int extra_step(int n) {
 }
 static int extra_x_of(int i, int n) { return EXTRA_X0 + i * extra_step(n); }
 
+/* The badge of the programs in slot p (slot_of's inverse). */
+static u64 badge_in(int p) { return p == 0 ? BADGE_ALICE : (u64)p; }
+
+/* The dot under a running program's icon in the dock, centered at x: white, or amber (the
+   yellow button's color) while any of its windows is minimized. */
+static void dock_dot(struct state *st, int x, u64 badge) {
+    int hidden = 0;
+    for (int k = 0; k < MAX_WIN; k++) {
+        struct win *w = &st->win[k];
+        hidden |= w->used && !w->closing && w->minimized && w->badge == badge;
+    }
+    rounded(&st->screen, x - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, hidden ? rgb(254, 188, 46) : rgb(230, 232, 240), 255);
+}
+
 static void dock(struct state *st) {
     struct surface *s = &st->screen;
     int which[MAX_WIN], n = dock_extras(st, which);
@@ -590,12 +618,14 @@ static void dock(struct state *st) {
             font_text(s, &st->ui_bold, x + MINI / 2 - text_w(&st->ui_bold, ch) / 2, y + MINI / 2 + 6, ch,
                       rgb(255, 255, 255));
         }
-        rounded(s, x + MINI / 2 - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, rgb(230, 232, 240), 255);
+        dock_dot(st, x + MINI / 2, w->badge);
     }
     for (int i = 0; i < DOCK_ALL; i++) {
         int lift = st->hover == i + 1 ? 4 : 0;
         icon(s, dock_icon_x(i), DOCK_Y + (DOCK_H - ICON) / 2 - 4 - lift, &st->icons[i]);
-        if (running(st, i)) rounded(s, dock_icon_x(i) + ICON / 2 - 2, DOCK_Y + DOCK_H - 7, 4, 4, 2, rgb(230, 232, 240), 255);
+        if (running(st, i))
+            dock_dot(st, dock_icon_x(i) + ICON / 2,
+                     i < DOCK_N ? badge_in(dock_slot[i]) : st->win[window_of(st, pin_files[i - DOCK_N])].badge);
     }
     if (st->hover) {
         int extra = st->hover > 100;
@@ -659,36 +689,40 @@ static void background(struct state *st) {
     }
 }
 
-/* The menus: the leanos menu, under the logo (Restart, Shut down), and the Edit menu, under
-   its name (Copy, Paste: the same as Ctrl+C and Ctrl+V). */
+/* The menus: the leanos menu, under the logo (Restart, Shut down), the Edit menu, under its
+   name (Copy, Paste: the same as Ctrl+C and Ctrl+V), and the Window menu, under its name
+   (Minimize and Zoom, the same as the window's yellow and green buttons, and Next window,
+   the same as Ctrl+O). */
 #define MENU_X 6
 #define MENU_Y (BAR_H + 4)
 #define MENU_W 190
 #define MENU_ITEM 28
-#define MENU_H (2 * MENU_ITEM + 12)
-static const char *const menu_items[2][2] = {{"Restart", "Shut down"}, {"Copy", "Paste"}};
-static const char *const edit_keys[2] = {"Ctrl+C", "Ctrl+V"};
+#define MENU_H(n) ((n) * MENU_ITEM + 12)
+#define MENU_H_MAX MENU_H(3)
+static const char *const menu_items[3][3] = {{"Restart", "Shut down", 0}, {"Copy", "Paste", 0},
+                                             {"Minimize", "Zoom", "Next window"}};
+static const char *const menu_keys[3][3] = {{0, 0, 0}, {"Ctrl+C", "Ctrl+V", 0}, {0, 0, "Ctrl+O"}};
 
-static int menu_left(struct state *st, int m) { return m == 2 ? st->menu_x : MENU_X; }
+static int menu_left(struct state *st, int m) { return m >= 2 ? st->menu_x : MENU_X; }
+static int menu_n(int m) { return m == 3 ? 3 : 2; }
 
 static void menu(struct state *st) {
     struct surface *s = &st->screen;
-    int x = menu_left(st, st->menu);
-    shadow(s, x, MENU_Y, MENU_W, MENU_H, 10, 0);
-    rounded(s, x, MENU_Y, MENU_W, MENU_H, 10, rgb(248, 248, 250), 255);
-    for (int i = 0; i < 2; i++) {
+    int x = menu_left(st, st->menu), n = menu_n(st->menu);
+    shadow(s, x, MENU_Y, MENU_W, MENU_H(n), 10, 0);
+    rounded(s, x, MENU_Y, MENU_W, MENU_H(n), 10, rgb(248, 248, 250), 255);
+    for (int i = 0; i < n; i++) {
         int y = MENU_Y + 6 + i * MENU_ITEM + 19;
+        const char *key = menu_keys[st->menu - 1][i];
         font_text(s, &st->ui, x + 16, y, menu_items[st->menu - 1][i], rgb(30, 30, 36));
-        if (st->menu == 2)
-            font_text(s, &st->small, x + MENU_W - 16 - text_w(&st->small, edit_keys[i]), y, edit_keys[i],
-                      rgb(140, 144, 156));
+        if (key) font_text(s, &st->small, x + MENU_W - 16 - text_w(&st->small, key), y, key, rgb(140, 144, 156));
     }
 }
 
-/* Which item (0, 1) of the open menu is at (x, y), or -1. */
+/* Which item (0, 1, 2) of the open menu is at (x, y), or -1. */
 COLD static int menu_at(struct state *st, int x, int y) {
     int x0 = menu_left(st, st->menu);
-    if (x < x0 || x >= x0 + MENU_W || y < MENU_Y + 6 || y >= MENU_Y + 6 + 2 * MENU_ITEM) return -1;
+    if (x < x0 || x >= x0 + MENU_W || y < MENU_Y + 6 || y >= MENU_Y + 6 + menu_n(st->menu) * MENU_ITEM) return -1;
     return (y - MENU_Y - 6) / MENU_ITEM;
 }
 
@@ -725,7 +759,7 @@ static void composite_from(struct state *st, int x0, int y0, int x1, int y1, int
     }
     if (s->cy1 > DOCK_Y - 40) dock(st);
     if (st->menu && s->cx0 < menu_left(st, st->menu) + MENU_W + 12 && s->cx1 > menu_left(st, st->menu) - 12 &&
-        s->cy0 < MENU_Y + MENU_H + 12)
+        s->cy0 < MENU_Y + MENU_H(menu_n(st->menu)) + 12)
         menu(st);
     pointer(s, st->px, st->py);
     clip_all(s);
@@ -770,12 +804,51 @@ static void composite_window(struct state *st, int k) {
     composite(st, w->x - 10, w->y - 10, outer_w(w) + 20, outer_h(w) + 24);
 }
 
-COLD static void raise(struct state *st, int k) {
+/* Take window k out of the stack (it is drawn no more, and no click finds it); 0 if it
+   was not in it. */
+COLD static int unstack(struct state *st, int k) {
     int at = -1;
     for (int i = 0; i < st->nz; i++) if (st->z[i] == k) at = i;
-    if (at < 0) return;
+    if (at < 0) return 0;
     for (int i = at; i < st->nz - 1; i++) st->z[i] = st->z[i + 1];
-    st->z[st->nz - 1] = k;
+    st->nz--;
+    return 1;
+}
+
+/* Window k to the top of the stack, if it is in it. */
+COLD static void raise(struct state *st, int k) {
+    if (unstack(st, k)) st->z[st->nz++] = k;
+}
+
+/* "display: " pre NAME post, and ", its window N" for a program's second window on. */
+COLD __attribute__((noinline)) static void say_win(struct line *l, const char *pre, const struct win *w,
+                                                   const char *post) {
+    put_s(l, "display: ");
+    put_s(l, pre);
+    put_s(l, win_name(w));
+    put_s(l, post);
+    if (w->id) {
+        put_s(l, ", its window ");
+        put_dec(l, (u64)w->id);
+    }
+    say(l);
+}
+
+/* "display: moved NAME's window to (X, Y)": where it is now, which the tests read to click
+   inside it. */
+COLD static void say_moved(struct line *l, const struct win *w) {
+    put_s(l, "display: moved ");
+    put_s(l, win_name(w));
+    put_s(l, "'s window to (");
+    put_dec(l, w->x);
+    put_s(l, ", ");
+    put_dec(l, w->y);
+    put_s(l, ")");
+    if (w->id) {
+        put_s(l, ", its window ");
+        put_dec(l, (u64)w->id);
+    }
+    say(l);
 }
 
 /* Bring window k to the front and redraw only what changed: its area, and the area of the
@@ -789,16 +862,32 @@ COLD static void bring_to_front(struct state *st, int k) {
     composite(st, 0, 0, W, BAR_H + 1);
 }
 
+COLD static void redraw_all(struct state *st);
+
 /* Bring every window of window k's program to the front, in the order they were in, so
    the one of them that was in front last is in front now (the dock, RAISE: a program, not
-   a window, was asked for), and redraw what changed. */
-COLD static void raise_program(struct state *st, int k) {
+   a window, was asked for), and redraw what changed. Its minimized windows come back first,
+   where they were: all of them, in front. */
+COLD static void raise_program(struct state *st, struct line *l, int k) {
     u64 badge = st->win[k].badge;
+    int back = 0;
+    for (int j = 0; j < MAX_WIN; j++) {
+        struct win *w = &st->win[j];
+        if (!w->used || w->closing || !w->minimized || w->badge != badge) continue;
+        w->minimized = 0;
+        st->z[st->nz++] = j;
+        say_win(l, "", w, " restored");
+        back = 1;
+    }
     int old = focused(st), n = st->nz;
     for (int i = 0, seen = 0; seen < n; seen++) {
         int j = st->z[i];
         if (st->win[j].badge == badge) raise(st, j);   /* to the top: the rest move down */
         else i++;
+    }
+    if (back) {
+        redraw_all(st);          /* the windows, and the dock's dot */
+        return;
     }
     if (old >= 0 && st->win[old].badge != badge) composite_window(st, old);
     for (int i = 0; i < st->nz; i++)
@@ -888,6 +977,60 @@ COLD static void deliver_event(struct state *st, int k, u64 kind, u64 a, u64 b) 
 
 COLD static void redraw_all(struct state *st) { composite(st, 0, 0, W, H); }
 
+/* ---- minimize, zoom, and the next window ----
+
+   The yellow button minimizes a window: it leaves the stack, so it is not drawn, no click
+   finds it and no key, copy or paste reaches it (they go to the window in front, which is
+   now the next one down); its program keeps running, its pixels stay lent and mapped, and
+   its dock icon's dot turns amber. Its program's dock icon, or RAISE (Terminal's and Apps'
+   `run`), brings back all its minimized windows, where they were, in front (raise_program).
+   The green button zooms: windows are a fixed size (a program draws a fixed buffer), so
+   zoom moves the window to the middle of the room between the menu bar and the dock, in
+   front, and a second click moves it back (a drag in between forgets where it came from).
+   Ctrl+O sends the window in front to the back, so the next one comes to the front: pressed
+   again and again, it goes through every window shown. The Window menu does the same three. */
+
+COLD static void minimize(struct state *st, struct line *l, int k) {
+    struct win *w = &st->win[k];
+    int was = focused(st);
+    if (!unstack(st, k)) return;
+    w->minimized = 1;
+    if (st->drag == k + 1) st->drag = 0;
+    say_win(l, "", w, " minimized");
+    if (was == k && focused(st) >= 0) say_win(l, "focus to ", &st->win[focused(st)], "");
+    redraw_all(st);
+}
+
+COLD static void zoom(struct state *st, struct line *l, int k) {
+    struct win *w = &st->win[k];
+    raise(st, k);
+    if (w->zoomed) {
+        w->x = w->zoom_x;
+        w->y = w->zoom_y;
+        w->zoomed = 0;
+        say_win(l, "", w, " zoomed back");
+    } else {
+        w->zoom_x = w->x;
+        w->zoom_y = w->y;
+        w->zoomed = 1;
+        w->x = (W - outer_w(w)) / 2;
+        w->y = BAR_H + 1 + (DOCK_Y - BAR_H - 1 - outer_h(w)) / 2;
+        if (w->y < BAR_H + 2) w->y = BAR_H + 2;        /* never over the menu bar, as a drag keeps it */
+        say_win(l, "", w, " zoomed");
+    }
+    say_moved(l, w);
+    redraw_all(st);
+}
+
+COLD static void next_window(struct state *st, struct line *l) {
+    if (st->nz < 2) return;
+    int top = st->z[st->nz - 1];
+    for (int i = st->nz - 1; i > 0; i--) st->z[i] = st->z[i - 1];
+    st->z[0] = top;
+    say_win(l, "focus to ", &st->win[focused(st)], "");
+    redraw_all(st);
+}
+
 /* The kernel removed capability i: everything after it moves down one place, the grant
    the message being handled carries too. */
 COLD static void cap_forget(struct state *st, int i) {
@@ -906,12 +1049,7 @@ COLD static void cap_drop(struct state *st, int i) {
 
 /* Take window k off the screen and stop mapping its pixels. */
 COLD static void hide(struct state *st, int k) {
-    int at = -1;
-    for (int i = 0; i < st->nz; i++) if (st->z[i] == k) at = i;
-    if (at >= 0) {
-        for (int i = at; i < st->nz - 1; i++) st->z[i] = st->z[i + 1];
-        st->nz--;
-    }
+    unstack(st, k);
     if (st->drag == k + 1) st->drag = 0;
     if (st->hover == 101 + k) st->hover = 0;
     sys2(SYS_UNMAP, WIN_PAGE + WIN_MAX_PAGES * (u64)k, WIN_MAX_PAGES);
@@ -986,9 +1124,6 @@ static void say3(struct line *l, const char *a, const char *b, const char *c);
    (forget_stopped), and a launcher calls it after it finds a slot stopped and before it
    starts it (app_before_start in user/app.h), so the display has let go of the last run
    before the kernel does. Beyond that, what the kernel hands it shows what it missed: */
-
-/* The badge of the programs in slot p (slot_of's inverse). */
-static u64 badge_in(int p) { return p == 0 ? BADGE_ALICE : (u64)p; }
 
 /* A call in reply slot k: the calls the display holds are all in slots of their own, so any
    record it still has of slot k is of a call the kernel has dropped (its caller's slot was
@@ -1070,7 +1205,7 @@ COLD static void launch(struct state *st, struct line *l, int i) {
     }
     for (int k = 0; k < MAX_WIN; k++)
         if (st->win[k].used && !st->win[k].closing && slot_of(st->win[k].badge) == slot) {
-            raise_program(st, k);
+            raise_program(st, l, k);
             return;
         }
     if (run_state(slot) == 1) return; /* started, not showing a window yet */
@@ -1102,7 +1237,7 @@ COLD static void launch(struct state *st, struct line *l, int i) {
 COLD static void open_pinned(struct state *st, struct line *l, int p) {
     int k = window_of(st, pin_files[p]);
     if (k >= 0) {
-        raise_program(st, k);
+        raise_program(st, l, k);
         return;
     }
     put_s(l, "display: open ");
@@ -1276,9 +1411,10 @@ COLD __attribute__((noinline)) static void on_copy(struct state *st, struct line
 }
 
 COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
-    if (kind == EV_KEY && (a == KEY_COPY || a == KEY_PASTE)) {
+    if (kind == EV_KEY && (a == KEY_COPY || a == KEY_PASTE || a == KEY_NEXT)) {
         if (a == KEY_COPY) copy_ask(st, l);
-        else paste_to(st, l);
+        else if (a == KEY_PASTE) paste_to(st, l);
+        else next_window(st, l);
         return;
     }
     if (kind == EV_KEY) {
@@ -1299,17 +1435,22 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
     int ox = st->px, oy = st->py;
     st->px = a < W ? (int)a : W - 1;
     st->py = b < H ? (int)b : H - 1;
-    if (kind == EV_DOWN && (st->menu || (st->py < BAR_H && (st->px < 100 || on_edit(st, st->px))))) {
-        /* a click with a menu open closes it (choosing what is under it); on the logo or
-           on Edit, with none open, opens that one */
+    if (kind == EV_DOWN && (st->menu || (st->py < BAR_H && (st->px < 100 || on_bar_menu(st, st->px))))) {
+        /* a click with a menu open closes it (choosing what is under it); on the logo, on
+           Edit or on Window, with none open, opens that one */
         int was = st->menu, item = was ? menu_at(st, st->px, st->py) : -1;
-        st->menu = was ? 0 : st->px < 100 ? 1 : 2;
-        if (st->menu == 2) st->menu_x = edit_x(st) - 10;
-        composite(st, 0, 0, W, MENU_Y + MENU_H + 12);
-        if (st->menu == 2) say3(l, "the Edit menu, for ", name_of(st->win[focused(st)].badge), "");
+        st->menu = was ? 0 : st->px < 100 ? 1 : on_bar_menu(st, st->px);
+        if (st->menu >= 2) st->menu_x = bar_x(st, st->menu) - 10;
+        composite(st, 0, 0, W, MENU_Y + MENU_H_MAX + 12);
+        if (st->menu >= 2)
+            say3(l, st->menu == 2 ? "the Edit menu, for " : "the Window menu, for ", name_of(st->win[focused(st)].badge), "");
         if (was == 2 && item >= 0) {
             if (item == 0) copy_ask(st, l);
             else paste_to(st, l);
+        } else if (was == 3 && item >= 0 && focused(st) >= 0) {
+            if (item == 0) minimize(st, l, focused(st));
+            else if (item == 1) zoom(st, l, focused(st));
+            else next_window(st, l);
         } else if (was == 1 && item >= 0) {
             int restart = item == 0;          /* the items: Restart, Shut down */
             put_s(l, restart ? "display: restarting, as the user asked"
@@ -1331,14 +1472,18 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
     }
     if (kind == EV_DOWN) {
         int d = dock_at(st, st->px, st->py);
-        if (d > 100) raise_program(st, d - 101);
+        if (d > 100) raise_program(st, l, d - 101);
         else if (d > DOCK_N) open_pinned(st, l, d - 1 - DOCK_N);
         else if (d) launch(st, l, d - 1);
         int k = d ? -1 : window_at(st, st->px, st->py);
         if (k >= 0) {
             struct win *w = &st->win[k];
-            if (st->px >= w->x + 12 && st->px < w->x + 24 && st->py >= w->y + 9 && st->py < w->y + 21) {
-                close_window(st, l, k);
+            /* the title bar's buttons, 12 px each, 20 apart: close, minimize, zoom */
+            int bx = st->px - w->x - 12;
+            if (bx >= 0 && bx < 52 && bx % 20 < 12 && st->py >= w->y + 9 && st->py < w->y + 21) {
+                if (bx < 20) close_window(st, l, k);
+                else if (bx < 40) minimize(st, l, k);
+                else zoom(st, l, k);
                 return;
             }
             u64 t0 = micros();
@@ -1380,18 +1525,8 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
     } else if (kind == EV_UP && st->drag) {
         struct win *w = &st->win[st->drag - 1];
         if (w->x != st->drag_x0 || w->y != st->drag_y0) {
-            put_s(l, "display: moved ");
-            put_s(l, win_name(w));
-            put_s(l, "'s window to (");
-            put_dec(l, w->x);
-            put_s(l, ", ");
-            put_dec(l, w->y);
-            put_s(l, ")");
-            if (w->id) {
-                put_s(l, ", its window ");
-                put_dec(l, (u64)w->id);
-            }
-            say(l);
+            w->zoomed = 0;       /* its green button zooms from here now */
+            say_moved(l, w);
             put_s(l, "display: the drag drew ");
             put_dec(l, st->drag_frames);
             put_s(l, " frames, ");
@@ -1605,7 +1740,7 @@ COLD static void on_open(struct state *st, struct line *l, struct res *r) {
     wn->title[8] = 0;
     place(st, wn);
     wn->hash = sys1(SYS_BOOTINFO, (u64)slot_of(badge)).x[2];
-    wn->closing = 0;
+    wn->closing = wn->minimized = wn->zoomed = 0;
     wn->icon.px = 0;
     wn->prog[0] = 0;
     st->cap_win[cap - 1] = k + 1;
@@ -1665,7 +1800,7 @@ COLD static void on_wait(struct state *st, struct line *l, struct res *r, int po
         struct win *w = &st->win[k];
         if (!w->used || w->badge != badge) continue;
         any = 1;
-        if (((dirty >> w->id) & 1) && !w->closing) composite_window(st, k);
+        if (((dirty >> w->id) & 1) && !w->closing && !w->minimized) composite_window(st, k);
     }
     if (!any) {
         sys(SYS_REPLY, slot - 1, 0, 0, 0, 0); /* no window: nothing to wait for */
@@ -1789,7 +1924,7 @@ COLD static void on_raise(struct state *st, struct line *l, struct res *r) {
         int i = 0;
         while (i < 16 && w->prog[i] == want[i] && want[i]) i++;
         if (i < 16 && w->prog[i] == want[i]) {
-            raise_program(st, k);
+            raise_program(st, l, k);
             if (st->said[r->x[1] & 31] < 3) {    /* a program may name its own window and ask again */
                 st->said[r->x[1] & 31]++;
                 say3(l, want, " is already open; brought it to the front", "");

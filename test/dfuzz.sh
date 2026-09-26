@@ -48,7 +48,8 @@ out=$(python3 - "$card" "$seed" "$count" <<'PY'
 import sys
 from collections import Counter
 sys.path.insert(0, "test")
-from run import boot, mouse, wait_for, snap, pause, wmouse, wclick, CLOSE, DOCK
+import random
+from run import boot, mouse, wait_for, snap, pause, wmouse, wclick, front_button, CLOSE, DOCK
 card, seed, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 rerun = max(1, count // 4)
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
@@ -78,9 +79,23 @@ for k, name in enumerate(NAMES):
         steps += [wait_for("dfuzz: dfuzz in slot 10: about to open a narrow window"), pause(0.3), snap("before-narrow"),
                   wait_for("dfuzz: dfuzz in slot 10: a narrow window is up"), pause(0.3), snap("narrow")]
     steps += [wait_for(f"dfuzz: {name} in slot {10 + k}: with a window")]
+# While both fuzz, the user's hand, at random (from the seed): Ctrl+O, the yellow and green
+# buttons of the window in front (found on the screen), the fuzzers' dock icons (which bring
+# back their minimized windows) and Terminal's, then Terminal's again.
+rnd = random.Random(seed)
+EXTRAS = [(869, 548), (917, 548)]      # the two fuzzers' dock icons, after the built-in apps
+for i in range(30):
+    a = rnd.choice("nnnyyggddt")
+    steps += ([b"\x0f"] if a == "n" else [front_button("yellow")] if a == "y" else [front_button("green")] if a == "g"
+              else click(*rnd.choice(EXTRAS)) if a == "d" else front) + [pause(0.1)]
+steps += front
 for k, name in enumerate(NAMES):
     steps += [wait_for(f"dfuzz: {name} in slot {10 + k}: all done")]
 steps += [snap("fuzzed")]              # every window the fuzzers opened, still up
+# a fuzzer's windows brought to the front by its dock icon, and the one in front minimized,
+# then the next (Ctrl+O) too: they are killed so (as the fuzzers RAISE their own names, they
+# bring back their own windows)
+steps += [*click(*EXTRAS[0]), front_button("yellow"), b"\x0f", front_button("yellow")]
 # dfuzz killed while it waits on its window (the display holds the call), and run again in
 # its slot twice more, beside dfuzz2 as it was
 for again in (1, 2):
@@ -111,7 +126,7 @@ PY
 )
 status=$?
 echo "$out" > "$T/serial.txt"                # the whole transcript, for a failure
-echo "$out" | grep -E "^(dfuzz: |terminal: (run|write|kill|mkdir apps/)|settings: opened|leanos: (slot 1. stopped|PANIC)|display: (a program from the SD card (sent|keeps|may not|stopped)|dfuzz2? is already))" \
+echo "$out" | grep -E "^(dfuzz: |terminal: (run|write|kill|mkdir apps/)|settings: opened|leanos: (slot 1. stopped|PANIC)|display: (a program from the SD card (sent|keeps|may not|stopped)|dfuzz2? is already|.* (minimized|restored|zoomed|zoomed back)(, its window [0-9]+)?$|focus to))" \
   | grep -v "requests so far" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish (status $status): the display froze or stopped?"
 echo "$out" | grep -qE "PANIC|exception in the kernel" && fail "the kernel stopped"
@@ -139,6 +154,15 @@ has "${C}copy: a late answer refused"
 echo "$out" | grep -q "^${C}closed; all done: [0-9]* requests, 0 wrong$" || fail "dfuzzc: $(echo "$out" | grep "^${C}closed")"
 echo "$out" | grep -q "^dfuzz: dfuzz2 in slot 11: all done: [0-9]* requests, 0 wrong$" \
   || fail "dfuzz2 did not finish clean: $(echo "$out" | grep "^dfuzz: dfuzz2 in slot 11: all done")"
+# The user's hand reached the fuzzers' windows while they fuzzed: a window minimized, and the
+# focus moved (what they did is at random, from the seed; there is always the last minimize,
+# after they are done).
+mins=$(echo "$out" | grep -cE "^display: .* minimized(, its window [0-9]+)?$")
+zooms=$(echo "$out" | grep -cE "^display: .* zoomed( back)?(, its window [0-9]+)?$")
+backs=$(echo "$out" | grep -cE "^display: .* restored(, its window [0-9]+)?$")
+focus=$(echo "$out" | grep -c "^display: focus to ")
+[ "$mins" -ge 1 ] || fail "no window was minimized while the fuzzers ran"
+[ "$focus" -ge 1 ] || fail "Ctrl+O moved no focus while the fuzzers ran"
 # requests made near the limits got windows where the rule allows them, until the table was
 # full. (A display that kept grants it does not use would fill its 64 capabilities, and every
 # later grant would come back from the kernel as full: a wrong answer, above.)
@@ -232,4 +256,5 @@ print(f"ok: a window one pixel wide changed a strip {bw} px wide; the desktop is
 PYS
 
 total=$(echo "$out" | sed -n 's/^dfuzz: .* \([0-9]*\) requests, 0 wrong.*/\1/p' | awk '{ n += $1 } END { print n }')
+echo "ok: the user's hand while they fuzzed: $mins windows minimized, $backs restored, $zooms zooms, $focus focus changes"
 echo "ok: $total requests from dfuzz (five runs in one slot, killed, exiting and faulting), dfuzz2 and dfuzzc (copy and paste) at the display, every answer as the protocol allows (seed $seed); kernel heap $h2 to $h3 bytes after each restart of slot 10; the display and file server still work, the desktop still drawn"
