@@ -7,7 +7,8 @@
 #   looks for in every answer) and a file of 20 KiB, and gives each fsfuzz its seed.
 #   fsfuzz4, given apps too, fills apps to 64 entries. fsfuzz makes its fixed requests (every
 #   operation, bad paths, other folders, every limit, bad buffers, a folder 40 deep, a folder
-#   of 300 entries), then fills the card until the file server says full; with the card full,
+#   of 300 entries, the card's totals as a file and a folder come and go), then fills the card
+#   until the file server says full (and its totals say so); with the card full,
 #   Terminal starts fsfuzz5, whose folder cannot be made (apps would need a cluster more).
 #   Then fsfuzz empties the card and makes random requests checked against a model, fsfuzz2
 #   and fsfuzz3 make theirs beside it, and Terminal writes and reads files at the same time.

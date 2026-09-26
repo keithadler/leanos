@@ -658,12 +658,32 @@ static void rollback(void) {
     op_begin();
 }
 
+/* SPACE, for any client: the file system's size and what is free, and how many files and
+   folders there are (the inodes in use, which the check at start keeps to what the folders
+   hold). Totals only: no name, no size of any one file, nothing any file holds. */
+static u64 space_op(char *data, u64 *value, u64 *more) {
+    struct fs_space *s = (struct fs_space *)data;
+    zero(data, sizeof *s);
+    s->cluster = CLUSTER;
+    s->clusters = S->sb.clusters - 1;              /* cluster 0 means "none" */
+    s->free = S->free_clusters;
+    s->names = S->sb.inode_count - 2;              /* inode 0 means "none", 1 is the top folder */
+    for (unsigned i = 2; i < S->sb.inode_count; i++) {
+        s->files += INODES[i].kind == FS_FILE;
+        s->folders += INODES[i].kind == FS_DIR;
+    }
+    *value = s->free;
+    *more = s->clusters;
+    return FS_OK;
+}
+
 static u64 serve_op(u64 op, u64 arg, char *buf, u64 *value, u64 *more);
 static u64 share_op(u64 badge, u64 op, u64 arg, char *buf, u64 *value, struct line *l);
 
 /* A request that fails part way leaves the card as it was (nothing was committed), and
    its changes to the copies in memory are dropped (rollback). */
 static u64 serve(u64 badge, u64 op, u64 arg, char *buf, u64 *value, u64 *more, struct line *l) {
+    if (op == FS_SPACE) return space_op(buf + FS_DATA_OFF, value, more);
     if (op >= FS_SHARE) return share_op(badge, op, arg, buf, value, l);
     if (!terminated(buf)) return FS_BAD;                          /* a path too long */
     if (op == FS_RENAME && !terminated(buf + FS_DATA_OFF)) return FS_BAD;

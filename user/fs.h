@@ -29,6 +29,9 @@ enum {
     FS_UNSHARE = 10,  /* take back everything open slot `arg` was given */
     FS_GRANTS = 11,   /* what the caller was given: x2 entries in the data area, each a rights
                          byte then a path and a 0 */
+    FS_SPACE = 12,    /* the card's totals, struct fs_space in the data area (the path is not
+                         read); x2 = free clusters, x3 = clusters. Any client may ask: totals
+                         name nothing and hold nothing of any file */
 };
 enum { FS_OK = 0, FS_NOT_FOUND = 1, FS_FULL = 2, FS_BAD = 3, FS_NO_SERVER = 4, FS_EXISTS = 5,
        FS_NOT_EMPTY = 6, FS_NOT_DIR = 7, FS_IS_DIR = 8, FS_IO = 9, FS_DENIED = 10 };
@@ -53,6 +56,14 @@ struct fs_entry {
     unsigned kind;                         /* FS_FILE or FS_DIR */
 };
 #define FS_LIST_MAX (FS_CHUNK / (int)sizeof(struct fs_entry))
+
+/* SPACE's answer: how large the file system is and how much of it is used, as totals. */
+struct fs_space {
+    unsigned cluster;                      /* bytes in a cluster, what a file takes at a time */
+    unsigned clusters, free;               /* clusters for files and folders, and those free */
+    unsigned files, folders;               /* how many are on the card (not the top folder) */
+    unsigned names;                        /* files and folders it can hold in all */
+};
 
 #ifndef FS_SERVER
 #define FS_ENDPOINT 5
@@ -189,6 +200,14 @@ static inline long fs_grants(struct fs_client *c) {
     fs_path(c, "");
     struct res r = fs_call(c, FS_GRANTS, 0);
     return r.x[1] == FS_OK ? (long)r.x[2] : -1;
+}
+
+/* The card's totals into *s (fs_space). Returns the status. */
+static inline u64 fs_space(struct fs_client *c, struct fs_space *s) {
+    fs_path(c, "");
+    struct res r = fs_call(c, FS_SPACE, 0);
+    if (r.x[1] == FS_OK) *s = *(const struct fs_space *)(c->buf + FS_DATA_OFF);
+    return r.x[1];
 }
 
 /* The top folder's first entries. */

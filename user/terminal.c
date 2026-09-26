@@ -9,11 +9,11 @@
    Return.
 
    The command line edits as a shell's does: Left and Right move the cursor, and typing,
-   Backspace and a paste work where it is. Up and Down step through the last HIST commands
-   (the line being typed is kept, and Down past the newest comes back to it). Tab completes a
-   command's name at the start of the line, and a file or folder name after it (a folder with
-   a '/'), from the file server's listing; when several match, it completes what they share,
-   and a second Tab lists them. */
+   Backspace and a paste work where it is. Up and Down step through the last HIST commands,
+   which history lists (the line being typed is kept, and Down past the newest comes back to
+   it). Tab completes a command's name at the start of the line, and a file or folder name
+   after it (a folder with a '/'), from the file server's listing; when several match, it
+   completes what they share, and a second Tab lists them. */
 #include "app.h"
 #include "fs.h"
 #include "elfload.h"
@@ -351,18 +351,24 @@ COLD static void cmd_mkdir(struct term *t, struct line *l, const char *args) {
     fs_log(l, "mkdir", name, st == FS_OK ? "ok" : fs_error(st));
 }
 
+/* TO, if it is a folder, becomes the name FROM has, in it: mv and cp keep the name. */
+COLD static void into_folder(struct term *t, const char *from, char *to) {
+    if (fs_stat(&t->fs, to, 0) != FS_DIR) return;
+    const char *last = from;
+    for (const char *p = from; *p; p++) if (*p == '/') last = p + 1;
+    int n = (int)slen(to);
+    if (n + 1 + (int)slen(last) <= FS_PATH_MAX) { to[n] = '/'; scopy(to + n + 1, last); }
+}
+
+/* PATH.tmp, where fill and cp make a file before one rename puts it in place. */
+COLD static void tmp_of(const char *path, char *tmp) { scopy(tmp + scopy(tmp, path), ".tmp"); }
+
 COLD static void cmd_mv(struct term *t, struct line *l, const char *args) {
     char a[FS_PATH_MAX + 1], b[FS_PATH_MAX + 1], pa[FS_PATH_MAX + 1], pb[FS_PATH_MAX + 1];
     word_of(word_of(args, a, FS_PATH_MAX), b, FS_PATH_MAX);
     resolve(t, a, pa);
     resolve(t, b, pb);
-    u64 kind = fs_stat(&t->fs, pb, 0);
-    if (kind == FS_DIR) {                  /* into a folder: keep the name */
-        const char *last = a;
-        for (const char *p = a; *p; p++) if (*p == '/') last = p + 1;
-        int n = slen(pb);
-        if (n + 1 + (int)slen(last) <= FS_PATH_MAX) { pb[n] = '/'; for (int i = 0; ; i++) { pb[n + 1 + i] = last[i]; if (!last[i]) break; } }
-    }
+    into_folder(t, a, pb);
     u64 st = fs_rename(&t->fs, pa, pb);
     say(t, st == FS_OK ? "moved" : fs_error(st));
     fs_log(l, "mv", a, st == FS_OK ? "ok" : fs_error(st));
@@ -398,14 +404,12 @@ COLD static void cmd_cd(struct term *t, struct line *l, const char *args) {
    put in place by one rename, which the file server does in one step: whatever happens,
    NAME is the old file or the new one, never half of each. */
 COLD static void cmd_fill(struct term *t, struct line *l, const char *args) {
-    char name[FS_PATH_MAX + 1], num[12], ch[4], path[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 1];
+    char name[FS_PATH_MAX + 1], num[12], ch[4], path[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 5];
     word_of(word_of(word_of(args, name, FS_PATH_MAX - 4), num, 10), ch, 2);
     u64 kb = 0;
     for (int i = 0; num[i] >= '0' && num[i] <= '9'; i++) kb = kb * 10 + (u64)(num[i] - '0');
     resolve(t, name, path);
-    int n = slen(path);
-    for (int i = 0; i <= n; i++) tmp[i] = path[i];
-    tmp[n] = '.'; tmp[n + 1] = 't'; tmp[n + 2] = 'm'; tmp[n + 3] = 'p'; tmp[n + 4] = 0;
+    tmp_of(path, tmp);
     char *piece = (char *)PAGE(SPARE_PAGE + FILE_OFFSET);
     for (u64 i = 0; i < 16384; i++) piece[i] = ch[0] ? ch[0] : 'x';
     u64 st = fs_write(&t->fs, tmp, piece, 0);
@@ -451,6 +455,348 @@ COLD static void cmd_verify(struct term *t, struct line *l, const char *args) {
         put_s(l, c);
         put_s(l, "'\n");
     }
+    flush(l);
+}
+
+/* ---- more on files: cp, head, tail, wc, grep, find, df ---- */
+
+#define LINE_MAX (16 * 4096 - 1)   /* a line as head, tail and grep take it: 64 KiB, at FILE_OFFSET */
+#define FIND_DEPTH 16              /* find goes this many folders down */
+#define FIND_SHOWN 100             /* and shows this many names at most */
+
+/* Why `path` cannot be read as a file: it is a folder, or it is not there. */
+COLD static const char *unreadable(struct term *t, const char *path) {
+    return fs_stat(&t->fs, path, 0) == FS_DIR ? "a folder, not a file" : "no such file";
+}
+
+/* A number, from its digits; -1 if `s` is not one. */
+COLD static long number(const char *s) {
+    long v = 0;
+    if (!*s) return -1;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9' || v > 100000000) return -1;
+        v = v * 10 + (*s - '0');
+    }
+    return v;
+}
+
+static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+/* Whether the n bytes at `s` hold `w` (ignoring case if `fold`). */
+COLD static int contains(const char *s, long n, const char *w, int fold) {
+    long m = (long)slen(w);
+    for (long i = 0; i + m <= n; i++) {
+        long j = 0;
+        while (j < m && (fold ? lower(s[i + j]) == lower(w[j]) : s[i + j] == w[j])) j++;
+        if (j == m) return 1;
+    }
+    return 0;
+}
+
+/* A file, line by line, a piece at a time through the file server's buffer. */
+struct reader { const char *path; u64 off, size; long n, i; };
+
+/* The next line into `line` (its first LINE_MAX bytes, and a 0), without its '\n': its
+   length, -1 after the last, -2 if the file cannot be read. */
+COLD static long next_line(struct term *t, struct reader *r, char *line) {
+    long k = 0, any = 0;
+    for (;;) {
+        if (r->i >= r->n) {
+            long n = r->n && r->off >= r->size ? 0 : fs_read_at(&t->fs, r->path, r->off, &r->size);
+            if (n < 0) return -2;
+            if (n == 0) { line[k] = 0; return any ? k : -1; }
+            r->off += (u64)n;
+            r->n = n;
+            r->i = 0;
+        }
+        char c = fs_data(&t->fs)[r->i++];
+        if (c == '\n') break;
+        any = 1;
+        if (k < LINE_MAX) line[k++] = c;
+    }
+    line[k] = 0;
+    return k;
+}
+
+/* The line buffer: where a program's file is read for run, free while a command runs. */
+static char *line_buf(void) { return (char *)PAGE(SPARE_PAGE + FILE_OFFSET); }
+
+/* cp FROM TO: a copy, made as fill makes a file: in pieces into TO.tmp, then put in place
+   by one rename, so TO is its old self or the whole copy. TO may be a folder, as for mv. */
+COLD static void cmd_cp(struct term *t, struct line *l, const char *args) {
+    char a[FS_PATH_MAX + 1], b[FS_PATH_MAX + 1], pa[FS_PATH_MAX + 1], pb[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 5];
+    word_of(word_of(args, a, FS_PATH_MAX), b, FS_PATH_MAX);
+    resolve(t, a, pa);
+    resolve(t, b, pb);
+    into_folder(t, a, pb);
+    tmp_of(pb, tmp);
+    u64 size = 0, off = 0, kind = fs_stat(&t->fs, pa, &size), st = FS_OK;
+    const char *why = !a[0] || !b[0] ? "cp FROM TO" : kind == FS_DIR ? "cp copies files, not folders"
+                    : !kind ? "no such file" : same(tmp, pa) ? "FROM is where the copy is made: rename it first" : 0;
+    if (!why) {
+        st = fs_write(&t->fs, tmp, "", 0);
+        while (st == FS_OK && off < size) {
+            long n = fs_read_at(&t->fs, pa, off, &size);
+            if (n <= 0) { st = n < 0 ? FS_NOT_FOUND : FS_OK; break; }
+            /* the piece is in the buffer's data area already: written from where it is */
+            st = fs_write_at(&t->fs, tmp, off, fs_data(&t->fs), (u64)n);
+            off += (u64)n;
+        }
+        if (st == FS_OK) st = fs_rename(&t->fs, tmp, pb);
+        if (st != FS_OK) fs_delete(&t->fs, tmp);
+        why = st == FS_OK ? 0 : fs_error(st);
+    }
+    if (why) say(t, why);
+    else {
+        put_s(l, "copied ");
+        put_dec(l, off);
+        put_s(l, " bytes");
+        out(t, l);
+    }
+    put_s(l, "terminal: cp ");
+    put_s(l, a);
+    if (b[0]) { put_s(l, " "); put_s(l, b); }
+    put_s(l, " -> ");
+    if (why) put_s(l, why);
+    else { put_dec(l, off); put_s(l, " bytes"); }
+    put_s(l, "\n");
+    flush(l);
+}
+
+/* head [-n N] FILE, tail [-n N] FILE: its first or last N lines (10 if not said). tail reads
+   the file twice, counting its lines and then showing the last, so it keeps none. */
+COLD static void cmd_ends(struct term *t, struct line *l, const char *args, int tail) {
+    char w[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    const char *cmd = tail ? "tail" : "head";
+    const char *rest = word_of(args, w, FS_PATH_MAX);
+    long want = 10;
+    if (same(w, "-n")) {
+        rest = word_of(rest, w, 12);
+        want = number(w);
+        word_of(rest, w, FS_PATH_MAX);
+    }
+    if (want < 0 || !w[0]) { say(t, tail ? "tail [-n N] FILE" : "head [-n N] FILE"); fs_log(l, cmd, 0, "not understood"); return; }
+    resolve(t, w, path);
+    char *line = line_buf();
+    struct reader r = {.path = path};
+    long k = 0, total = 0, from = 0, shown = 0;
+    if (tail) {
+        while ((k = next_line(t, &r, line)) >= 0) total++;
+        from = total > want ? total - want : 0;
+        r = (struct reader){.path = path};
+    }
+    for (long i = 0; k != -2 && shown < want && (k = next_line(t, &r, line)) >= 0; i++)
+        if (i >= from) {
+            put_s(l, line);           /* its first 200 bytes, wrapped as cat wraps */
+            out(t, l);
+            shown++;
+        }
+    if (k == -2) { const char *why = unreadable(t, path); say(t, why); fs_log(l, cmd, w, why); return; }
+    put_s(l, "terminal: ");
+    put_s(l, cmd);
+    put_s(l, " ");
+    put_s(l, w);
+    put_s(l, " -> ");
+    put_dec(l, (u64)shown);
+    put_s(l, shown == 1 ? " line" : " lines");
+    if (tail) { put_s(l, " of "); put_dec(l, (u64)total); }
+    put_s(l, "\n");
+    flush(l);
+}
+
+/* wc FILE: its lines ('\n's), words (runs of anything but spaces and control bytes) and bytes. */
+COLD static void cmd_wc(struct term *t, struct line *l, const char *args) {
+    char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    word_of(args, name, FS_PATH_MAX);
+    resolve(t, name, path);
+    u64 size = 0, off = 0, lines = 0, words = 0;
+    int in = 0;
+    for (;;) {
+        long n = fs_read_at(&t->fs, path, off, &size);
+        if (n < 0) { const char *why = unreadable(t, path); say(t, why); fs_log(l, "wc", name, why); return; }
+        const unsigned char *d = (const unsigned char *)fs_data(&t->fs);
+        for (long i = 0; i < n; i++) {
+            lines += d[i] == '\n';
+            words += d[i] > ' ' && !in;
+            in = d[i] > ' ';
+        }
+        off += (u64)n;
+        if (n == 0 || off >= size) break;
+    }
+    struct line m = {.n = 0};
+    put_dec(&m, lines);
+    put_s(&m, lines == 1 ? " line, " : " lines, ");
+    put_dec(&m, words);
+    put_s(&m, words == 1 ? " word, " : " words, ");
+    put_dec(&m, off);
+    put_s(&m, off == 1 ? " byte" : " bytes");
+    m.b[m.n] = 0;
+    fs_log(l, "wc", name, m.b);
+    out(t, &m);
+}
+
+/* grep [-i] TEXT FILE...: the lines that hold TEXT (a word; -i: in capitals or not), each
+   after its file's name and line number when there are several files. A line longer than
+   64 KiB is searched in its first 64 KiB. */
+COLD static void cmd_grep(struct term *t, struct line *l, const char *args) {
+    char text[64], name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    const char *files = word_of(args, text, 63);
+    int fold = same(text, "-i");
+    if (fold) files = word_of(files, text, 63);
+    if (!text[0] || !*files) { say(t, "grep [-i] TEXT FILE..."); fs_log(l, "grep", 0, "not understood"); return; }
+    int many = *word_of(files, name, FS_PATH_MAX) != 0;
+    char *line = line_buf();
+    u64 found = 0;
+    while (*files) {
+        files = word_of(files, name, FS_PATH_MAX);
+        resolve(t, name, path);
+        struct reader r = {.path = path};
+        long k;
+        u64 no = 0;
+        while ((k = next_line(t, &r, line)) >= 0) {
+            no++;
+            if (!contains(line, k, text, fold)) continue;
+            found++;
+            if (many) {
+                put_s(l, name);
+                put_s(l, ":");
+                put_dec(l, no);
+                put_s(l, ": ");
+            }
+            put_s(l, line);
+            out(t, l);
+        }
+        if (k == -2) {
+            put_s(l, name);
+            put_s(l, ": ");
+            put_s(l, unreadable(t, path));
+            out(t, l);
+        }
+    }
+    if (!found) say(t, "no match");
+    put_s(l, "terminal: grep ");
+    if (fold) put_s(l, "-i ");
+    put_s(l, text);
+    put_s(l, " -> ");
+    put_dec(l, found);
+    put_s(l, found == 1 ? " line\n" : " lines\n");
+    flush(l);
+}
+
+/* find [FOLDER] [NAME]: every file and folder under FOLDER (this one if not said), or those
+   whose names hold NAME, a folder with a '/'; one word that is not a folder is a NAME. No
+   recursion: each folder down keeps where it is in its listing. It goes FIND_DEPTH folders
+   down and stops after FIND_SHOWN names; what it looks at is at most every name on the card
+   (1024), each listed once, so no tree makes it run for long. Icons are left out, as by ls. */
+COLD static void cmd_find(struct term *t, struct line *l, const char *args) {
+    char dir[FS_PATH_MAX + 1], name[FS_NAME_MAX + 1], path[FS_PATH_MAX + 1];
+    word_of(word_of(args, dir, FS_PATH_MAX), name, FS_NAME_MAX);
+    int dn = (int)slen(dir);
+    while (dn > 1 && dir[dn - 1] == '/') dir[--dn] = 0;
+    resolve(t, dir, path);
+    int slash = 0;
+    for (int i = 0; dir[i]; i++) slash |= dir[i] == '/';
+    if (dir[0] && !name[0] && !slash && fs_stat(&t->fs, path, 0) != FS_DIR) {   /* one word: a name, here */
+        for (int i = 0; i <= FS_NAME_MAX; i++) name[i] = i < FS_NAME_MAX ? dir[i] : 0;
+        dir[0] = 0;
+        resolve(t, dir, path);
+    }
+    if (fs_stat(&t->fs, path, 0) != FS_DIR) { say(t, "no such folder"); fs_log(l, "find", dir, "no such folder"); return; }
+    u64 next[FIND_DEPTH], found = 0;
+    int len[FIND_DEPTH], depth = 0, deep = 0, base = (int)slen(path);
+    next[0] = 0;
+    len[0] = base;
+    while (depth >= 0 && found < FIND_SHOWN) {
+        path[len[depth]] = 0;
+        u64 total = 0;
+        long got = fs_list_dir(&t->fs, path, next[depth], &total);
+        const struct fs_entry *e = fs_entries(&t->fs);
+        int down = 0;
+        for (long i = 0; i < got && !down && found < FIND_SHOWN; i++) {
+            next[depth]++;
+            if (fs_is_icon(&e[i])) continue;
+            int at = len[depth], n = at, isdir = e[i].kind == FS_DIR;
+            int fits = at + 1 + (int)slen(e[i].name) <= FS_PATH_MAX;    /* else it is cut short */
+            if (n) path[n++] = '/';
+            for (int j = 0; j < FS_NAME_MAX && e[i].name[j] && n < FS_PATH_MAX; j++) path[n++] = e[i].name[j];
+            path[n] = 0;
+            if (!name[0] || contains(e[i].name, (long)slen(e[i].name), name, 0)) {
+                put_s(l, dir);
+                if (dir[0] && dir[dn - 1] != '/') put_s(l, "/");
+                put_s(l, path + base + (base > 0));
+                if (isdir) put_s(l, "/");
+                out(t, l);
+                found++;
+            }
+            if (isdir && fits && depth + 1 < FIND_DEPTH) {
+                depth++;
+                next[depth] = 0;
+                len[depth] = n;
+                down = 1;
+            } else deep |= isdir;
+        }
+        if (!down && (got <= 0 || next[depth] >= total)) depth--;
+    }
+    int cut = depth >= 0;
+    if (!found) say(t, "nothing found");
+    if (cut) say(t, "(stopped: find shows 100 names at most)");
+    if (deep) say(t, "(folders more than 16 down were not searched)");
+    put_s(l, "terminal: find");
+    if (dir[0]) { put_s(l, " "); put_s(l, dir); }
+    if (name[0]) { put_s(l, " "); put_s(l, name); }
+    put_s(l, " -> ");
+    put_dec(l, found);
+    put_s(l, " found");
+    if (cut) put_s(l, ", stopped");
+    if (deep) put_s(l, ", not below 16 folders");
+    put_s(l, "\n");
+    flush(l);
+}
+
+/* df: the card's size, and what is used and free, from the file server's totals. */
+COLD static void cmd_df(struct term *t, struct line *l) {
+    struct fs_space s;
+    u64 st = fs_space(&t->fs, &s);
+    if (st != FS_OK) { say(t, fs_error(st)); fs_log(l, "df", 0, fs_error(st)); return; }
+    u64 kb = s.cluster / 1024, size = s.clusters * kb, free = s.free * kb;
+    put_s(l, "size ");
+    put_dec(l, size);
+    put_s(l, " KiB, used ");
+    put_dec(l, size - free);
+    put_s(l, " KiB, free ");
+    put_dec(l, free);
+    put_s(l, " KiB");
+    out(t, l);
+    put_dec(l, s.files);
+    put_s(l, s.files == 1 ? " file, " : " files, ");
+    put_dec(l, s.folders);
+    put_s(l, s.folders == 1 ? " folder; room for " : " folders; room for ");
+    put_dec(l, s.names - s.files - s.folders);
+    put_s(l, " more");
+    out(t, l);
+    put_s(l, "terminal: df -> ");
+    put_dec(l, free);
+    put_s(l, " KiB free of ");
+    put_dec(l, size);
+    put_s(l, ", ");
+    put_dec(l, s.files);
+    put_s(l, " files, ");
+    put_dec(l, s.folders);
+    put_s(l, " folders\n");
+    flush(l);
+}
+
+/* history: the commands Up and Down recall, oldest first. */
+COLD static void cmd_history(struct term *t, struct line *l) {
+    for (int i = 0; i < t->hn; i++) {
+        put_dec(l, (u64)i + 1);
+        pad_to(l, 4);
+        put_s(l, t->hist[i]);
+        out(t, l);
+    }
+    put_s(l, "terminal: history -> ");
+    put_dec(l, (u64)t->hn);
+    put_s(l, t->hn == 1 ? " command\n" : " commands\n");
     flush(l);
 }
 
@@ -778,11 +1124,14 @@ COLD static void run(struct term *t, struct line *l) {
     while (*c == ' ') c++;
     if (!*c) return;
     if (starts(c, "help")) {
-        say(t, "whoami caps boot ps uptime echo clear exit");
+        say(t, "whoami caps boot ps uptime echo clear exit history");
         say(t, "ls [-a] [FOLDER], cat FILE, write FILE TEXT, rm FILE");
-        say(t, "mkdir FOLDER, cd FOLDER, pwd, mv FROM TO, run [-net] PROGRAM [FILE...]");
+        say(t, "mkdir FOLDER, cd FOLDER, pwd, mv FROM TO, cp FROM TO");
+        say(t, "head [-n N] FILE, tail [-n N] FILE, wc FILE, df");
+        say(t, "grep [-i] TEXT FILE..., find [FOLDER] [NAME]");
+        say(t, "run [-net] PROGRAM [FILE...], kill SLOT");
         say(t, "fill FILE KB CHAR, verify FILE");
-        say(t, "ip, ping HOST, get http://URL [FILE], kill SLOT");
+        say(t, "ip, ping HOST, get http://URL [FILE]");
         say(t, "date, ntp [HOST[:PORT]]");
         say(t, "tour: why leanos is harder to attack than Linux");
         say(t, "Up, Down: earlier commands; Tab completes names");
@@ -834,6 +1183,22 @@ COLD static void run(struct term *t, struct line *l) {
         cmd_verify(t, l, c + 6);
     } else if (starts(c, "cat")) {
         cmd_cat(t, l, c + 3);
+    } else if (starts(c, "cp")) {
+        cmd_cp(t, l, c + 2);
+    } else if (starts(c, "head")) {
+        cmd_ends(t, l, c + 4, 0);
+    } else if (starts(c, "tail")) {
+        cmd_ends(t, l, c + 4, 1);
+    } else if (starts(c, "wc")) {
+        cmd_wc(t, l, c + 2);
+    } else if (starts(c, "grep")) {
+        cmd_grep(t, l, c + 4);
+    } else if (starts(c, "find")) {
+        cmd_find(t, l, c + 4);
+    } else if (starts(c, "df")) {
+        cmd_df(t, l);
+    } else if (starts(c, "history")) {
+        cmd_history(t, l);
     } else if (starts(c, "write")) {
         cmd_write(t, l, c + 5);
     } else if (starts(c, "rm")) {
@@ -866,8 +1231,9 @@ COLD static void run(struct term *t, struct line *l) {
 /* ---- Tab completion ---- */
 
 /* The commands Tab completes: every one help lists. */
-static const char COMMANDS[] = "boot caps cat cd clear date echo exit fill get help ip kill ls mkdir mv ntp "
-                               "ping ps pwd rm run tour uptime verify whoami write";
+static const char COMMANDS[] = "boot caps cat cd clear cp date df echo exit fill find get grep head help "
+                               "history ip kill ls mkdir mv ntp ping ps pwd rm run tail tour uptime verify "
+                               "wc whoami write";
 
 /* The name before the cursor (`pre`), and the names that start with it: how many, and what
    they all share (a folder's name ends in '/'). On the listing pass, the names themselves,

@@ -49,6 +49,14 @@ Terminal
   ls, cat FILE, write FILE TEXT, rm FILE    files on the card (ls -a: icons too)
   mkdir FOLDER, cd FOLDER, cd .., pwd       folders
   mv FROM TO                                move or rename, in one step
+  cp FROM TO                                copy a file (TO may be a folder)
+  head, tail [-n N] FILE                    its first or last N lines (10 if not said)
+  wc FILE                                   its lines, words and bytes
+  grep [-i] TEXT FILE...                    the lines that hold TEXT (-i: in any case)
+  find [FOLDER] [NAME]                      every file and folder under FOLDER, or those
+                                            whose names hold NAME (16 folders down, 100
+                                            names at most)
+  df                                        the card's size, and what is used and free
   fill FILE KB CHAR, verify FILE            a big test file, and checking one
   ip, ping HOST, get http://URL [FILE]      the network (a USB network adapter)
   date, ntp [HOST]                          the time in your zone and UTC (set by ntp)
@@ -61,7 +69,8 @@ Terminal
   whoami, caps, boot, uptime                what the kernel says about this program
   tour                                      why leanos is harder to attack than Linux
 
-  Up, Down      the commands you ran before (the last 32), and back to the line you were typing
+  Up, Down      the commands you ran before (the last 32; history lists them), and back to
+                the line you were typing
   Left, Right   move along the command line; what you type goes in at the cursor
   Tab           complete a command's name, or a file or folder name (a folder gets a /);
                 when several match, Tab completes what they share and a second Tab lists them

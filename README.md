@@ -163,6 +163,8 @@ Things to try once it is up:
 
 - Open **Terminal** and type `help`, then `tour`, `caps`, `ps`, `date` or `ping 10.0.2.2`.
   Tab completes a command or file name, and Up brings back the commands you ran.
+- In Terminal, `grep -i tab guide.txt`, `head -n 5 guide.txt`, `cp guide.txt g.txt`, `find`
+  and `df` (the card's size and what is free: the file server tells any program totals only).
 - Pick a time zone in **Settings**: the menu bar, Clock and Terminal's `date` show the time there.
 - Click the **globe** in the dock and go to `info.cern.ch`.
 - `run edit notes.txt` in Terminal edits that one file, and nothing else.

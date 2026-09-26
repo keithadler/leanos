@@ -12,15 +12,19 @@
                  no buffer, a buffer of the wrong size or rights, one it has not mapped, a
                  capability that is not memory, grants by plain send; folders deleted with
                  things inside and moved into themselves; a chain of folders 40 deep; a
-                 folder of 300 entries.
+                 folder of 300 entries. The card's totals (SPACE), which any program may
+                 ask for with any path: exactly the clusters, files and folders a file and a
+                 folder take while they come and go, and nothing else in the answer.
               2. The regressions, each bug it found, as it found it. The card is filled
                  until the file server says full; then what needs no new cluster must still
                  work (bytes written over, a rename, an empty file deleted, a folder made); a
                  program started meanwhile whose folder cannot be made (fsfuzz5) must leave
                  nothing behind; a cluster freed and given out again in one request must come
-                 zeroed. Then the card is emptied.
+                 zeroed. Then the card is emptied. Full, the totals say fewer than 4
+                 clusters are free; emptied, they are what they were before the fill.
               3. Random requests in its folder, checked against a model of what every file
-                 holds, with requests for what is not its own mixed in.
+                 holds, with requests for what is not its own mixed in, and the totals
+                 (at least the model's files and folders) at each check of the model.
               Then it writes what its files must hold (expect), for the next boot, where the
               file 40 folders deep must still be there.
      fsfuzz2, fsfuzz3: 3 alone, at the same time, each in its own folder.
@@ -145,8 +149,8 @@ CALL static void say(struct fz *f, const char *what, u64 n, const char *rest) {
 
 static const char *op_name(u64 op) {
     static const char *const names[] = {"op 0", "list", "read", "write", "delete", "write-at", "mkdir",
-                                        "stat", "rename", "share", "unshare", "grants"};
-    return op < 12 ? names[op] : "op 12+";
+                                        "stat", "rename", "share", "unshare", "grants", "space"};
+    return op < 13 ? names[op] : "op 13+";
 }
 
 /* A wrong answer: counted, and the first few described (the path as printable bytes). */
@@ -317,7 +321,8 @@ static void fixed_hostile(struct fz *f) {
             set_path(f, hostile[i]);
             set_off(f, 0);
             set_to(f, own);                            /* a rename would bring it in */
-            ask(f, ops[k], k == 3 || k == 5 ? 10 : 11, FS_DENIED, "not its own");
+            /* SPACE reads no path: its totals are anyone's (fixed_space checks them) */
+            ask(f, ops[k], k == 3 || k == 5 ? 10 : 11, ops[k] == FS_SPACE ? FS_OK : FS_DENIED, "not its own");
         }
     /* moving its own file out, or another's in */
     for (int i = 0; i < n; i++) {
@@ -334,7 +339,7 @@ static void fixed_ops(struct fz *f) {
     char p[64];
     full_path(f, "t", p);
     at(f, p, 0, 0, FS_BAD, "op 0");
-    static const u64 none[] = {12, 13, 99, 255, 1UL << 32, 1UL << 62, ~0UL};
+    static const u64 none[] = {13, 14, 99, 255, 1UL << 32, 1UL << 62, ~0UL};
     for (u64 i = 0; i < sizeof none / sizeof none[0]; i++) at(f, p, none[i], 0, FS_DENIED, "no such op");
     at(f, "zzsecret.txt", FS_SHARE, f->me | (FS_R | FS_W) << 8, FS_DENIED, "sharing to itself");
     at(f, f->root, FS_SHARE, 11 | (FS_R | FS_W) << 8 | 1 << 16, FS_DENIED, "sharing to another");
@@ -344,6 +349,55 @@ static void fixed_ops(struct fz *f) {
     struct res r = ask(f, FS_GRANTS, 0, FS_OK, "grants");
     if (code(r) == FS_OK && (r.x[2] != 1 || data(f)[0] != (FS_R | FS_W) || !same(data(f) + 1, f->root)))
         wrong(f, "grants not just its folder", FS_GRANTS, r, 1);
+}
+
+/* SPACE: the card's totals, asked with whatever path (it reads none). The answer is the
+   totals and nothing more: the rest of the buffer comes back as it went, and x2 and x3 are
+   the free clusters and all of them. `s` gets the totals; 0 if the answer was wrong. */
+static int space(struct fz *f, struct fs_space *s) {
+    set_path(f, "zzsecret.txt");
+    for (u64 i = FS_PATH_MAX + 1; i < FS_BUF_PAGES * 4096UL; i++) buf(f)[i] = (char)(i * 13 + 1);
+    u64 before = fnv(FNV0, buf(f), FS_DATA_OFF), after = fnv(FNV0, data(f) + sizeof *s, FS_CHUNK - sizeof *s);
+    struct res r = ask(f, FS_SPACE, next(f), FS_OK, "the card's totals");
+    if (code(r) != FS_OK) return 0;
+    *s = *(const struct fs_space *)data(f);
+    if (fnv(FNV0, buf(f), FS_DATA_OFF) != before || fnv(FNV0, data(f) + sizeof *s, FS_CHUNK - sizeof *s) != after)
+        wrong(f, "the totals' answer changed more than the totals", FS_SPACE, r, 0);
+    else if (s->cluster != CL || s->free > s->clusters || s->files + s->folders > s->names || r.x[2] != s->free ||
+             r.x[3] != s->clusters)
+        wrong(f, "totals that cannot be", FS_SPACE, r, s->clusters);
+    else return 1;
+    return 0;
+}
+
+/* Totals that must be `want`'s, give or take: free clusters, files and folders. */
+static void space_is(struct fz *f, const struct fs_space *want, long free, long files, long folders, const char *what) {
+    struct fs_space s;
+    if (!space(f, &s)) return;
+    if (s.clusters != want->clusters || s.names != want->names || (long)s.free != (long)want->free + free ||
+        (long)s.files != (long)want->files + files || (long)s.folders != (long)want->folders + folders)
+        wrong(f, what, FS_SPACE, (struct res){.x = {0, 0, s.free, s.files}}, (u64)((long)want->free + free));
+}
+
+/* The totals follow what changes: a file of 4 clusters takes 4 and is one more file; a
+   folder is one more folder (its folder has room for its name); both gone, all is as it
+   was. Nothing else changes the card now (test/fsfuzz.sh waits for this part to end). */
+static void fixed_space(struct fz *f) {
+    struct fs_space s0;
+    if (!space(f, &s0)) return;
+    char p[64], d[64];
+    full_path(f, "spacef", p);
+    full_path(f, "spaced", d);
+    fill_data(f, 3 * CL + 1, 1);
+    at(f, p, FS_WRITE, 3 * CL + 1, FS_OK, "a file of 4 clusters");
+    space_is(f, &s0, -4, 1, 0, "the totals after a file of 4 clusters");
+    at(f, d, FS_MKDIR, 0, FS_OK, "a folder");
+    space_is(f, &s0, -4, 1, 1, "the totals after a folder");
+    at(f, p, FS_WRITE, 1, FS_OK, "a file of 4 clusters, rewritten as 1 byte");
+    space_is(f, &s0, -1, 1, 1, "the totals after a file shrank");
+    at(f, p, FS_DELETE, 0, FS_OK, "a file");
+    at(f, d, FS_DELETE, 0, FS_OK, "a folder");
+    space_is(f, &s0, 0, 0, 0, "the totals after both went");
 }
 
 /* Buffers: missing, the wrong size or rights, elsewhere, not mapped, not memory. */
@@ -791,6 +845,8 @@ static void timed_failures(struct fz *f, int full) {
    32 folders down, and freed what was deeper as if it were in no folder.) */
 static void regress_full(struct fz *f) {
     char r2[64], fk[64], ff[64];
+    struct fs_space s0, sf;
+    int known = space(f, &s0);
     full_path(f, "r2", r2);
     full_path(f, "r2/f", ff);
     at(f, r2, FS_MKDIR, 0, FS_OK, "a folder for the fill");
@@ -838,6 +894,8 @@ static void regress_full(struct fz *f) {
         bytes += 1;
     }
     say(f, "the card is full after ", bytes / 1024, " KiB in 4 files");
+    /* full: a cluster more (and 3 for pointers) did not fit */
+    if (space(f, &sf) && sf.free > 3) wrong(f, "the totals of a full card", FS_SPACE, (struct res){.x = {0, 0, sf.free}}, 3);
     /* full: nothing new fits, and what failed changed nothing */
     char nf[64];
     full_path(f, "r2/new", nf);
@@ -917,6 +975,8 @@ static void regress_full(struct fz *f) {
     fill_data(f, FS_CHUNK, 6);
     at(f, nf, FS_WRITE, FS_CHUNK, FS_OK, "a file after emptying");
     at(f, nf, FS_DELETE, 0, FS_OK, "a file after emptying");
+    /* emptied: the totals are as before, so the folder fsfuzz5 did not get left nothing */
+    if (known) space_is(f, &s0, 0, 0, 0, "the totals after the card was emptied");
 }
 
 /* ---- 3. random requests, checked against a model ---- */
@@ -1155,7 +1215,7 @@ static void model_op(struct fz *f) {
         set_off(f, next(f));
         if (next(f) % 2) { set_path(f, h); set_to(f, full); }
         else { set_path(f, full); set_to(f, h); op = FS_RENAME; }
-        ask(f, op, next(f) % (FS_CHUNK + 1), FS_DENIED, "not its own");
+        ask(f, op, next(f) % (FS_CHUNK + 1), op == FS_SPACE ? FS_OK : FS_DENIED, "not its own");
     }
 }
 
@@ -1175,6 +1235,13 @@ static void model_check(struct fz *f) {
     model_path(f, "", full);
     struct res r = at(f, full, FS_LIST, 0, FS_OK, "the model's folder, listed");
     if (code(r) == FS_OK && r.x[3] != (u64)children(f, "")) wrong(f, "the model's folder's count", FS_LIST, r, 0);
+    /* the card's totals (others change it too): at least the model's files, and its folders
+       and the model's own folder */
+    struct fs_space sp;
+    unsigned files = 0, dirs = 1;
+    for (int i = 0; i < NODES; i++) if (f->n[i].used) { files += f->n[i].kind == FS_FILE; dirs += f->n[i].kind == FS_DIR; }
+    if (space(f, &sp) && (sp.files < files || sp.folders < dirs))
+        wrong(f, "totals with fewer files or folders than the model", FS_SPACE, (struct res){.x = {0, 0, sp.files, sp.folders}}, files);
 }
 
 static void random_run(struct fz *f, u64 count) {
@@ -1350,6 +1417,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     }
     if (f->mode == MAIN) {
         fixed_ops(f);
+        fixed_space(f);
         fixed_buffers(f);
         fixed_hostile(f);
         fixed_paths(f);
