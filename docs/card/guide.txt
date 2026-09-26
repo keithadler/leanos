@@ -2,7 +2,7 @@ leanos: a short guide
 
 The dock
   Notes     a note that is saved to the SD card as you type
-  Files     the files on the card; click one to read it, Delete removes it
+  Files     the files on the card; click one to read it (more under Files below)
   Terminal  commands; type help
   Settings  the background, the time zone, and the Raspberry Pi's speed and light
   Security  what every program's boot check found, and what is proved
@@ -34,6 +34,7 @@ Copy and paste
   Terminal  the command line you are typing, or, when it is empty, what the last
             command printed; a paste goes onto the command line at the cursor, line
             breaks as spaces, so it never runs anything until you press Return
+  Files     while you rename something, the name; a paste goes into the name
   Other programs do not answer a copy, and the clipboard stays as it was.
 
   Text moves between programs only by your hand. The display server keeps what you
@@ -44,6 +45,23 @@ Copy and paste
 
   In the browser console, Ctrl+C, Ctrl+V and Ctrl+O are leanos's (Cmd+V on a Mac types the
   host's clipboard as keys). Under make run, your terminal's Ctrl+C stops QEMU itself.
+
+Files
+  Click a file to read it; click a folder again (or press Return) to open it; Left goes
+  back up. Keys, in either case:
+  N         a new folder, "untitled folder" (the + Folder button too), named at once
+  R         rename in place: type, then Return; Escape or a click elsewhere cancels.
+            The name starts selected (a file's without its extension): typing replaces it.
+            An empty name, a /, a name longer than 55 characters or one taken is refused.
+  C         mark the selected file to copy (folders are not copied)
+  X         mark the selected file or folder to move (a folder takes all in it along)
+  V         put what is marked in the folder shown: a copy is "NAME copy" if the name is
+            taken; a move never replaces anything
+  Delete    delete the selected file or empty folder; a folder with things in it asks
+            first, and Delete again deletes it and all in it
+  Escape    forget what is marked (pressing C or X again on it does too)
+  The mark is Files' own, not the clipboard. The status line says what is marked, what
+  the keys do, and how much of the card is free.
 
 Terminal
   ls, cat FILE, write FILE TEXT, rm FILE    files on the card (ls -a: icons too)

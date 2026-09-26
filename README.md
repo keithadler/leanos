@@ -156,7 +156,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 33 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, windows, USB, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 34 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Files as a file manager, windows, USB, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -169,6 +169,9 @@ Things to try once it is up:
   Tab completes a command or file name, and Up brings back the commands you ran.
 - In Terminal, `grep -i tab guide.txt`, `head -n 5 guide.txt`, `cp guide.txt g.txt`, `find`
   and `df` (the card's size and what is free: the file server tells any program totals only).
+- In **Files**, press N for a new folder (type its name, Return), select a file and press X,
+  open the folder and press V: the file moves there. R renames in place, C marks a copy, and
+  Delete on a folder with things in it asks first. The status line says which keys do what.
 - Pick a time zone in **Settings**: the menu bar, Clock and Terminal's `date` show the time there.
 - Click the **globe** in the dock and go to `info.cern.ch`.
 - `run edit notes.txt` in Terminal edits that one file, and nothing else.
