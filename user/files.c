@@ -10,7 +10,7 @@
              starts selected (a file's without its extension): typing replaces it.
      C, X    mark the selected file to copy, or the file or folder to move (the same key
              again forgets it; Escape too)
-     V       put what is marked in the folder shown: a copy (in pieces into NAME.tmp, then
+     V       put what is marked in the folder shown: a copy (in pieces into NAME.part~, then
              one rename, as Terminal's cp makes one; "NAME copy" if the name is taken), or
              the file or folder itself (one rename in the file server: a folder takes all
              in it along)
@@ -523,16 +523,19 @@ COLD static void mark_key(struct files *st, struct line *l, int how) {
     say(l, "files: marked ", p, how == 'x' ? " to move" : " to copy", 0);
 }
 
-/* A copy of the file `from` at `to`, made as Terminal's cp makes one: in pieces into TO.tmp,
-   then put in place by one rename, so no half copy is ever at `to`. *bytes: how many. */
-COLD static u64 copy_file(struct files *st, const char *from, const char *to, u64 *bytes) {
+/* A copy of the file `from` at `to`, made as Terminal's cp makes one: in pieces into TO.part~,
+   then put in place by one rename, so no half copy is ever at `to`. TO.part~ is the copy's
+   alone, as it is cp's: a file there is one a power cut left, written over (and removed after
+   a failure); a folder there is refused and left alone, as is a name too long to take the
+   ".part~". A TO.tmp of yours is never touched. *bytes: how many. 0, or why not. */
+COLD static const char *copy_file(struct files *st, const char *from, const char *to, u64 *bytes) {
     scopy(st->tmp, to);
     int n = (int)slen(st->tmp), name = (int)(last_name(st->tmp) - st->tmp);
-    if (n - name > FS_NAME_MAX - 4) n = name + FS_NAME_MAX - 4;
-    if (n + 4 > FS_PATH_MAX) return FS_FULL;
-    scopy(st->tmp + n, ".tmp");
-    if (fs_stat(&st->fs, st->tmp, 0)) return FS_EXISTS;      /* something of that name is in the way */
+    if (n + 6 > FS_PATH_MAX || n - name + 6 > FS_NAME_MAX) return "the name is too long";
+    scopy(st->tmp + n, ".part~");
+    if (fs_stat(&st->fs, st->tmp, 0) == FS_DIR) return "NAME.part~ is a folder: rename it first";
     u64 size = 0, off = 0, r = fs_write(&st->fs, st->tmp, "", 0);
+    int made = r == FS_OK;
     if (!fs_stat(&st->fs, from, &size)) r = FS_NOT_FOUND;
     while (r == FS_OK && off < size) {
         long got = fs_read_at(&st->fs, from, off, &size);
@@ -542,9 +545,9 @@ COLD static u64 copy_file(struct files *st, const char *from, const char *to, u6
         off += (u64)got;
     }
     if (r == FS_OK) r = fs_rename(&st->fs, st->tmp, to);
-    if (r != FS_OK) fs_delete(&st->fs, st->tmp);
+    if (r != FS_OK && made) fs_delete(&st->fs, st->tmp);
     *bytes = off;
-    return r;
+    return r == FS_OK ? 0 : why(r);
 }
 
 /* V: what is marked, into the folder shown. */
@@ -565,9 +568,8 @@ COLD static void put_here(struct files *st, struct line *l) {
         if (moving) bad = "that name is taken here";
         else if (!free_name(st, name, ext_of(name, FS_FILE), " copy", made)) bad = "no free name for the copy";
     }
-    u64 bytes = 0, r = bad ? FS_BAD : moving ? fs_rename(&st->fs, st->marked, st->to)
-                                             : copy_file(st, st->marked, st->to, &bytes);
-    if (!bad && r != FS_OK) bad = r == FS_EXISTS && !moving ? "its .tmp name is taken" : why(r);
+    u64 bytes = 0, r = bad || !moving ? FS_OK : fs_rename(&st->fs, st->marked, st->to);
+    if (!bad) bad = moving ? (r == FS_OK ? 0 : why(r)) : copy_file(st, st->marked, st->to, &bytes);
     put_s(l, moving ? "files: moved " : "files: copied ");
     put_s(l, st->marked);
     put_s(l, " to ");

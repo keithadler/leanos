@@ -107,10 +107,10 @@ Terminal
   kill, cd, exit and clear cannot be piped or redirected. Tab completes a command's name
   after a | too.
 
-  fill, cp and > make the new FILE in FILE.part~ and then put it in place in one step, so
-  FILE is always its old self or the new one. A file FILE.part~ is taken to be one a power
-  cut left behind, and is written over; a folder of that name is refused. A FILE.tmp of
-  yours is never touched.
+  fill, cp and > (and Files, when V puts a copy) make the new FILE in FILE.part~ and then
+  put it in place in one step, so FILE is always its old self or the new one. A file
+  FILE.part~ is taken to be one a power cut left behind, and is written over; a folder of
+  that name is refused. A FILE.tmp of yours is never touched.
 
   Up, Down      the commands you ran before (the last 32; history lists them), and back to
                 the line you were typing

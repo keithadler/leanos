@@ -12,7 +12,11 @@
 #   sub moves the folder with all in it; X marks sub, V inside sub is refused (a folder cannot
 #   go inside itself). Delete removes the empty "untitled folder"; Terminal's find, ls, cat and
 #   df see all of it. Delete on sub asks first; another key keeps it; Delete twice removes it
-#   and the 4 things in it. Last, text copied in Terminal is pasted (Ctrl+V) into a name.
+#   and the 4 things in it. Then text copied in Terminal is pasted (Ctrl+V) into a name.
+#   Last, a copy is made in NAME.part~, as Terminal's cp makes one: in a folder t that holds
+#   the user's file c.txt.tmp, a folder kiwi.txt.tmp, a file c.txt.part~ (what a power cut
+#   leaves) and a folder welcome.txt.part~, V copies c.txt and kiwi.txt there and leaves the
+#   .tmp ones alone and no .part~ file behind, and refuses welcome.txt, whose folder stays.
 #
 # Then the pixels: the name field while box is typed (white, a blue edge, a text cursor, not
 # the selected row's blue), the red refusal and the Move mark in the status line.
@@ -94,8 +98,21 @@ steps = [wait_for("usb: ready"), *click(*DOCK["Files"]), wait_for("files: opened
          # a name pasted from Terminal's command line
          b"kiwi", COPY, after("terminal: copied the command line"),
          *click(*DOCK["Files"]), pause(0.5), *row(1), b"r", after("files: renaming "), PASTE,
-         after("files: pasted into the name"), b"\r", after("files: renamed ")]
-sys.exit(boot(150, steps=steps, until="files: showing kiwi.txt", sd=card, usb=True, settle=1))
+         after("files: pasted into the name"), b"\r", after("files: renamed "),
+         # a copy is made in NAME.part~, as Terminal's cp makes one: in t, a file c.txt.tmp of
+         # the user's and a folder kiwi.txt.tmp are left alone, a file c.txt.part~ (what a
+         # power cut leaves) is written over, and a folder welcome.txt.part~ refuses the copy
+         *click(*DOCK["Terminal"]), pause(0.5), DEL * 4,
+         *cmd("mkdir t"), *cmd("write t/c.txt.tmp mine"), *cmd("write t/c.txt.part~ left by a power cut"),
+         *cmd("mkdir t/kiwi.txt.tmp"), *cmd("mkdir t/welcome.txt.part~"),
+         *click(*DOCK["Files"]), pause(0.5),
+         *row(3), b"c", after("files: marked "), *row(2), b"\r", after("files: opened t"), b"v", after("files: copied "),
+         LEFT, *row(1), b"c", after("files: marked "), *row(2), b"\r", after("files: opened t"), b"v", after("files: copied "),
+         LEFT, *row(0), b"c", after("files: marked "), *row(2), b"\r", after("files: opened t"), b"v", after("files: copied "),
+         *click(*DOCK["Terminal"]), pause(0.5),
+         *cmd("find t"), *shown(), *cmd("cat t/c.txt.tmp"), *shown(), *cmd("cat t/c.txt"), *shown(),
+         *cmd("cat t/kiwi.txt")]
+sys.exit(boot(200, steps=steps, until="terminal: cat t/kiwi.txt ", sd=card, usb=True, settle=1))
 PY
 )
 status=$?
@@ -154,12 +171,25 @@ has "terminal: find -> 3 found"
 pasted "welcome.txt a.txt c.txt"
 # the free space Files logs is the file server's, as df tells it
 dfs=$(echo "$out" | sed -n 's/^terminal: df -> \([0-9]*\) KiB free of .*/\1/p')
-frees=$(echo "$out" | sed -n 's/^files: \([0-9]*\) KiB free$/\1/p')
+frees=$(echo "$out" | sed -n '/^terminal: mkdir t /q;p' | sed -n 's/^files: \([0-9]*\) KiB free$/\1/p')
 [ "$(echo "$dfs" | wc -l | tr -d ' ')" = 2 ] || fail "df did not answer twice"
 before=$(echo "$out" | sed -n '/^terminal: df /q;p' | sed -n 's/^files: \([0-9]*\) KiB free$/\1/p' | tail -1)
 [ "$before" = "$(echo "$dfs" | sed -n 1p)" ] || fail "Files said $before KiB free, df $(echo "$dfs" | sed -n 1p)"
 [ "$(echo "$frees" | tail -1)" = "$(echo "$dfs" | sed -n 2p)" ] || fail "after the delete, Files said $(echo "$frees" | tail -1) KiB free, df $(echo "$dfs" | sed -n 2p)"
 [ "$(echo "$frees" | head -1)" -lt "$(echo "$frees" | tail -1)" ] || fail "b.txt gone, no more is free"
+# a copy is made in NAME.part~, as Terminal's cp makes one: the user's c.txt.tmp (a file) and
+# kiwi.txt.tmp (a folder) stay as they were; the file c.txt.part~ a power cut left is written
+# over and gone once the copy is in place; a folder welcome.txt.part~ refuses the copy, and stays
+has "files: copied c.txt to t/c.txt -> ok, 7 bytes"
+has "files: copied kiwi.txt to t/kiwi.txt -> ok, 6 bytes"
+has "files: copied welcome.txt to t/welcome.txt -> refused, NAME.part~ is a folder: rename it first"
+has "terminal: find t -> 5 found"
+pasted "t/c.txt.tmp t/c.txt t/kiwi.txt.tmp/ t/welcome.txt.part~/ t/kiwi.txt"
+has "terminal: cat t/c.txt.tmp -> 4 bytes"
+pasted "mine"
+has "terminal: cat t/c.txt -> 7 bytes"
+pasted "cherry"
+has "terminal: cat t/kiwi.txt -> 6 bytes"
 
 python3 - "$T" <<'PY' || fail "the screen is not what Files drew"
 import os, sys
