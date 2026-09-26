@@ -21,7 +21,8 @@ waiting for good. Now each endpoint remembers the task it took a message from la
   many as there are tasks between the one `e` served last and `j` (`recv_wait_ahead`).
 
 What this is about is the order in which waiting senders are served. It does not say that a
-server ever calls `recv` (that is the server's code), or that a sender is scheduled.
+server ever calls `recv` (that is the server's code), or that a sender is scheduled. That a
+ready task is scheduled is the second half of this file, "Running is fair".
 -/
 
 namespace LeanOS
@@ -41,6 +42,7 @@ inductive Step : KState → KState → Prop
   | usb (s : KState) (v : Nat) : Step s (usbDone s v)
   | enter (s : KState) (c b0 b1 b2 : Nat) : Step s (enter s c b0 b1 b2)
   | resched (s : KState) : Step s (schedule s)
+  | rotate (s : KState) : Step s (rotate s)
 
 theorem Reachable.step {s s' : KState} (h : Reachable s) (hs : Step s s') : Reachable s' := by
   cases hs with
@@ -55,6 +57,7 @@ theorem Reachable.step {s s' : KState} (h : Reachable s) (hs : Step s s') : Reac
   | usb v => exact .usb v h
   | enter c b0 b1 b2 => exact .enter c b0 b1 b2 h
   | resched => exact .resched h
+  | rotate => exact .rotate h
 
 /-! ## Waiting senders, and the order a receive looks at them -/
 
@@ -149,8 +152,7 @@ theorem ahead_of {s : KState} {e k d : Nat} (hd : d < numTasks)
 
 /-! ## Nothing but a receive moves what an endpoint remembers -/
 
-theorem schedule_served (s : KState) : (schedule s).served = s.served := by
-  unfold schedule; split <;> rfl
+theorem schedule_served (s : KState) : (schedule s).served = s.served := schedule_served' s
 
 theorem killCurrent_served (s : KState) : (killCurrent s).served = s.served := by
   unfold killCurrent; split <;> exact schedule_served _
@@ -307,12 +309,12 @@ theorem served_only_by_recv {s s' : KState} (h : Step s s') :
       · rename_i hready
         exact runCall_served ht hready num a0 a1 a2 a3 a4
       · exact Or.inl rfl
-  | tick => exact Or.inl (schedule_served _)
+  | tick => left; unfold tick; simp
   | fault => exact Or.inl (killCurrent_served _)
   | clear j => left; unfold clearResult; split <;> rfl
   | irq n =>
     left; unfold irqFired; repeat' split
-    all_goals rfl
+    all_goals first | rfl | simp [setTask]
   | verify i hh =>
     left; unfold verify; repeat' split
     all_goals rfl
@@ -321,6 +323,7 @@ theorem served_only_by_recv {s s' : KState} (h : Step s s') :
   | usb => left; unfold usbDone; split <;> rfl
   | enter => exact Or.inl rfl
   | resched => exact Or.inl (schedule_served _)
+  | rotate => exact Or.inl (rotate_served _)
 
 /-! ## A receive takes the next waiting sender in turn -/
 
@@ -360,7 +363,8 @@ theorem recv_in_turn {s s' : KState} (h : Reachable s) {e k : Nat} (hk : Takes e
   · simp [lastServed, serve, setTask, nth?_setNth, hv]
   · simp [lastServed, serve, setTask, nth?_setNth, Ne.symm he']
   · rintro ⟨u', m', hu', hst'⟩
-    simp only [serve, setTask, nth?_setNth, Ne.symm hkc, if_false, if_true, hu, Option.map_some] at hu'
+    simp only [serve, wakeSender_tasks, setTask, nth?_setNth, Ne.symm hkc, if_false, if_true, hu,
+      Option.map_some] at hu'
     cases hu'
     split at hst' <;> cases hst'
 
@@ -431,5 +435,267 @@ waiting some other way. -/
 theorem recv_bounded_wait {e j n : Nat} {s s' : KState} (h : Reachable s) (hr : WaitRun e j s n s') :
     n < numTasks :=
   Nat.lt_of_le_of_lt (recv_wait_ahead hr h) (ahead_spec s e (sendingOn_lt h hr.head)).1
+
+/-! # Running is fair
+
+The scheduler picks the task a core runs next. A task a message or an interrupt woke runs
+first (`schedule_prefers_woken`), for one pick; otherwise the round robin picks: the first
+task that may run here after the one it picked last (`KState.turn`), wrapping around
+(`rotate`). A wake-up's pick leaves the round where it was, and every timer interrupt, on
+every core, is a round robin pick. So tasks that keep waking each other cannot keep a ready
+task from running.
+
+* `turn_only_by_round_robin`: nothing but a round robin pick moves the round.
+* `rr_behind_lt`: a round robin pick that leaves task `j` waiting moves the round strictly
+  closer to `j`.
+* `run_bounded_wait`: while task `j` waits to run (it is ready, and no core runs it), fewer
+  than `numTasks` (18) round robin picks pass it over.
+* `timer_bounded_wait`: so while it waits, fewer than 18 timer interrupts happen, on all the
+  cores together.
+
+What this is about is the kernel's choice. That the machine layer runs the task the kernel
+picks, tells the kernel what the other cores run (`enter`), and takes each core's timer
+interrupt every 10 ms is the machine layer's part (TRUST.md).
+-/
+
+/-- Task `j` is waiting to run: it is ready, no other core runs it, and the core in the kernel
+is not running it either. -/
+def Waiting (s : KState) (j : Nat) : Prop := runnable s.busy s.tasks j = true ∧ s.cur ≠ j
+
+/-- How many tasks the round robin looks at before task `k`: it starts with the task after
+the one it picked last, and wraps around after the last task. -/
+def behind (s : KState) (k : Nat) : Nat := (k + numTasks - (s.turn + 1) % numTasks) % numTasks
+
+/-- Step `s → s'` is a round robin pick: from a state with the same place in the round as `s`
+and the same tasks and other cores as `s'`, the round robin found task `k`, which now runs
+here, and the round is at `k`. -/
+def RoundRobin (s s' : KState) : Prop :=
+  ∃ (m : KState) (k : Nat), m.turn = s.turn ∧ m.tasks = s'.tasks ∧ m.busy = s'.busy ∧
+    findReady m.busy m.tasks (m.turn + 1) (len m.tasks) = some k ∧ s'.cur = k ∧ s'.turn = k
+
+theorem RoundRobin.of_turn {s m s' : KState} (h : RoundRobin m s') (ht : m.turn = s.turn) :
+    RoundRobin s s' :=
+  let ⟨m', k, h1, rest⟩ := h
+  ⟨m', k, h1.trans ht, rest⟩
+
+/-! ## Nothing but a round robin pick moves the round -/
+
+theorem rotate_rr (m : KState) : (rotate m).turn = m.turn ∨ RoundRobin m (rotate m) := by
+  unfold rotate; split
+  · rename_i k hk; exact Or.inr ⟨m, k, rfl, rfl, rfl, hk, rfl, rfl⟩
+  · exact Or.inl rfl
+
+theorem schedule_rr {s m : KState} (h : m.turn = s.turn) :
+    (schedule m).turn = s.turn ∨ RoundRobin s (schedule m) := by
+  unfold schedule; split
+  · exact Or.inl h
+  · exact (rotate_rr _).imp (fun e => e.trans h) (fun r => r.of_turn h)
+
+theorem killCurrent_rr (s : KState) : (killCurrent s).turn = s.turn ∨ RoundRobin s (killCurrent s) := by
+  unfold killCurrent; split <;> exact schedule_rr rfl
+
+/-- Closes `r.state.turn = s.turn ∨ RoundRobin s r.state` for a reply whose state is the old
+one, changed only in other fields, possibly then rescheduled. -/
+local macro "turn_leaf" : tactic => `(tactic| first
+  | exact Or.inl rfl
+  | exact schedule_rr rfl
+  | exact killCurrent_rr _
+  | (left; simp [serve, setTask]))
+
+section calls
+variable (s : KState) (t : Task)
+
+theorem runCall_rr (num a0 a1 a2 a3 a4 : Nat) :
+    (runCall s t num a0 a1 a2 a3 a4).state.turn = s.turn ∨ RoundRobin s (runCall s t num a0 a1 a2 a3 a4).state := by
+  unfold runCall
+  split
+  all_goals first
+    | turn_leaf
+    | (unfold sysUsb usbReply
+       split
+       · exact Or.inl rfl
+       · left
+         split
+         all_goals first
+           | rfl
+           | simp only [apply_ite Reply.state, apply_ite KState.turn, ret, setTask, ite_self])
+    | (first
+        | unfold sysWrite | unfold sysMap | unfold sysUnmap | unfold sysDerive | unfold sysCapInfo
+        | unfold sysSend | unfold sysRecv | unfold sysReply | unfold sysIrqWait | unfold sysIrqAck
+        | unfold sysBootInfo | unfold sysStart | unfold sysDrop | unfold sysBlock | unfold sysSleep
+        | unfold sysPower | unfold sysBoard | unfold sysStop | unfold sysSetWall | unfold sysTime
+        | unfold sysExec
+       repeat' (first | split | dsimp only)
+       all_goals turn_leaf)
+
+end calls
+
+/-- **Only a round robin pick moves the round.** A step of the kernel either leaves the round
+where it was, or is a round robin pick. -/
+theorem turn_only_by_round_robin {s s' : KState} (h : Step s s') : s'.turn = s.turn ∨ RoundRobin s s' := by
+  cases h with
+  | syscall num a0 a1 a2 a3 a4 =>
+    unfold syscall
+    split
+    · exact Or.inl rfl
+    · rename_i t ht
+      split
+      · exact runCall_rr s t num a0 a1 a2 a3 a4
+      · exact Or.inl rfl
+  | tick => exact (rotate_rr _).imp id (fun r => r.of_turn rfl)
+  | fault => exact killCurrent_rr _
+  | clear j => left; unfold clearResult; split <;> rfl
+  | irq n =>
+    left; unfold irqFired; repeat' split
+    all_goals first | rfl | simp [setTask]
+  | verify i hh =>
+    left; unfold verify; repeat' split
+    all_goals rfl
+  | ioFail => left; unfold ioFailed; split <;> rfl
+  | board => left; unfold boardDone; split <;> rfl
+  | usb => left; unfold usbDone; split <;> rfl
+  | enter => exact Or.inl rfl
+  | resched => exact schedule_rr rfl
+  | rotate => exact rotate_rr _
+
+/-! ## A round robin pick moves the round closer to every task waiting -/
+
+/-- What the round robin finds: the task it reaches after `d` others, which may run here,
+and none of those `d` may. -/
+theorem findReady_first {busy : List Nat} {ts : List Task} : ∀ {i fuel k : Nat},
+    findReady busy ts i fuel = some k →
+      ∃ d < fuel, (i + d) % len ts = k ∧ ∀ d' < d, runnable busy ts ((i + d') % len ts) = false
+  | _, 0, _, h => by simp [findReady] at h
+  | i, fuel + 1, k, h => by
+    simp only [findReady] at h
+    split at h
+    · simp at h; subst h
+      exact ⟨0, by omega, by simp, fun _ h => by omega⟩
+    · rename_i hnot
+      obtain ⟨d, hd, hk, hbefore⟩ := findReady_first h
+      refine ⟨d + 1, by omega, ?_, fun d' hd' => ?_⟩
+      · rwa [Nat.add_assoc, Nat.mod_add_mod, Nat.add_comm 1 d] at hk
+      · cases d' with
+        | zero => simpa using hnot
+        | succ d' =>
+          have := hbefore d' (by omega)
+          rwa [Nat.add_assoc, Nat.mod_add_mod, Nat.add_comm 1 d', ← Nat.add_assoc] at this
+
+theorem runnable_lt {busy : List Nat} {ts : List Task} {j : Nat} (h : runnable busy ts j = true) : j < len ts := by
+  unfold runnable at h
+  simp only [Bool.and_eq_true] at h
+  exact isReady_lt h.1
+
+/-- A round robin pick that leaves task `j` waiting moves the round strictly closer to `j`. -/
+theorem rr_behind_lt {s s' : KState} (h' : Reachable s') {j : Nat} (hr : RoundRobin s s')
+    (hj : Waiting s' j) : behind s' j < behind s j := by
+  obtain ⟨m, k, hturn, htasks, hbusy, hf, hcur, hk⟩ := hr
+  have hlen : len m.tasks = numTasks := htasks ▸ (reachable_inv h').len
+  obtain ⟨d, hd, hpos, hbefore⟩ := findReady_first hf
+  rw [hlen] at hd hpos hbefore
+  have hjr : runnable m.busy m.tasks j = true := by rw [htasks, hbusy]; exact hj.1
+  have hjn : j < numTasks := hlen ▸ runnable_lt hjr
+  have hjk : j ≠ k := fun e => hj.2 (hcur.trans e.symm)
+  obtain ⟨b, hb, hbpos⟩ := hits_every (m.turn + 1) j numTasks hjn
+  have hdb : d < b := by
+    rcases Nat.lt_trichotomy b d with hl | hl | hl
+    · have := hbefore b hl; rw [hbpos, hjr] at this; cases this
+    · subst hl; exact absurd (hbpos.symm.trans hpos) hjk
+    · exact hl
+  unfold behind
+  rw [hk, ← hturn]
+  simp only [numTasks] at *
+  omega
+
+/-- No step moves the round away from a task still waiting. -/
+theorem step_behind_le {s s' : KState} (hs : Step s s') (h' : Reachable s') {j : Nat}
+    (hj : Waiting s' j) : behind s' j ≤ behind s j := by
+  rcases turn_only_by_round_robin hs with he | hr
+  · simp [behind, he]
+  · exact Nat.le_of_lt (rr_behind_lt h' hr hj)
+
+/-! ## Bounded waiting -/
+
+/-- A run of steps from `s` to `s'` during which task `j` stays waiting to run, in every state
+of the run (`s` and `s'` too), with `n` steps counted that are round robin picks. (A pick need
+not be counted, so `n` is at most the number of them.) -/
+inductive RunWait (j : Nat) : KState → Nat → KState → Prop
+  | stay {s : KState} : Waiting s j → RunWait j s 0 s
+  | step {s s' s'' : KState} {n : Nat} : Waiting s j → Step s s' → RunWait j s' n s'' → RunWait j s n s''
+  | pick {s s' s'' : KState} {n : Nat} : Waiting s j → Step s s' → RoundRobin s s' →
+      RunWait j s' n s'' → RunWait j s (n + 1) s''
+
+theorem RunWait.head {j n : Nat} {s s' : KState} (h : RunWait j s n s') : Waiting s j := by
+  cases h <;> assumption
+
+/-- **Bounded waiting, exactly.** While task `j` waits to run, the round robin picks others
+at most as many times as it looks at tasks before `j`. -/
+theorem run_wait_behind {j n : Nat} {s s' : KState} (hr : RunWait j s n s') (h : Reachable s) :
+    n ≤ behind s j := by
+  induction hr with
+  | stay => exact Nat.zero_le _
+  | step _ hs hrest ih =>
+    exact Nat.le_trans (ih (h.step hs)) (step_behind_le hs (h.step hs) hrest.head)
+  | pick _ hs hrr hrest ih =>
+    exact Nat.succ_le_of_lt (Nat.lt_of_le_of_lt (ih (h.step hs)) (rr_behind_lt (h.step hs) hrr hrest.head))
+
+/-- **Bounded waiting.** While task `j` waits to run (it is ready, and no core runs it), the
+round robin picks others fewer than `numTasks` (18) times. The tasks a wake-up runs first
+(`schedule_prefers_woken`) do not count against it, and cannot hold it back past that. -/
+theorem run_bounded_wait {j n : Nat} {s s' : KState} (h : Reachable s) (hr : RunWait j s n s') :
+    n < numTasks := by
+  refine Nat.lt_of_le_of_lt (run_wait_behind hr h) ?_
+  unfold behind; exact Nat.mod_lt _ (by decide)
+
+/-! ## Every timer interrupt is a round robin pick -/
+
+/-- A timer interrupt, on core 0 (`tick`, which also moves the clock) or on another core
+(`rotate`), that leaves task `j` waiting is a round robin pick. -/
+theorem timer_round_robin {s s' : KState} {j : Nat} (h : s' = tick s ∨ s' = rotate s) (hj : Waiting s' j) :
+    RoundRobin s s' := by
+  have key : ∀ m : KState, m.turn = s.turn → s' = rotate m → RoundRobin s s' := by
+    intro m hm hs'
+    have hjr : runnable m.busy m.tasks j = true := by
+      have := hj.1; rw [hs', rotate_busy, rotate_tasks] at this; exact this
+    cases hf : findReady m.busy m.tasks (m.turn + 1) (len m.tasks) with
+    | none =>
+      obtain ⟨d, hd, hdj⟩ := hits_every (m.turn + 1) j (len m.tasks) (runnable_lt hjr)
+      have := findReady_none hf d hd
+      rw [hdj, hjr] at this; cases this
+    | some k =>
+      refine ⟨m, k, hm, by rw [hs', rotate_tasks], by rw [hs', rotate_busy], hf, ?_, ?_⟩ <;>
+        rw [hs'] <;> unfold rotate <;> rw [hf]
+  rcases h with rfl | rfl
+  · exact key { s with now := s.now + 1, tasks := wakeSleepers (s.now + 1) s.tasks } rfl rfl
+  · exact key s rfl rfl
+
+/-- A run of steps during which task `j` stays waiting to run, with `n` timer interrupts
+counted, on any of the cores. -/
+inductive TimerWait (j : Nat) : KState → Nat → KState → Prop
+  | stay {s : KState} : Waiting s j → TimerWait j s 0 s
+  | step {s s' s'' : KState} {n : Nat} : Waiting s j → Step s s' → TimerWait j s' n s'' → TimerWait j s n s''
+  | timer {s s' s'' : KState} {n : Nat} : Waiting s j → (s' = tick s ∨ s' = rotate s) →
+      TimerWait j s' n s'' → TimerWait j s (n + 1) s''
+
+theorem TimerWait.head {j n : Nat} {s s' : KState} (h : TimerWait j s n s') : Waiting s j := by
+  cases h <;> assumption
+
+theorem TimerWait.runWait {j n : Nat} {s s' : KState} (h : TimerWait j s n s') : RunWait j s n s' := by
+  induction h with
+  | stay hj => exact .stay hj
+  | step hj hs _ ih => exact .step hj hs ih
+  | timer hj ht hrest ih =>
+    rcases ht with rfl | rfl
+    · exact .pick hj (.tick _) (timer_round_robin (.inl rfl) hrest.head) ih
+    · exact .pick hj (.rotate _) (timer_round_robin (.inr rfl) hrest.head) ih
+
+/-- **A ready task runs within 18 timer interrupts.** While task `j` stays ready and no core
+runs it, fewer than `numTasks` (18) timer interrupts happen, on all the cores together,
+whatever the tasks do and whomever messages and interrupts wake in between. With each
+core's timer every 10 ms, a ready task waits less than 180 ms even if only one core takes
+timer interrupts. -/
+theorem timer_bounded_wait {j n : Nat} {s s' : KState} (h : Reachable s) (hr : TimerWait j s n s') :
+    n < numTasks :=
+  run_bounded_wait h hr.runWait
 
 end LeanOS

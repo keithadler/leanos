@@ -51,7 +51,7 @@ mutant "sender picks its own badge" \
 mutant "reply wakes a task that is not waiting for it" \
   "    if awaitsFrom s.tasks j s.cur then" "    if true then"
 mutant "reply hands over the replier's capabilities" \
-  "ret (setTask s j { u with status := .ready, result := 0 :: w0 :: w1 :: w2 :: .nil }) t'" "ret (setTask s j { u with status := .ready, caps := t.caps, result := 0 :: w0 :: w1 :: w2 :: .nil }) t'"
+  "ret (wake (setTask s j { u with status := .ready, result := 0 :: w0 :: w1 :: w2 :: .nil }) j) t'" "ret (wake (setTask s j { u with status := .ready, caps := t.caps, result := 0 :: w0 :: w1 :: w2 :: .nil }) j) t'"
 mutant "manifest gives mallory the grant right" \
   "epCap 0 false true false 2" "epCap 0 false true true 2"
 mutant "manifest gives mallory the receive right" \
@@ -168,7 +168,7 @@ mutant "board skips the rights check" \
 mutant "Security also holds the board" \
   "| 7 => snoc (frameCaps 7) (epCap 0 false true true 7)" "| 7 => snoc (snoc (frameCaps 7) (epCap 0 false true true 7)) boardCap"
 mutant "a tick moves the clock by two" \
-  "schedule { s with now := s.now + 1," "schedule { s with now := s.now + 2,"
+  "rotate { s with now := s.now + 1," "rotate { s with now := s.now + 2,"
 mutant "time reports a tick ahead" \
   "ret s t (0 :: s.now :: ms ::" "ret s t (0 :: (s.now + 1) :: ms ::"
 mutant "the clock's minutes run past 59" \
@@ -229,11 +229,44 @@ mutant "receive searches from the task it served last, not the one after" \
 mutant "receive looks at one task too few" \
   "(lastServed s e + 1) (len s.tasks) with" "(lastServed s e + 1) (len s.tasks - 1) with"
 mutant "receive forgets whom it served" \
-  "⟨serve (setTask (setTask s j u') s.cur t') e j," "⟨setTask (setTask s j u') s.cur t',"
+  "⟨serve (wakeSender m.call (setTask (setTask s j u') s.cur t') j) e j," "⟨wakeSender m.call (setTask (setTask s j u') s.cur t') j,"
 mutant "receive remembers whom it served under the wrong endpoint" \
-  "⟨serve (setTask (setTask s j u') s.cur t') e j," "⟨serve (setTask (setTask s j u') s.cur t') 0 j,"
+  "⟨serve (wakeSender m.call (setTask (setTask s j u') s.cur t') j) e j," "⟨serve (wakeSender m.call (setTask (setTask s j u') s.cur t') j) 0 j,"
 mutant "the search for a sender skips every other task" \
   "    | none => findSender e ts (j + 1) fuel" "    | none => findSender e ts (j + 2) fuel"
+# wake-ups run next (Proofs.lean), and running is fair (Fair.lean)
+mutant "the scheduler ignores whom a wake-up chose" \
+  "  if runnable s.busy s.tasks s.next then { s with cur := s.next, next := noTask }" "  if false then { s with cur := s.next, next := noTask }"
+mutant "a wake-up's choice outlasts its pick" \
+  "  if runnable s.busy s.tasks s.next then { s with cur := s.next, next := noTask }" "  if runnable s.busy s.tasks s.next then { s with cur := s.next }"
+mutant "a wake-up's pick moves the round robin" \
+  "  if runnable s.busy s.tasks s.next then { s with cur := s.next, next := noTask }" "  if runnable s.busy s.tasks s.next then { s with cur := s.next, next := noTask, turn := s.next }"
+mutant "a wake-up's choice runs even on another core" \
+  "  if runnable s.busy s.tasks s.next then { s with cur := s.next, next := noTask }" "  if isReady s.tasks s.next then { s with cur := s.next, next := noTask }"
+mutant "the timer follows a wake-up's choice" \
+  "  rotate { s with now := s.now + 1, tasks := wakeSleepers (s.now + 1) s.tasks }" "  schedule { s with now := s.now + 1, tasks := wakeSleepers (s.now + 1) s.tasks }"
+mutant "the round robin searches from the running task, as it used to" \
+  "  match findReady s.busy s.tasks (s.turn + 1) (len s.tasks) with" "  match findReady s.busy s.tasks (s.cur + 1) (len s.tasks) with"
+mutant "the round robin forgets where it is" \
+  "  | some j => { s with cur := j, turn := j }" "  | some j => { s with cur := j }"
+mutant "the round robin looks at one task too few" \
+  "  match findReady s.busy s.tasks (s.turn + 1) (len s.tasks) with" "  match findReady s.busy s.tasks (s.turn + 1) (len s.tasks - 1) with"
+mutant "a send does not run the receiver next" \
+  "                else ret (wake (setTask s j u') j) t (0 :: .nil)" "                else ret (setTask s j u') t (0 :: .nil)"
+mutant "a call does not run the receiver" \
+  "                  ⟨schedule (wake (setTask (setTask s j u') s.cur { t with status := .awaiting j, result := .nil }) j)," "                  ⟨schedule (setTask (setTask s j u') s.cur { t with status := .awaiting j, result := .nil }),"
+mutant "a receive does not run the sender it woke next" \
+  "def wakeSender (call : Bool) (s : KState) (j : Nat) : KState := if call then s else wake s j" "def wakeSender (call : Bool) (s : KState) (j : Nat) : KState := s"
+mutant "a reply does not run the caller next" \
+  "      | some u => ret (wake (setTask s j { u with status := .ready, result := 0 :: w0 :: w1 :: w2 :: .nil }) j) t'" "      | some u => ret (setTask s j { u with status := .ready, result := 0 :: w0 :: w1 :: w2 :: .nil }) t'"
+mutant "a wake-up chooses the task after the one it woke" \
+  "def wake (s : KState) (j : Nat) : KState := { s with next := j }" "def wake (s : KState) (j : Nat) : KState := { s with next := j + 1 }"
+mutant "an interrupt waits for its holder's turn" \
+  "  if runnable s.busy s.tasks j then { s with cur := j, next := s.cur } else wake s j" "  wake s j"
+mutant "an interrupt forgets the task it took the core from" \
+  "  if runnable s.busy s.tasks j then { s with cur := j, next := s.cur } else wake s j" "  if runnable s.busy s.tasks j then { s with cur := j } else wake s j"
+mutant "an interrupt runs its holder even on another core" \
+  "  if runnable s.busy s.tasks j then { s with cur := j, next := s.cur } else wake s j" "  if isReady s.tasks j then { s with cur := j, next := s.cur } else wake s j"
 # the state's bounds (LeanOS/Bounds.lean): none of these may let a list in the state grow
 mutant "map keeps the old mappings of the pages it maps" \
   "                                               (dropRange vpn count t.maps)," "                                               t.maps,"

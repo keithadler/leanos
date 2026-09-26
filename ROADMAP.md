@@ -368,6 +368,27 @@ and is woken by an interrupt between cores when a task is ready that no core run
 a slot is loaded, a core still running what was there is made to leave it. `make test`
 checks that all four cores come up and run tasks.
 
+Done later: a desktop that stays responsive under load. With five programs from the card
+that only compute (a loop with no system calls, more programs than cores), every task on the
+way from a key to the screen waited for a timer tick to give it a turn: the input driver
+woke 5 to 15 ms after the UART's interrupt instead of 0.1 ms, and a key took 31 to 34 ms to
+reach the screen instead of 2 (median, emulated time, QEMU on a 10-core Mac). Now the task an
+interrupt wakes runs at once on the core that took it, and the one it took the core from runs
+after it (`preempt`); a task a send, a call, a receive or a reply wakes runs next on that
+core, when the caller stops (`wake`, `schedule`). The timer ignores that choice: every timer
+interrupt, on every core, is round robin from the task it picked last (`rotate`, `turn`), a
+place in the round a wake-up's pick never moves. Proved: a message wakes a task to run next
+(`wake_runs_next`), the scheduler runs it first and only once (`schedule_prefers_woken`,
+`schedule_spends_woken`), an interrupt runs its holder at once and never on a core that
+already runs it (`irq_runs_holder`, `irq_not_on_other_core`), and, in `LeanOS/Fair.lean`,
+nothing but a round robin pick moves the round (`turn_only_by_round_robin`), so while a task
+stays ready and no core runs it, fewer than 18 timer interrupts happen (`timer_bounded_wait`):
+tasks that keep waking each other cannot keep it waiting. Sixteen new mutants are caught.
+Loaded, a key now takes 2.6 ms (up to 15 ms while the host itself is busy), the input driver
+wakes in 0.1 ms, and `test/responsive.sh` types 96 keys at once, idle and beside five such
+programs, counting the machine's own ticks: 15 against 12 now, 106 against 13 with the old
+kernel, which it fails.
+
 Done too: programs from the SD card. They are ELF files on the card (`tools/mksd.py`
 writes a card with them, the way programs are copied onto any computer's disk); Terminal's
 `run` reads one, checks and flattens it in user space, and starts it with `exec` in one of

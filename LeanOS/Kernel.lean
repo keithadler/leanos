@@ -141,6 +141,15 @@ structure KState where
   the task after it on, wrapping around (`findSender`), so waiting senders are served in
   turn and none waits behind the others for good. -/
   served : List Nat
+  /-- The task a wake-up chose to run next (`noTask`: none): the last task that a message
+  or an interrupt woke, until the next pick. When the task running here stops, this one
+  runs, not the next in turn (`schedule`), so a key goes from the input driver to the
+  display to the app without waiting for each one's turn behind programs that only compute. -/
+  next : Nat
+  /-- Where the round robin is: the task it picked last. The next round robin pick looks
+  from the task after it on, wrapping around (`rotate`); a wake-up's pick does not move it,
+  so tasks that wake each other cannot keep a ready task waiting (`Fair.lean`). -/
+  turn : Nat
 
 /-! ## List helpers
 
@@ -304,6 +313,9 @@ def maxCaps : Nat := 64
 def numTasks : Nat := 18
 def maxTasks : Nat := 20
 
+/-- No task: a free reply slot, or no task woken to run next. -/
+def noTask : Nat := 1000000
+
 /-- Each task owns 256 frames (1 MiB) of the pool: task `i` owns frames `256i` to `256i+255`. -/
 def framesPerTask : Nat := 256
 def poolFrames : Nat := framesPerTask * maxTasks
@@ -459,7 +471,7 @@ def numEndpoints : Nat := 3
 def servedInit : List Nat := 0 :: 0 :: 0 :: .nil
 
 def init (fbBase : Nat) : KState :=
-  ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil, 0, usbZeros, usbZeros, .nil, 0, servedInit⟩
+  ⟨mkTasksFrom 0 numTasks, 0, fbBase, .nil, 0, usbZeros, usbZeros, .nil, 0, servedInit, noTask, 0⟩
 
 def setTask (s : KState) (j : Nat) (t : Task) : KState := { s with tasks := setNth s.tasks j t }
 
@@ -506,12 +518,25 @@ def findReady (busy : List Nat) (ts : List Task) (i : Nat) : Nat → Option Nat
     let j := i % len ts
     if runnable busy ts j then some j else findReady busy ts (j + 1) fuel
 
-/-- Round robin: the next ready task after the current one, or the current one if it is the
-only one ready. If none is ready, the state is unchanged and the machine layer stops. -/
-def schedule (s : KState) : KState :=
-  match findReady s.busy s.tasks (s.cur + 1) (len s.tasks) with
-  | some j => { s with cur := j }
+/-- Round robin: the first task after the one it picked last (`turn`) that may run here,
+wrapping around; it may be the one running here. If none may, the state is unchanged and the
+machine layer waits. Every timer interrupt picks this way (`tick`, and `exRotate` on the
+other cores), so a task that stays ready waits fewer than `numTasks` of them (`Fair.lean`). -/
+def rotate (s : KState) : KState :=
+  match findReady s.busy s.tasks (s.turn + 1) (len s.tasks) with
+  | some j => { s with cur := j, turn := j }
   | none => s
+
+/-- The task running here stopped (it waits, yields, exits or faulted): the task a wake-up
+chose (`next`) runs, if it may run here; if not, round robin. Either way the wake-up's
+choice is spent. -/
+def schedule (s : KState) : KState :=
+  if runnable s.busy s.tasks s.next then { s with cur := s.next, next := noTask }
+  else rotate { s with next := noTask }
+
+/-- Task `j` has just been woken by a message: it runs next here, when the task running
+here stops (`schedule`). -/
+def wake (s : KState) (j : Nat) : KState := { s with next := j }
 
 
 /-! ## Time -/
@@ -535,10 +560,10 @@ def wakeSleepers (now : Nat) : List Task → List Task
   | .nil => .nil
   | t :: ts => wakeTask now t :: wakeSleepers now ts
 
-/-- A timer tick: the clock advances, sleepers whose time has come wake, and the scheduler
-picks the next task. -/
+/-- A timer tick: the clock advances, sleepers whose time has come wake, and the round robin
+picks the next task (a wake-up's choice never outlasts a time slice). -/
 def tick (s : KState) : KState :=
-  schedule { s with now := s.now + 1, tasks := wakeSleepers (s.now + 1) s.tasks }
+  rotate { s with now := s.now + 1, tasks := wakeSleepers (s.now + 1) s.tasks }
 
 /-- Stop the current task (it exited or faulted) and move on. -/
 def killCurrent (s : KState) : KState :=
@@ -585,9 +610,6 @@ def lastServed (s : KState) (e : Nat) : Nat :=
 
 /-- Endpoint `e` has just taken task `j`'s waiting message. -/
 def serve (s : KState) (e j : Nat) : KState := { s with served := setNth s.served e j }
-
-/-- A free reply slot. -/
-def noTask : Nat := 1000000
 
 /-- A task answers at most this many callers at once. -/
 def maxCallers : Nat := 8
@@ -792,7 +814,8 @@ def grantOf (t : Task) (ep : Cap) (gi : Nat) : Option (Option Cap) :=
 
 /-- Send three words, and optionally a frame capability, through endpoint capability `ci`.
 If a task is waiting to receive, it gets the message now; otherwise the sender waits. A
-plain send then carries on; a call waits for the receiver's reply. -/
+plain send then carries on, and the receiver runs next here when it stops (`wake`); a call
+waits for the receiver's reply, and the receiver runs now. -/
 def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply :=
   match nth? t.caps ci with
   | none => ret s t (eNoCap :: .nil)
@@ -811,9 +834,9 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply
               match deliver u m s.cur with
               | some u' =>
                 if call then
-                  ⟨schedule (setTask (setTask s j u') s.cur { t with status := .awaiting j, result := .nil }),
+                  ⟨schedule (wake (setTask (setTask s j u') s.cur { t with status := .awaiting j, result := .nil }) j),
                     0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
-                else ret (setTask s j u') t (0 :: .nil)
+                else ret (wake (setTask s j u') j) t (0 :: .nil)
               | none => ret s t (eFull :: .nil)
             | none => ret s t (eBadArg :: .nil)
           | none =>
@@ -821,9 +844,13 @@ def sysSend (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) : Reply
       else ret s t (eBadArg :: .nil)
     | _ => ret s t (eBadArg :: .nil)
 
+/-- A receive took task `j`'s waiting message: a plain sender is woken, and runs next here
+(`wake`); a caller goes on waiting, for the reply, and wakes nobody. -/
+def wakeSender (call : Bool) (s : KState) (j : Nat) : KState := if call then s else wake s j
+
 /-- Receive through endpoint capability `ci`: take a waiting sender's message, or wait for
-one. A waiting plain sender carries on with x0 = 0; a caller goes on waiting, for the reply.
-Of several waiting senders, the one taken is the first after the one the endpoint took last,
+one. A waiting plain sender carries on with x0 = 0 (`wakeSender`); a caller goes on waiting,
+for the reply. Of several waiting senders, the one taken is the first after the one the endpoint took last,
 wrapping around (round robin), so each waits for fewer than `numTasks` others. A send that
 finds the receiver already waiting is delivered at once and moves nothing: a receiver waits
 only when no sender does, so it passes nobody over. -/
@@ -842,7 +869,7 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) (block : Bool) (deadline : Nat) :
             | some t' =>
               let u' : Task := if m.call then { u with status := .awaiting s.cur, result := .nil }
                                else { u with status := .ready, result := 0 :: .nil }
-              ⟨serve (setTask (setTask s j u') s.cur t') e j, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
+              ⟨serve (wakeSender m.call (setTask (setTask s j u') s.cur t') j) e j, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0⟩
             | none => ret s t (eFull :: .nil)
           | none => ret s t (eBadArg :: .nil)
         | none =>
@@ -853,8 +880,8 @@ def sysRecv (s : KState) (t : Task) (ci : Nat) (block : Bool) (deadline : Nat) :
     | _ => ret s t (eBadArg :: .nil)
 
 /-- Answer the caller in reply slot `slot` (see `Task.callers`) with three words. Only a
-task still waiting for this task's reply is woken; a reply carries no capability. The slot
-is freed either way. -/
+task still waiting for this task's reply is woken, and it runs next here (`wake`); a reply
+carries no capability. The slot is freed either way. -/
 def sysReply (s : KState) (t : Task) (slot w0 w1 w2 : Nat) : Reply :=
   match nth? t.callers slot with
   | none => ret s t (eBadArg :: .nil)
@@ -862,7 +889,7 @@ def sysReply (s : KState) (t : Task) (slot w0 w1 w2 : Nat) : Reply :=
     let t' : Task := { t with callers := setNth t.callers slot noTask }
     if awaitsFrom s.tasks j s.cur then
       match nth? s.tasks j with
-      | some u => ret (setTask s j { u with status := .ready, result := 0 :: w0 :: w1 :: w2 :: .nil }) t'
+      | some u => ret (wake (setTask s j { u with status := .ready, result := 0 :: w0 :: w1 :: w2 :: .nil }) j) t'
                     (0 :: .nil)
       | none => ret s t' (eBadArg :: .nil)
     else ret s t' (eBadArg :: .nil)
@@ -1362,13 +1389,19 @@ def findIrqWaiter (n : Nat) : List Task → Nat → Option Nat
     | .waitingIrq k => if k == n then some j else findIrqWaiter n ts (j + 1)
     | _ => findIrqWaiter n ts (j + 1)
 
+/-- Task `j` has just been woken by an interrupt: it runs now, on the core that took the
+interrupt, if no other core runs it, and the task it takes the core from runs after it
+(`next`). Otherwise it runs next here (`wake`). -/
+def preempt (s : KState) (j : Nat) : KState :=
+  if runnable s.busy s.tasks j then { s with cur := j, next := s.cur } else wake s j
+
 /-- Interrupt line `n` fired (the machine layer has masked it). Wake the task waiting for
-it, or remember it for the next wait. -/
+it, which runs now (`preempt`), or remember it for the next wait. -/
 def irqFired (s : KState) (n : Nat) : KState :=
   match findIrqWaiter n s.tasks 0 with
   | some j =>
     match nth? s.tasks j with
-    | some u => setTask s j { u with status := .ready, result := 0 :: .nil }
+    | some u => preempt (setTask s j { u with status := .ready, result := 0 :: .nil }) j
     | none => s
   | none => if hasLine n s.pending then s else { s with pending := snoc s.pending n }
 
@@ -1472,8 +1505,10 @@ before passing it in. -/
 and what the other three run. -/
 def enter (s : KState) (c b0 b1 b2 : Nat) : KState := { s with cur := c, busy := b0 :: b1 :: b2 :: .nil }
 @[export leanos_enter] def exEnter (s : KState) (c b0 b1 b2 : Nat) : KState := enter s c b0 b1 b2
-/-- Another core's timer: pick again, without a tick (time is core 0's to count). -/
+/-- The task running here stopped: pick again (`schedule`). -/
 @[export leanos_schedule] def exSchedule (s : KState) : KState := schedule s
+/-- Another core's timer: round robin, without a tick (time is core 0's to count). -/
+@[export leanos_rotate] def exRotate (s : KState) : KState := rotate s
 @[export leanos_runnable] def exRunnable (s : KState) (j : Nat) : Bool := runnable s.busy s.tasks j
 @[export leanos_fault] def exFault (s : KState) : KState := killCurrent s
 @[export leanos_clear_result] def exClearResult (s : KState) (j : Nat) : KState := clearResult s j

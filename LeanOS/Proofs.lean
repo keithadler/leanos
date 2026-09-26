@@ -255,11 +255,97 @@ theorem inv_setTask {s : KState} (hs : Inv s) {j : Nat} {t : Task} (ht : TaskOK 
 /-- Which task an endpoint served last plays no part in the invariant. -/
 theorem inv_serve {s : KState} (hs : Inv s) {e j : Nat} : Inv (serve s e j) := ⟨hs.len, hs.tasks⟩
 
+/-! What the scheduler changes: which task runs here, the wake-up's choice, and where the
+round robin is. Nothing else. -/
+
+theorem rotate_eq (s : KState) : ∃ c t, rotate s = { s with cur := c, turn := t } := by
+  unfold rotate; split
+  · exact ⟨_, _, rfl⟩
+  · exact ⟨s.cur, s.turn, rfl⟩
+
+theorem schedule_eq (s : KState) : ∃ c t, schedule s = { s with cur := c, next := noTask, turn := t } := by
+  unfold schedule; split
+  · exact ⟨_, s.turn, rfl⟩
+  · obtain ⟨c, t, h⟩ := rotate_eq { s with next := noTask }
+    exact ⟨c, t, h⟩
+
+theorem preempt_eq (s : KState) (j : Nat) : ∃ c n, preempt s j = { s with cur := c, next := n } := by
+  unfold preempt wake; split
+  · exact ⟨_, _, rfl⟩
+  · exact ⟨s.cur, _, rfl⟩
+
+section
+variable (s : KState) (j : Nat) (b : Bool)
+@[simp] theorem rotate_tasks : (rotate s).tasks = s.tasks := by obtain ⟨c, t, h⟩ := rotate_eq s; rw [h]
+@[simp] theorem rotate_fbBase : (rotate s).fbBase = s.fbBase := by obtain ⟨c, t, h⟩ := rotate_eq s; rw [h]
+@[simp] theorem rotate_pending : (rotate s).pending = s.pending := by obtain ⟨c, t, h⟩ := rotate_eq s; rw [h]
+@[simp] theorem rotate_now : (rotate s).now = s.now := by obtain ⟨c, t, h⟩ := rotate_eq s; rw [h]
+@[simp] theorem rotate_usbDma : (rotate s).usbDma = s.usbDma := by obtain ⟨c, t, h⟩ := rotate_eq s; rw [h]
+@[simp] theorem rotate_usbSize : (rotate s).usbSize = s.usbSize := by obtain ⟨c, t, h⟩ := rotate_eq s; rw [h]
+@[simp] theorem rotate_busy : (rotate s).busy = s.busy := by obtain ⟨c, t, h⟩ := rotate_eq s; rw [h]
+@[simp] theorem rotate_wall : (rotate s).wall = s.wall := by obtain ⟨c, t, h⟩ := rotate_eq s; rw [h]
+@[simp] theorem rotate_served : (rotate s).served = s.served := by obtain ⟨c, t, h⟩ := rotate_eq s; rw [h]
+@[simp] theorem rotate_next : (rotate s).next = s.next := by obtain ⟨c, t, h⟩ := rotate_eq s; rw [h]
+@[simp] theorem schedule_fbBase : (schedule s).fbBase = s.fbBase := by
+  obtain ⟨c, t, h⟩ := schedule_eq s; rw [h]
+@[simp] theorem schedule_pending : (schedule s).pending = s.pending := by
+  obtain ⟨c, t, h⟩ := schedule_eq s; rw [h]
+@[simp] theorem schedule_usbDma : (schedule s).usbDma = s.usbDma := by
+  obtain ⟨c, t, h⟩ := schedule_eq s; rw [h]
+@[simp] theorem schedule_usbSize : (schedule s).usbSize = s.usbSize := by
+  obtain ⟨c, t, h⟩ := schedule_eq s; rw [h]
+@[simp] theorem schedule_busy : (schedule s).busy = s.busy := by obtain ⟨c, t, h⟩ := schedule_eq s; rw [h]
+@[simp] theorem schedule_wall : (schedule s).wall = s.wall := by obtain ⟨c, t, h⟩ := schedule_eq s; rw [h]
+@[simp] theorem schedule_served' : (schedule s).served = s.served := by
+  obtain ⟨c, t, h⟩ := schedule_eq s; rw [h]
+@[simp] theorem wake_tasks : (wake s j).tasks = s.tasks := rfl
+@[simp] theorem wake_fbBase : (wake s j).fbBase = s.fbBase := rfl
+@[simp] theorem wake_pending : (wake s j).pending = s.pending := rfl
+@[simp] theorem wake_now : (wake s j).now = s.now := rfl
+@[simp] theorem wake_usbDma : (wake s j).usbDma = s.usbDma := rfl
+@[simp] theorem wake_usbSize : (wake s j).usbSize = s.usbSize := rfl
+@[simp] theorem wake_busy : (wake s j).busy = s.busy := rfl
+@[simp] theorem wake_wall : (wake s j).wall = s.wall := rfl
+@[simp] theorem wake_served : (wake s j).served = s.served := rfl
+@[simp] theorem wake_cur : (wake s j).cur = s.cur := rfl
+@[simp] theorem wake_turn : (wake s j).turn = s.turn := rfl
+@[simp] theorem wakeSender_tasks : (wakeSender b s j).tasks = s.tasks := by unfold wakeSender; split <;> rfl
+@[simp] theorem wakeSender_fbBase : (wakeSender b s j).fbBase = s.fbBase := by unfold wakeSender; split <;> rfl
+@[simp] theorem wakeSender_pending : (wakeSender b s j).pending = s.pending := by unfold wakeSender; split <;> rfl
+@[simp] theorem wakeSender_now : (wakeSender b s j).now = s.now := by unfold wakeSender; split <;> rfl
+@[simp] theorem wakeSender_usbDma : (wakeSender b s j).usbDma = s.usbDma := by unfold wakeSender; split <;> rfl
+@[simp] theorem wakeSender_usbSize : (wakeSender b s j).usbSize = s.usbSize := by unfold wakeSender; split <;> rfl
+@[simp] theorem wakeSender_busy : (wakeSender b s j).busy = s.busy := by unfold wakeSender; split <;> rfl
+@[simp] theorem wakeSender_wall : (wakeSender b s j).wall = s.wall := by unfold wakeSender; split <;> rfl
+@[simp] theorem wakeSender_served : (wakeSender b s j).served = s.served := by unfold wakeSender; split <;> rfl
+@[simp] theorem wakeSender_cur : (wakeSender b s j).cur = s.cur := by unfold wakeSender; split <;> rfl
+@[simp] theorem wakeSender_turn : (wakeSender b s j).turn = s.turn := by unfold wakeSender; split <;> rfl
+@[simp] theorem preempt_tasks : (preempt s j).tasks = s.tasks := by obtain ⟨c, n, h⟩ := preempt_eq s j; rw [h]
+@[simp] theorem preempt_fbBase : (preempt s j).fbBase = s.fbBase := by obtain ⟨c, n, h⟩ := preempt_eq s j; rw [h]
+@[simp] theorem preempt_pending : (preempt s j).pending = s.pending := by obtain ⟨c, n, h⟩ := preempt_eq s j; rw [h]
+@[simp] theorem preempt_now : (preempt s j).now = s.now := by obtain ⟨c, n, h⟩ := preempt_eq s j; rw [h]
+@[simp] theorem preempt_usbDma : (preempt s j).usbDma = s.usbDma := by obtain ⟨c, n, h⟩ := preempt_eq s j; rw [h]
+@[simp] theorem preempt_usbSize : (preempt s j).usbSize = s.usbSize := by
+  obtain ⟨c, n, h⟩ := preempt_eq s j; rw [h]
+@[simp] theorem preempt_busy : (preempt s j).busy = s.busy := by obtain ⟨c, n, h⟩ := preempt_eq s j; rw [h]
+@[simp] theorem preempt_wall : (preempt s j).wall = s.wall := by obtain ⟨c, n, h⟩ := preempt_eq s j; rw [h]
+@[simp] theorem preempt_served : (preempt s j).served = s.served := by obtain ⟨c, n, h⟩ := preempt_eq s j; rw [h]
+@[simp] theorem preempt_turn : (preempt s j).turn = s.turn := by obtain ⟨c, n, h⟩ := preempt_eq s j; rw [h]
+end
+
+/-- The invariant is about the tasks and the framebuffer's address only. -/
+theorem Inv.of_eq {s s' : KState} (hs : Inv s) (ht : s'.tasks = s.tasks) (hf : s'.fbBase = s.fbBase) :
+    Inv s' := ⟨ht ▸ hs.len, fun j t h => hf ▸ hs.tasks j t (ht ▸ h)⟩
+
+theorem inv_rotate {s : KState} (hs : Inv s) : Inv (rotate s) := hs.of_eq (by simp) (by simp)
+theorem inv_wake {s : KState} (hs : Inv s) (j : Nat) : Inv (wake s j) := hs.of_eq rfl rfl
+theorem inv_wakeSender {s : KState} (hs : Inv s) (b : Bool) (j : Nat) : Inv (wakeSender b s j) :=
+  hs.of_eq (by simp) (by simp)
+theorem inv_preempt {s : KState} (hs : Inv s) (j : Nat) : Inv (preempt s j) := hs.of_eq (by simp) (by simp)
+
 theorem inv_schedule {s : KState} (hs : Inv s) : Inv (schedule s) := by
-  unfold schedule
-  split
-  · exact ⟨hs.len, hs.tasks⟩
-  · exact hs
+  obtain ⟨c, t, h⟩ := schedule_eq s
+  rw [h]; exact ⟨hs.len, hs.tasks⟩
 
 /-- The registers a task will resume with play no part in the invariant. -/
 theorem TaskOK.result {fb : Bool} {j : Nat} {t : Task} (h : TaskOK fb j t) (r : List Nat) :
@@ -637,8 +723,8 @@ theorem inv_sysSend {s : KState} {t : Task} {ci w0 w1 w2 gi : Nat} {call : Bool}
                   obtain ⟨hgok, hgf, c2, hc2, ho2, hw2, hx2⟩ := hgr g' hg'
                   exact capOK_grant hgok hgf ⟨hA, hB, e, ⟨c2, hc2, ho2, hw2, hx2⟩, ⟨c1, hc1, ho1, hr1⟩⟩
                 split
-                · exact inv_schedule (inv_setTask hdel (ht.setStatus (.awaiting j) trivial (fun _ => hmt) _))
-                · exact inv_ret hdel ht _
+                · exact inv_schedule (inv_wake (inv_setTask hdel (ht.setStatus (.awaiting j) trivial (fun _ => hmt) _)) j)
+                · exact inv_ret (inv_wake hdel j) ht _
               · exact inv_ret hs ht _
             · exact inv_ret hs ht _
           · apply inv_schedule
@@ -686,6 +772,7 @@ theorem inv_sysRecv {s : KState} {t : Task} {ci : Nat} {block : Bool} {deadline 
                     (fun _ => huok.measured (by rw [hst]; trivial)) _)
               -- `try`: a receive that forgot whom it served must break `recv_in_turn`, not this
               try apply inv_serve
+              refine inv_wakeSender ?_ _ j
               apply inv_setTask h1
               apply deliver_ok ht hmt _ hd
               intro g hg
@@ -727,8 +814,8 @@ theorem inv_sysReply {s : KState} {t : Task} {slot w0 w1 w2 : Nat} (hs : Inv s)
         have halive : Alive u.status := by
           obtain ⟨w, hw, hst⟩ := awaitsFrom_spec haw
           rw [hu] at hw; cases hw; rw [hst]; trivial
-        exact inv_ret (inv_setTask hs ((hs.tasks j u hu).setStatus .ready trivial
-          (fun _ => (hs.tasks j u hu).measured halive) _)) (ht.setCallers _) _
+        exact inv_ret (inv_wake (inv_setTask hs ((hs.tasks j u hu).setStatus .ready trivial
+          (fun _ => (hs.tasks j u hu).measured halive) _)) j) (ht.setCallers _) _
       · exact inv_ret hs (ht.setCallers _) _
     · exact inv_ret hs (ht.setCallers _) _
 
@@ -786,8 +873,8 @@ theorem inv_irqFired {s : KState} (hs : Inv s) (n : Nat) : Inv (irqFired s n) :=
       obtain ⟨-, u0, hu0, hst⟩ := findIrqWaiter_spec hj
       simp only [Nat.sub_zero] at hu0
       rw [hu] at hu0; cases hu0
-      exact inv_setTask hs ((hs.tasks j u hu).setStatus .ready trivial
-        (fun _ => (hs.tasks j u hu).measured (by rw [hst]; trivial)) _)
+      exact inv_preempt (inv_setTask hs ((hs.tasks j u hu).setStatus .ready trivial
+        (fun _ => (hs.tasks j u hu).measured (by rw [hst]; trivial)) _)) j
     · exact hs
   · split
     · exact hs
@@ -1235,7 +1322,7 @@ theorem len_wakeSleepers (now : Nat) : ∀ (ts : List Task), len (wakeSleepers n
 
 theorem inv_tick {s : KState} (hs : Inv s) : Inv (tick s) := by
   unfold tick
-  apply inv_schedule
+  apply inv_rotate
   constructor
   · simp [len_wakeSleepers, hs.len]
   · intro j u hu
@@ -1343,6 +1430,7 @@ inductive Reachable : KState → Prop
   | usb {s} (v : Nat) : Reachable s → Reachable (usbDone s v)
   | enter {s} (c b0 b1 b2 : Nat) : Reachable s → Reachable (enter s c b0 b1 b2)
   | resched {s} : Reachable s → Reachable (schedule s)
+  | rotate {s} : Reachable s → Reachable (rotate s)
 
 theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   induction h with
@@ -1358,6 +1446,7 @@ theorem reachable_inv {s : KState} (h : Reachable s) : Inv s := by
   | usb v _ ih => exact inv_usbDone ih v
   | enter c b0 b1 b2 _ ih => exact ⟨ih.len, ih.tasks⟩
   | resched _ ih => exact inv_schedule ih
+  | rotate _ ih => exact inv_rotate ih
 
 /-! ## The guarantees -/
 
@@ -1498,7 +1587,7 @@ theorem reply_wakes_only_caller {s : KState} {t : Task} (ht : nth? s.tasks s.cur
     · rename_i haw
       split at hu'
       · rename_i v hv
-        simp only [ret, setTask, nth?_setNth, Ne.symm hj, if_false] at hu'
+        simp only [ret, wake_tasks, wake_cur, setTask, nth?_setNth, Ne.symm hj, if_false] at hu'
         by_cases hkj : k = j
         · subst hkj
           obtain ⟨w, hw, hst⟩ := awaitsFrom_spec haw
@@ -1897,7 +1986,7 @@ theorem irq_wakes_holder {s : KState} (h : Reachable s) (n j : Nat) {u u' : Task
   · rename_i k hk
     split at hu'
     · rename_i v hv
-      simp only [setTask, nth?_setNth] at hu'
+      simp only [preempt_tasks, setTask, nth?_setNth] at hu'
       by_cases hkj : k = j
       · subst hkj
         obtain ⟨-, w, hw, hst⟩ := findIrqWaiter_spec hk
@@ -1974,7 +2063,7 @@ abbrev Calm (s : KState) (r : Reply) : Prop :=
 
 /-- The scheduler moves neither clock. -/
 theorem schedule_keeps_clocks (s : KState) : (schedule s).now = s.now ∧ (schedule s).wall = s.wall := by
-  unfold schedule; split <;> exact ⟨rfl, rfl⟩
+  obtain ⟨c, t, h⟩ := schedule_eq s; rw [h]; exact ⟨rfl, rfl⟩
 
 /-- Stopping the current task moves neither clock. -/
 theorem killCurrent_keeps_clocks (s : KState) :
@@ -1985,7 +2074,8 @@ theorem killCurrent_keeps_clocks (s : KState) :
 pending interrupts or its USB registers, possibly then rescheduled. -/
 local macro "calm_leaf" : tactic => `(tactic| first
   | exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
-  | exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, (schedule_keeps_clocks _).1, (schedule_keeps_clocks _).2⟩)
+  | exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, (schedule_keeps_clocks _).1, (schedule_keeps_clocks _).2⟩
+  | exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, by simp [serve, setTask], by simp [serve, setTask]⟩)
 
 @[simp] theorem ret_calm (s : KState) (t : Task) (r : List Nat) : Calm s (ret s t r) := by calm_leaf
 
@@ -2303,7 +2393,7 @@ theorem block_io_confined (s : KState) (num a0 a1 a2 a3 a4 : Nat)
 /-! ## Time -/
 
 theorem schedule_tasks (s : KState) : (schedule s).tasks = s.tasks := by
-  unfold schedule; split <;> rfl
+  obtain ⟨c, t, h⟩ := schedule_eq s; rw [h]
 
 /-- **A tick wakes only tasks whose time has come.** If a timer tick changes a task's
 status, the task was asleep until at most the new tick, or waiting for a message with a
@@ -2316,7 +2406,7 @@ theorem tick_wakes_only_sleepers (s : KState) (j : Nat) {u u' : Task}
     (∃ e w, u.status = .receiving e w ∧ w ≠ 0 ∧ w ≤ s.now + 1 ∧ u'.status = .ready ∧
       u'.result = eTimeout :: .nil) := by
   unfold tick at hu'
-  rw [schedule_tasks] at hu'
+  rw [rotate_tasks] at hu'
   dsimp only at hu'
   rw [nth?_wakeSleepers, hu] at hu'
   simp only [Option.map_some, Option.some.injEq] at hu'
@@ -2515,25 +2605,183 @@ theorem hits_every (i j n : Nat) (hj : j < n) : ∃ k < n, (i + k) % n = j := by
     rw [Nat.add_mod, Nat.mod_eq_of_lt (a := j + n - i % n) (by omega),
       show i % n + (j + n - i % n) = j + n by omega, Nat.add_mod_right, Nat.mod_eq_of_lt hj]
 
-/-- **The scheduler never runs a waiting or stopped task while a ready one exists, and never
-one another core is running.** If some task is ready and no other core runs it, the task the
-scheduler picks is ready and no other core runs it. -/
-theorem schedule_picks_ready (s : KState) (h : ∃ i, runnable s.busy s.tasks i = true) :
-    runnable (schedule s).busy (schedule s).tasks (schedule s).cur = true := by
+/-- The round robin never runs a waiting or stopped task while one may run here. -/
+theorem rotate_picks_ready (s : KState) (h : ∃ i, runnable s.busy s.tasks i = true) :
+    runnable (rotate s).busy (rotate s).tasks (rotate s).cur = true := by
   obtain ⟨i, hi⟩ := h
   have hlt : i < len s.tasks := by
     unfold runnable at hi
     simp only [Bool.and_eq_true] at hi
     exact isReady_lt hi.1
-  unfold schedule
+  unfold rotate
   split
   · rename_i j hj
     exact findReady_ready hj
   · rename_i hnone
-    obtain ⟨k, hk, hkj⟩ := hits_every (s.cur + 1) i (len s.tasks) hlt
+    obtain ⟨k, hk, hkj⟩ := hits_every (s.turn + 1) i (len s.tasks) hlt
     have := findReady_none hnone k hk
     rw [hkj, hi] at this
     exact absurd this (by simp)
+
+/-- **The scheduler never runs a waiting or stopped task while a ready one exists, and never
+one another core is running.** If some task is ready and no other core runs it, the task the
+scheduler picks is ready and no other core runs it. -/
+theorem schedule_picks_ready (s : KState) (h : ∃ i, runnable s.busy s.tasks i = true) :
+    runnable (schedule s).busy (schedule s).tasks (schedule s).cur = true := by
+  unfold schedule
+  split
+  · assumption
+  · exact rotate_picks_ready _ h
+
+/-! ## Wake-ups run next
+
+A task woken by a message or an interrupt runs on the core that woke it, ahead of the tasks
+waiting for their turn: a key goes from the input driver to the display to the app without
+waiting behind programs that only compute. The preference is for one pick only, and the
+timer never follows it (`tick`, `rotate`), so it cannot keep a ready task waiting for good
+(`run_bounded_wait` in `Fair.lean`). -/
+
+/-- **A task a wake-up chose runs next.** When the task running here stops, the task a
+message or an interrupt woke last runs here, before any task waiting for its turn, if it
+may run here: it is ready and no other core runs it. -/
+theorem schedule_prefers_woken (s : KState) (h : runnable s.busy s.tasks s.next = true) :
+    (schedule s).cur = s.next := by
+  unfold schedule; simp [h]
+
+/-- **A wake-up's choice lasts one pick.** Whatever the scheduler picks, no task is chosen
+by a wake-up any more, until the next one. -/
+theorem schedule_spends_woken (s : KState) : (schedule s).next = noTask := by
+  obtain ⟨c, t, h⟩ := schedule_eq s; rw [h]
+
+/-- With no wake-up's choice that may run here, the scheduler is the round robin. -/
+theorem schedule_rotates (s : KState) (h : runnable s.busy s.tasks s.next = false) :
+    schedule s = rotate { s with next := noTask } := by
+  unfold schedule; simp [h]
+
+/-- **An interrupt runs its holder at once.** If interrupt line `n` firing changes task
+`j`'s status (it woke the task waiting for the line), and no other core runs `j`, then `j`
+runs now on the core that took the interrupt, and the task it took the core from runs
+after it. -/
+theorem irq_runs_holder (s : KState) (n j : Nat) {u u' : Task}
+    (hu : nth? s.tasks j = some u) (hu' : nth? (irqFired s n).tasks j = some u')
+    (hch : u'.status ≠ u.status) (hb : memNat j s.busy = false) :
+    (irqFired s n).cur = j ∧ (irqFired s n).next = s.cur := by
+  unfold irqFired at hu' ⊢
+  cases hk : findIrqWaiter n s.tasks 0 with
+  | none =>
+    simp only [hk] at hu'
+    split at hu'
+    · rw [hu] at hu'; cases hu'; exact absurd rfl hch
+    · simp [hu] at hu'; subst hu'; exact absurd rfl hch
+  | some k =>
+    cases hv : nth? s.tasks k with
+    | none => simp only [hk, hv] at hu'; rw [hu] at hu'; cases hu'; exact absurd rfl hch
+    | some v =>
+      simp only [hk, hv, preempt_tasks] at hu' ⊢
+      by_cases hkj : k = j
+      · subst hkj
+        have hr : runnable (setTask s k { v with status := .ready, result := 0 :: .nil }).busy
+            (setTask s k { v with status := .ready, result := 0 :: .nil }).tasks k = true := by
+          simp [runnable, isReady, setTask, nth?_setNth, hv, hb]
+        unfold preempt; rw [if_pos hr]; exact ⟨rfl, rfl⟩
+      · simp [setTask, nth?_setNth, hkj, hu] at hu'; subst hu'; exact absurd rfl hch
+
+/-- **An interrupt never runs a task another core runs.** Taking an interrupt either leaves
+this core's task as it was or gives it a task that no other core is running. -/
+theorem irq_not_on_other_core (s : KState) (n : Nat) :
+    (irqFired s n).cur = s.cur ∨ memNat (irqFired s n).cur (irqFired s n).busy = false := by
+  unfold irqFired
+  split
+  · split
+    · unfold preempt
+      split
+      · rename_i hr
+        right
+        simp only [runnable, Bool.and_eq_true, Bool.not_eq_true'] at hr
+        exact hr.2
+      · exact Or.inl rfl
+    · exact Or.inl rfl
+  · split <;> exact Or.inl rfl
+
+/-- A send or a call that wakes a task (the receiver) makes it run next here; a call, which
+waits for the reply, runs it now. -/
+theorem send_wakes_next (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : Bool) {j : Nat}
+    {u u' : Task} (hj : j ≠ s.cur) (hu : nth? s.tasks j = some u) (hnr : u.status ≠ .ready)
+    (hu' : nth? (sysSend s t ci w0 w1 w2 gi call).state.tasks j = some u') (hr' : u'.status = .ready)
+    (hb : memNat j s.busy = false) :
+    (sysSend s t ci w0 w1 w2 gi call).state.next = j ∨ (sysSend s t ci w0 w1 w2 gi call).state.cur = j := by
+  generalize hr : sysSend s t ci w0 w1 w2 gi call = r at hu' ⊢
+  unfold sysSend at hr
+  repeat' (first | split at hr | dsimp only at hr)
+  all_goals subst hr
+  all_goals simp only [ret, wake_tasks, wake_cur, schedule_tasks, setTask, nth?_setNth, Ne.symm hj, if_false,
+    Option.map_some, hu] at hu'
+  all_goals first
+    | (cases hu'; exact absurd hr' hnr)
+    | (split at hu'
+       · subst_vars
+         first
+           | (left; rfl)
+           | (right; apply schedule_prefers_woken
+              have := Ne.symm hj
+              simp_all [runnable, isReady, wake, setTask, nth?_setNth])
+       · cases hu'; exact absurd hr' hnr)
+
+/-- A receive that wakes a task (a plain sender whose message it took) makes it run next
+here. -/
+theorem recv_wakes_next (s : KState) (t : Task) (ci : Nat) (block : Bool) (deadline : Nat) {j : Nat}
+    {u u' : Task} (hj : j ≠ s.cur) (hu : nth? s.tasks j = some u) (hnr : u.status ≠ .ready)
+    (hu' : nth? (sysRecv s t ci block deadline).state.tasks j = some u') (hr' : u'.status = .ready) :
+    (sysRecv s t ci block deadline).state.next = j := by
+  generalize hr : sysRecv s t ci block deadline = r at hu' ⊢
+  unfold sysRecv at hr
+  repeat' (first | split at hr | dsimp only at hr)
+  all_goals subst hr
+  all_goals simp only [ret, serve, wakeSender_tasks, wakeSender_cur, schedule_tasks, setTask, nth?_setNth,
+    Ne.symm hj, if_false, Option.map_some, hu] at hu'
+  all_goals first
+    | (cases hu'; exact absurd hr' hnr)
+    | (split at hu'
+       · subst_vars
+         simp only [serve, wakeSender]
+         split
+         · cases hu'; simp_all
+         · first | rfl | simp_all
+       · cases hu'; exact absurd hr' hnr)
+
+/-- A reply that wakes a task (its caller) makes it run next here. -/
+theorem reply_wakes_next (s : KState) (t : Task) (slot w0 w1 w2 : Nat) {j : Nat}
+    {u u' : Task} (hj : j ≠ s.cur) (hu : nth? s.tasks j = some u) (hnr : u.status ≠ .ready)
+    (hu' : nth? (sysReply s t slot w0 w1 w2).state.tasks j = some u') (hr' : u'.status = .ready) :
+    (sysReply s t slot w0 w1 w2).state.next = j := by
+  generalize hr : sysReply s t slot w0 w1 w2 = r at hu' ⊢
+  unfold sysReply at hr
+  repeat' (first | split at hr | dsimp only at hr)
+  all_goals subst hr
+  all_goals simp only [ret, wake_tasks, wake_cur, setTask, nth?_setNth, Ne.symm hj, if_false, Option.map_some,
+    hu] at hu'
+  all_goals first
+    | (cases hu'; exact absurd hr' hnr)
+    | (split at hu'
+       · subst_vars; rfl
+       · cases hu'; exact absurd hr' hnr)
+
+/-- **A message wakes a task to run next.** When a send, a call, a receive or a reply wakes a
+task (one that was not ready is now), that task runs next on this core, when the caller
+stops (`schedule_prefers_woken`); a call, which waits for the reply, runs it now. (A task
+not ready is never running on another core, which the machine layer says in `enter`.) -/
+theorem wake_runs_next {s : KState} {t : Task} {num a0 a1 a2 a3 a4 : Nat}
+    (hr : (∃ ci gi call, runCall s t num a0 a1 a2 a3 a4 = sysSend s t ci a0 a1 a2 gi call) ∨
+      (∃ ci block deadline, runCall s t num a0 a1 a2 a3 a4 = sysRecv s t ci block deadline) ∨
+      (∃ slot, runCall s t num a0 a1 a2 a3 a4 = sysReply s t slot a0 a1 a2))
+    {j : Nat} {u u' : Task} (hj : j ≠ s.cur) (hu : nth? s.tasks j = some u) (hnr : u.status ≠ .ready)
+    (hu' : nth? (runCall s t num a0 a1 a2 a3 a4).state.tasks j = some u') (hr' : u'.status = .ready)
+    (hb : memNat j s.busy = false) :
+    (runCall s t num a0 a1 a2 a3 a4).state.next = j ∨ (runCall s t num a0 a1 a2 a3 a4).state.cur = j := by
+  rcases hr with ⟨ci, gi, call, h⟩ | ⟨ci, block, deadline, h⟩ | ⟨slot, h⟩ <;> rw [h] at hu' ⊢
+  · exact send_wakes_next s t ci a0 a1 a2 gi call hj hu hnr hu' hr' hb
+  · exact Or.inl (recv_wakes_next s t ci block deadline hj hu hnr hu' hr')
+  · exact Or.inl (reply_wakes_next s t slot a0 a1 a2 hj hu hnr hu' hr')
 
 /-! ## The certified clock
 
@@ -2547,7 +2795,7 @@ programming (trusted, see TRUST.md). -/
 @[simp] theorem now_setTask (s : KState) (j : Nat) (t : Task) : (setTask s j t).now = s.now := rfl
 
 @[simp] theorem now_schedule (s : KState) : (schedule s).now = s.now := by
-  unfold schedule; split <;> rfl
+  obtain ⟨c, t, h⟩ := schedule_eq s; rw [h]
 
 @[simp] theorem now_killCurrent (s : KState) : (killCurrent s).now = s.now := by
   unfold killCurrent; split <;> simp
@@ -2607,8 +2855,6 @@ theorem syscall_now (s : KState) (num a0 a1 a2 a3 a4 : Nat) :
 
 @[simp] theorem ret_wall (s : KState) (t : Task) (r : List Nat) : (ret s t r).state.wall = s.wall := rfl
 @[simp] theorem setTask_wall (s : KState) (j : Nat) (t : Task) : (setTask s j t).wall = s.wall := rfl
-@[simp] theorem schedule_wall (s : KState) : (schedule s).wall = s.wall := by
-  unfold schedule; split <;> rfl
 @[simp] theorem killCurrent_wall (s : KState) : (killCurrent s).wall = s.wall := by
   unfold killCurrent; split <;> simp
 

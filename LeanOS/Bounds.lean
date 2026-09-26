@@ -8,7 +8,9 @@ slots, result registers and measurement, the pending interrupts, the USB channel
 what the other cores run, and whom each endpoint served last. The runtime keeps it on the
 kernel heap, which has a fixed size (TRUST.md). This file proves that no sequence of system calls, with any arguments,
 can make any of those lists grow past a fixed length, and so that the whole state never
-needs more than `stateMax` heap objects (`stateSize_le`).
+needs more than `stateMax` heap objects (`stateSize_le`). Its numbers (the task running, the
+clock, the time of day, whom a wake-up chose to run next, where the round robin is) take
+none.
 
 * `task_bounded`: in every reachable state, every task holds at most `maxCaps` (64)
   capabilities, at most `userPages` (8192) mappings (no two of them for the same virtual
@@ -249,11 +251,30 @@ theorem small_setTask {s : KState} (hs : Small hp lp s) {j : Nat} {t : Task} (ht
   ⟨fun u hu => (mem_setNth hu).elim (hs.tasks u) (fun h => h ▸ ht), hs.pending, hs.lines, hs.usbDma,
     hs.usbSize, hs.busy, hs.served⟩
 
+/-- Smallness is about the lists only: which task runs, and the task numbers the scheduler
+keeps (`next`, `turn`), take no heap objects. -/
+theorem Small.of_eq {s s' : KState} (hs : Small hp lp s) (ht : s'.tasks = s.tasks) (hp' : s'.pending = s.pending)
+    (hd : s'.usbDma = s.usbDma) (hz : s'.usbSize = s.usbSize) (hb : s'.busy = s.busy)
+    (hv : s'.served = s.served) : Small hp lp s' :=
+  ⟨ht ▸ hs.tasks, hp' ▸ hs.pending, hp' ▸ hs.lines, hd ▸ hs.usbDma, hz ▸ hs.usbSize, hb ▸ hs.busy,
+    hv ▸ hs.served⟩
+
+theorem small_rotate {s : KState} (hs : Small hp lp s) : Small hp lp (rotate s) :=
+  hs.of_eq (by simp) (by simp) (by simp) (by simp) (by simp) (by simp)
+
 theorem small_schedule {s : KState} (hs : Small hp lp s) : Small hp lp (schedule s) := by
-  unfold schedule
-  split
-  · exact ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy, hs.served⟩
-  · exact hs
+  obtain ⟨c, t, h⟩ := schedule_eq s
+  rw [h]; exact ⟨hs.tasks, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy, hs.served⟩
+
+theorem small_wake {s : KState} (hs : Small hp lp s) (j : Nat) : Small hp lp (wake s j) :=
+  hs.of_eq rfl rfl rfl rfl rfl rfl
+
+theorem small_wakeSender {s : KState} (hs : Small hp lp s) (b : Bool) (j : Nat) :
+    Small hp lp (wakeSender b s j) :=
+  hs.of_eq (by simp) (by simp) (by simp) (by simp) (by simp) (by simp)
+
+theorem small_preempt {s : KState} (hs : Small hp lp s) (j : Nat) : Small hp lp (preempt s j) :=
+  hs.of_eq (by simp) (by simp) (by simp) (by simp) (by simp) (by simp)
 
 /-- Which task an endpoint served last is one entry of a list of `numEndpoints`. -/
 theorem small_serve {s : KState} (hs : Small hp lp s) (e j : Nat) : Small hp lp (serve s e j) :=
@@ -330,7 +351,7 @@ theorem small_sysReply {slot w0 w1 w2 : Nat} : Small hp lp (sysReply s t slot w0
     split
     · split
       · rename_i u hu
-        exact small_ret (small_setTask hs ((hs.task hu).st _ (by len_le))) ht' (by len_le)
+        exact small_ret (small_wake (small_setTask hs ((hs.task hu).st _ (by len_le))) _) ht' (by len_le)
       · exact small_ret hs ht' (by len_le)
     · exact small_ret hs ht' (by len_le)
 
@@ -450,9 +471,9 @@ theorem small_sysSend {ci w0 w1 w2 gi : Nat} {call : Bool} :
               split
               · rename_i u' hd
                 split
-                · exact small_schedule (small_setTask (small_setTask hs (deliver_small (hs.task hu) hd))
-                    (ht.st _ (by len_le)))
-                · exact small_ret (small_setTask hs (deliver_small (hs.task hu) hd)) ht (by len_le)
+                · exact small_schedule (small_wake (small_setTask (small_setTask hs (deliver_small (hs.task hu) hd))
+                    (ht.st _ (by len_le))) _)
+                · exact small_ret (small_wake (small_setTask hs (deliver_small (hs.task hu) hd)) _) ht (by len_le)
               · exact small_ret hs ht (by len_le)
             · exact small_ret hs ht (by len_le)
           · exact small_schedule (small_setTask hs (ht.st _ (by len_le)))
@@ -475,7 +496,7 @@ theorem small_sysRecv {ci : Nat} {block : Bool} {deadline : Nat} :
               dsimp only
               -- `try`: a receive that forgot whom it served must break `recv_in_turn`, not this
               try apply small_serve
-              refine small_setTask (small_setTask hs ?_) (deliver_small ht hd)
+              refine small_wakeSender (small_setTask (small_setTask hs ?_) (deliver_small ht hd)) _ _
               split
               · exact (hs.task hu).st _ (by len_le)
               · exact (hs.task hu).st _ (by len_le)
@@ -597,7 +618,7 @@ theorem TaskSmall.wake {t : Task} (h : TaskSmall hp t) (now : Nat) : TaskSmall h
 
 theorem small_tick {s : KState} (hs : Small hp lp s) : Small hp lp (tick s) := by
   unfold tick
-  apply small_schedule
+  apply small_rotate
   refine ⟨fun u hu => ?_, hs.pending, hs.lines, hs.usbDma, hs.usbSize, hs.busy, hs.served⟩
   obtain ⟨t, ht, rfl⟩ := mem_wakeSleepers hu
   exact (hs.tasks t ht).wake _
@@ -636,7 +657,7 @@ theorem small_irqFired {s : KState} (hs : Small hp lp s) (n : Nat) (hn : lp n) :
   unfold irqFired
   split
   · split
-    · rename_i u hu; exact small_setTask hs ((hs.task hu).st _ (by len_le))
+    · rename_i u hu; exact small_preempt (small_setTask hs ((hs.task hu).st _ (by len_le))) _
     · exact hs
   · split
     · exact hs
@@ -702,6 +723,7 @@ theorem small_reachable {s : KState} (h : Reachable s) : Small (fun _ => True) (
   | usb v _ ih => exact small_usbDone ih v
   | enter c b0 b1 b2 _ ih => exact small_enter ih c b0 b1 b2
   | resched _ ih => exact small_schedule ih
+  | rotate _ ih => exact small_rotate ih
 
 /-- **Every task's lists are bounded.** In every reachable state, every task holds at most
 `maxCaps` (64) capabilities, at most `userPages` (8192) mappings, no two of them for the
@@ -734,6 +756,7 @@ inductive Driven : KState → Prop
   | usb {s} (v : Nat) : Driven s → Driven (usbDone s v)
   | enter {s} (c b0 b1 b2 : Nat) : Driven s → Driven (enter s c b0 b1 b2)
   | resched {s} : Driven s → Driven (schedule s)
+  | rotate {s} : Driven s → Driven (rotate s)
 
 /-- So every theorem about reachable states holds for them. -/
 theorem Driven.reachable {s : KState} (h : Driven s) : Reachable s := by
@@ -750,6 +773,7 @@ theorem Driven.reachable {s : KState} (h : Driven s) : Reachable s := by
   | usb v _ ih => exact .usb v ih
   | enter c b0 b1 b2 _ ih => exact .enter c b0 b1 b2 ih
   | resched _ ih => exact .resched ih
+  | rotate _ ih => exact .rotate ih
 
 theorem small_driven {s : KState} (h : Driven s) :
     Small (fun hash => len hash ≤ 8) (fun n => n ∈ irqLines) s := by
@@ -766,6 +790,7 @@ theorem small_driven {s : KState} (h : Driven s) :
   | usb v _ ih => exact small_usbDone ih v
   | enter c b0 b1 b2 _ ih => exact small_enter ih c b0 b1 b2
   | resched _ ih => exact small_schedule ih
+  | rotate _ ih => exact small_rotate ih
 
 /-- **The state is bounded.** When the machine layer calls the kernel as it does, the state
 has exactly `numTasks` tasks, each within `task_bounded`'s limits and measured with at most

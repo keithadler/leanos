@@ -16,8 +16,8 @@ leanos splits the kernel in two:
 These hold for every state the kernel can reach: `init`, then any sequence of system calls
 (including starting and restarting programs) with any arguments, timer ticks, faults,
 interrupts, result loads, and boot checks with any measurement. They are in
-`LeanOS/Proofs.lean`, the bounds on the state in `LeanOS/Bounds.lean`, and fair receive in
-`LeanOS/Fair.lean`.
+`LeanOS/Proofs.lean`, the bounds on the state in `LeanOS/Bounds.lean`, and fair receive and
+fair running in `LeanOS/Fair.lean`.
 
 Tasks can hand each other memory, so the central guarantee is about where memory can go.
 The boot manifest (`initCaps` in `Kernel.lean`) fixes which task can send with the grant
@@ -40,9 +40,11 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `maps_in_range` | Every mapping is inside the 8192-page user window and the frame pool. |
 | `derive_never_amplifies` | A derived capability covers only frames its parent covers (or names the same endpoint), keeps its badge, and allows nothing the parent does not. |
 | `write_reads_only_readable` | When `write` asks the machine layer to print user memory, every byte is in a page the calling task has mapped readable. |
-| `schedule_picks_ready` | If any task is ready that no other core is running, the scheduler picks such a task. |
+| `schedule_picks_ready`, `rotate_picks_ready` | If any task is ready that no other core is running, the scheduler picks such a task, and so does the round robin every timer interrupt runs. |
 | `syscall_wall`, `only_usb_driver_sets_time` | Only `setwall` changes the time of day, and only the USB driver, through the time capability it alone was given, ever sets it. |
 | `schedule_not_on_other_core`, `enter_only_cores` | The scheduler never picks a task another core is running, so no task runs on two cores at once. Telling the kernel which task each core runs changes nothing else. |
+| `wake_runs_next`, `schedule_prefers_woken`, `schedule_spends_woken` | A send, a call, a receive or a reply that wakes a task (one not ready is now) makes it the task to run next on this core, when the caller stops; a call, which waits for the reply, runs it at once (if no other core runs it). When the task running on a core stops, the scheduler picks the task a wake-up chose last, if it may run there, before any task waiting for its turn, and the choice is spent on that one pick. |
+| `irq_runs_holder`, `irq_not_on_other_core` | An interrupt that wakes the task waiting for it runs that task at once on the core that took it (unless another core runs it), and the task it took the core from runs after it. An interrupt never gives a core a task another core is running. |
 | `reply_grants_nothing` | A reply changes no task's capabilities or mappings. |
 | `reply_wakes_only_caller` | A reply wakes only a task waiting for this replier. |
 | `only_verified_runs` | Every task that can run in a manifest slot was loaded with exactly the code and assets the manifest names. The six open slots (10 to 15) run whatever program Terminal or Apps starts them with; that program is measured and shown, and holds only what the manifest gives the slot. |
@@ -59,7 +61,7 @@ right to which (`Edge`). Endpoint capabilities themselves never move.
 | `only_usb_driver_drives_usb`, `usb_writes_safe`, `usb_dma_confined`, `usb_dma_own_memory` | Only the USB driver reaches the USB controller. A plain register write it passes on never starts a channel, sets a DMA address or transfer size, forces device mode or turns on descriptor DMA; a transfer starts only inside one run of the driver's own frames, so the controller only ever touches memory the manifest gave the driver. |
 | `start_revokes` | When `start` has the machine layer load slot `k`, the slot holds the manifest's fresh, unverified task, and no other task holds a capability to or a mapping of any of the slot's frames, is waiting to send a message granting one, or holds a reply slot for the old run. |
 | `task_bounded` | Every task holds at most 64 capabilities, at most 8192 mappings (no two for the same virtual page), at most 8 reply slots and at most 7 result registers. |
-| `state_bounded`, `stateSize_le` | When the machine layer calls the kernel as it does (`Driven`: a boot check hands over the eight words of a SHA-256, as `exVerify` does, and only the lines in `irqLines` fire), the state also has exactly 18 tasks, each measured with at most eight words, at most one pending entry per interrupt line, eight DMA addresses and eight transfer sizes for the USB channels, three other cores, and one last-served task for each of the three endpoints: in all, at most 447,559 heap objects. What that means in bytes is below, under `rt/runtime.c`. |
+| `state_bounded`, `stateSize_le` | When the machine layer calls the kernel as it does (`Driven`: a boot check hands over the eight words of a SHA-256, as `exVerify` does, and only the lines in `irqLines` fire), the state also has exactly 18 tasks, each measured with at most eight words, at most one pending entry per interrupt line, eight DMA addresses and eight transfer sizes for the USB channels, three other cores, and one last-served task for each of the three endpoints: in all, at most 447,559 heap objects. (The scheduler's two task numbers, whom a wake-up chose and where the round robin is, take none.) What that means in bytes is below, under `rt/runtime.c`. |
 | `launch_fixed`, `only_display_launches` | Launch capabilities never move: only the display server starts the manifest's apps, and only Terminal and Apps start the open slots. Nothing can restart the display server, the input driver, the file server or the tests. |
 | `sysStop_only`, `only_launchers_stop` | A stop changes only the program it names, and only the display server (the apps it starts), Terminal or Apps (the open slots) can stop one: nothing can stop the display server, the input driver, the file server, the USB driver or the tests. |
 
@@ -83,6 +85,24 @@ that a server ever calls `recv`, which is its own code, or that a sender is ever
 A send that finds its receiver already waiting is delivered at once and moves nothing: a
 server waits only when nobody is waiting to send to it, so it passes nobody over.
 
+Fair running, also in `LeanOS/Fair.lean`. A task a message or an interrupt woke runs first
+(above), for one pick. Otherwise the round robin picks: the first task that may run on the
+core after the one it picked last (`KState.turn`), wrapping around (`rotate`). A wake-up's
+pick leaves the round where it was, and every timer interrupt, on every core, is a round
+robin pick (`tick` on core 0, `rotate` on the others). A task is "waiting to run" when it is
+ready, no other core runs it, and it is not the task of the core in the kernel (`Waiting`).
+
+| Theorem | Statement |
+|---|---|
+| `turn_only_by_round_robin` | Every step of the kernel either leaves the round where it was, or is a round robin pick (`RoundRobin`): the round robin's search, from the task after the one it picked last, found a task that may run here, which now runs here, and the round is at it. |
+| `rr_behind_lt` | A round robin pick that leaves task j waiting moves the round strictly closer to j. |
+| `run_wait_behind`, `run_bounded_wait` | Bounded waiting. Take any run of steps from a reachable state during which task j stays waiting to run, in every state of the run. Then the round robin picks other tasks at most as many times as it looks at tasks before j, so fewer than 18 times, however often wake-ups run other tasks first. |
+| `timer_round_robin`, `timer_bounded_wait` | Every timer interrupt that leaves j waiting is such a pick. So while a task stays ready and no core runs it, fewer than 18 timer interrupts happen, on all the cores together: with each core's timer every 10 ms, a ready task waits less than 180 ms even if only core 0 takes them. |
+
+These are about the kernel's choice. That the machine layer runs the task the kernel picks,
+says truly what the other cores run, and takes a timer interrupt on each core every 10 ms is
+the machine layer's part (below).
+
 Revocation rests on one more invariant: every run of frames a task holds stays inside one
 slot's memory (`RunOK`), so taking back the runs that start in a slot takes back exactly
 that slot's frames and nothing else.
@@ -103,14 +123,17 @@ MMU model in `LeanOS/Arm.lean`:
 | `el0_only_pool_fb_uart` | User mode reaches only the frame pool, the framebuffer and the UART's page. |
 | `el0_uart_only_input` | Only the input driver's user mode can touch the UART's registers. |
 
-`make mutants` breaks the kernel in 108 specific ways (a `derive` that amplifies, forges a
+`make mutants` breaks the kernel in 124 specific ways (a `derive` that amplifies, forges a
 badge or cuts past the end of a run, a send without the grant right, an endpoint granted like a frame, a manifest that
 gives mallory one more right, the framebuffer or a launch capability, a framebuffer address that overlaps the
 pool, a kernel page-table entry missing its execute-never bit, a level-3 table that keeps the
 wrong mapping of a page or maps page 0 where nothing is mapped, a `start` that forgets to take back
 mappings, capabilities, waiting grants or reply slots, a `map` that keeps the old mappings of the pages
 it maps, a `derive`, a grant or a call past its limit, a receive that searches from task 0 again, from the
-task it served last, or one task short, or forgets whom it served, and so on) and checks that the proofs reject every one.
+task it served last, or one task short, or forgets whom it served, a scheduler that ignores whom a wake-up
+chose or keeps choosing it, a timer that follows a wake-up's choice, a round robin that forgets where it is,
+an interrupt that waits for its holder's turn or runs it on a core already running it, and so on) and
+checks that the proofs reject every one.
 
 `make test` checks that each theorem rests only on Lean's standard axioms (`propext`,
 `Classical.choice`, `Quot.sound`) and never on `sorry`.
@@ -469,15 +492,17 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   - tell Lean, after taking the lock, which task this core runs and which each other core
     runs (`enter_lean`). This is what makes `cur` in every proof the task that made the
     call, and what `schedule_not_on_other_core` rests on;
-  - run only a task Lean calls `runnable` for this core (`pick`);
+  - run only a task Lean calls `runnable` for this core (`pick`): after an interrupt, the
+    task Lean now names, which may be the one the interrupt woke;
   - before loading a slot, make every other core running that slot's task leave user mode
     (`evict`: a wake-up interrupt, then wait until it is out), and drop what that core was
     doing when it gets the lock. A core whose task was stopped from another core drops the
     call it was making the same way;
   - use TLB maintenance that reaches every core (`tlbi vmalle1is`), since a task may run
     on any core and another core may change its tables.
-  Device interrupts go to core 0 only; timer ticks from cores 1-3 only reschedule, so
-  `now` counts core 0's ticks. Disk, USB and board requests run with the lock held, so
+  Device interrupts go to core 0 only; timer ticks from cores 1-3 only move the round robin
+  on (`exRotate`), so `now` counts core 0's ticks. `timer_bounded_wait` counts timer
+  interrupts; that each core takes one every 10 ms is this layer's timer programming. Disk, USB and board requests run with the lock held, so
   while one is in progress the other cores wait to enter the kernel.
 - Interrupt routing: `irq_init` enables exactly the lines Lean lists (`irqLines`); when one
   fires, `handle_irq` masks it before telling Lean, and unmasks it only when a Reply says
@@ -642,9 +667,11 @@ the kernel.
 - The kernel's own view of memory (EL1 permissions) is not yet modelled; only user
   mode's is.
 - No protection against timing or cache side channels.
-- Only one scheduling property is proved (a live task is always picked). The scheduler's
-  fairness is not. What is proved about fairness is the order in which a server takes the
-  messages waiting for it (`recv_bounded_wait`), not that the server or the sender gets to run.
+- Scheduling is proved as the kernel's choice: a live task is always picked, a task a
+  wake-up chose runs next, and a ready task is picked within 18 timer interrupts
+  (`timer_bounded_wait`). What a task does with its turn is its own code: that a server calls
+  `recv`, or answers, is not proved. Time slices are not weighed: the round robin gives
+  every ready task the same turn, and only a wake-up runs a task out of turn.
 - The framebuffer is the only device memory given to a user task, and it cannot start
   DMA. Devices that can (USB, SD) will need an IOMMU-free answer on the Pi, which has
   none: their drivers will have to stay trusted or be confined by other means.
@@ -656,8 +683,9 @@ the kernel.
 - Endpoint, interrupt and launch capabilities are fixed by the boot manifest; tasks cannot
   create or pass them yet (stage 6, next). Granted frames are taken back only when their
   owner's slot is started again; a running app cannot take back one grant on its own yet.
-- Which task *runs* is proved only up to the scheduler: nothing proves that a started app
-  eventually gets to run, or that the display server starts what the user clicked.
+- Which task *runs* is proved only up to the scheduler and the machine layer's timer: a
+  started app that is ready is picked within 18 timer interrupts, but nothing proves that the
+  display server starts what the user clicked.
 - The network stack (`user/netstack.h`, in the USB driver) is trusted C, not proved: it
   sees each network request and Terminal's buffer while it answers it, as the file server
   does. What is proved is where its memory can go: the adapter's DMA only into the driver's

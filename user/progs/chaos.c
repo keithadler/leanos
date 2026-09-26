@@ -21,6 +21,13 @@
             that carries one, which is every file request.
     wins    opens small windows until the display refuses one, then waits.
     nap     sleeps, a second at a time.
+    spin    a CPU hog: a tight loop that never makes a system call, so only a timer tick
+            takes its core away (test/responsive.sh runs several).
+    keys    a window that shows each key it gets: it fills the window with a color from the
+            key, has the display draw it (a poll, which the display answers once it has
+            put the window on the screen), then says "drew 'x'", so a test can time a key
+            from the serial line to the screen; or, for keys between '[' and ']', how long
+            the whole run took (test/responsive.sh).
 
    Every line it prints starts "chaos: NAME in slot N". What it checks itself (a file that
    reads back different, a limit the kernel does not keep) it counts as a surprise. */
@@ -35,8 +42,9 @@
 #define STACK_FIRST 8188         /* the stack's four pages, left as they are */
 #define CHURN_PAGE 400           /* where busy maps and unmaps its pieces */
 
-enum { HOG, HOGX, HOGF, BUSY, FILES, PEST, WINS, NAP, UNKNOWN };
-static const char *const mode_names[] = {"hog", "hogx", "hogf", "busy", "files", "pest", "wins", "nap"};
+enum { HOG, HOGX, HOGF, BUSY, FILES, PEST, WINS, NAP, SPIN, KEYS, UNKNOWN };
+static const char *const mode_names[] = {"hog", "hogx", "hogf", "busy", "files", "pest", "wins", "nap", "spin",
+                                         "keys"};
 
 struct chaos {
     struct fs_client fs;
@@ -212,6 +220,59 @@ static void pest(struct chaos *c) {
     flush(&l);
 }
 
+/* Show each key: the window in a color from the key, drawn on the screen before it says so.
+   Between '[' and ']' it says nothing per key, and at ']' how many keys it drew and in how
+   many timer ticks (the kernel's clock) and microseconds since '[': a run of keys typed at
+   once, which the machine takes at its own pace, timed by the machine alone. */
+static void keys(struct chaos *c) {
+    c->windows = open_window(APP_WIN_OFFSET, 0x202020) == OK;
+    say(c, c->windows ? "a window, waiting for keys" : "NO WINDOW", 0, 0);
+    unsigned *px = (unsigned *)PAGE(SPARE_PAGE + APP_WIN_OFFSET);
+    int run = 0;
+    u64 n = 0, tick0 = 0, us0 = 0;
+    struct event e = app_wait(0);
+    for (;;) {
+        if (e.kind == EV_CLOSE) exit_task();
+        if (e.kind != EV_KEY) { e = app_wait(0); continue; }
+        u64 k = e.a;
+        if (k == '[') {
+            run = 1;
+            n = 0;
+            tick0 = sys0(SYS_TIME).x[1];
+            us0 = micros();
+        }
+        for (int i = 0; i < WIN_W * WIN_H; i++) px[i] = 0x404040 + (unsigned)k * 0x010203;
+        struct event next = app_poll(1);      /* answered once the window is on the screen */
+        struct line l = {.n = 0};
+        if (k == ']' && run) {
+            run = 0;
+            put_s(&l, "chaos: keys in slot ");
+            put_dec(&l, c->me);
+            put_s(&l, ": drew ");
+            put_dec(&l, n);
+            put_s(&l, " keys in ");
+            put_dec(&l, sys0(SYS_TIME).x[1] - tick0);
+            put_s(&l, " ticks, ");
+            put_dec(&l, micros() - us0);
+            put_s(&l, " us\n");
+            flush(&l);
+        } else if (run) {
+            n += k != '[';
+        } else {
+            put_s(&l, "chaos: keys in slot ");
+            put_dec(&l, c->me);
+            put_s(&l, ": drew '");
+            char ch[2] = {k >= 32 && k < 127 ? (char)k : '?', 0};
+            put_s(&l, ch);
+            put_s(&l, "' at ");
+            put_dec(&l, micros());
+            put_s(&l, " us\n");
+            flush(&l);
+        }
+        e = next.kind != EV_NONE ? next : app_wait(0);
+    }
+}
+
 __attribute__((section(".text.start"))) void _start(void) {
     struct chaos *c = (struct chaos *)DATA;
     memset(c, 0, sizeof *c);
@@ -256,6 +317,12 @@ __attribute__((section(".text.start"))) void _start(void) {
     case NAP:
         say(c, "asleep", 0, 0);
         for (;;) sleep_ms(1000);
+    case SPIN:
+        say(c, "spinning", 0, 0);
+        for (volatile u64 n = 0;; n++) {}
+    case KEYS:
+        keys(c);
+        exit_task();
     default:
         say(c, "run under a name it does not know", 0, 0);
         exit_task();

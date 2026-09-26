@@ -51,6 +51,7 @@ lean_object *leanos_reply_usb_d(lean_object *r);
 lean_object *leanos_usb_done(lean_object *s, lean_object *v);
 lean_object *leanos_enter(lean_object *s, lean_object *c, lean_object *b0, lean_object *b1, lean_object *b2);
 lean_object *leanos_schedule(lean_object *s);
+lean_object *leanos_rotate(lean_object *s);
 uint8_t leanos_runnable(lean_object *s, lean_object *j);
 lean_object *leanos_board_done(lean_object *s, lean_object *a, lean_object *b, lean_object *c,
                                lean_object *d, lean_object *e);
@@ -791,9 +792,10 @@ static void enter_lean(uint64_t c) {
     K = leanos_enter(K, lean_box(core_task[c]), lean_box(b[0]), lean_box(b[1]), lean_box(b[2]));
 }
 
-/* Take one interrupt from the controller. The timer ends a time slice (core 0's also
-   advances the clock); the wake-up interrupt only brings a core into the kernel; any other
-   line is masked until its holder acknowledges it, and the Lean kernel decides who to wake. */
+/* Take one interrupt from the controller. The timer ends a time slice, round robin (core
+   0's also advances the clock); the wake-up interrupt only brings a core into the kernel; any
+   other line is masked until its holder acknowledges it, and the Lean kernel decides who to
+   wake (the task waiting for it, which then runs on this core at once). */
 static void handle_irq(uint64_t c) {
     uint32_t iar = mmio_r32(GICC + 0x00c);
     uint32_t id = iar & 0x3ff;
@@ -802,7 +804,7 @@ static void handle_irq(uint64_t c) {
         if (c == 0) {
             ticks++;
             K = leanos_tick(K);
-        } else K = leanos_schedule(K);
+        } else K = leanos_rotate(K);
     } else if (id < 16) {
     } else if (id < 1020) {
         device_irqs++;

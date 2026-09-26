@@ -18,6 +18,13 @@ open LeanOS
 #print axioms schedule_picks_ready
 #print axioms schedule_not_on_other_core
 #print axioms enter_only_cores
+-- wake-ups run next (Proofs.lean)
+#print axioms rotate_picks_ready
+#print axioms schedule_prefers_woken
+#print axioms schedule_spends_woken
+#print axioms irq_runs_holder
+#print axioms irq_not_on_other_core
+#print axioms wake_runs_next
 #print axioms syscall_wall
 #print axioms only_usb_driver_sets_time
 #print axioms walk_eq_view
@@ -81,6 +88,13 @@ open LeanOS
 #print axioms served_only_by_recv
 #print axioms recv_wait_ahead
 #print axioms recv_bounded_wait
+-- fair running (Fair.lean)
+#print axioms turn_only_by_round_robin
+#print axioms rr_behind_lt
+#print axioms run_wait_behind
+#print axioms run_bounded_wait
+#print axioms timer_round_robin
+#print axioms timer_bounded_wait
 -- the loops the compiled kernel runs in place of its list walks (`@[csimp]`, Kernel.lean)
 #print axioms app_eq_appTR
 #print axioms snoc_eq_snocTR
