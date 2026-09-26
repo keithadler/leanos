@@ -2,8 +2,9 @@
    notes.txt` in Terminal gives it notes.txt), or, given none, apps/edit/untitled.txt in its
    own folder; the file server lets it reach nothing else, and says so if it tries.
 
-   Type to insert, Backspace deletes, Enter starts a line, the arrow keys move. It saves by
-   itself a moment after you stop typing, the whole file in one request, which the file
+   Type to insert, Backspace deletes, Delete deletes the letter after the cursor, Enter
+   starts a line, the arrow keys move, Home and End go to the line's start and end, and Page
+   Up and Page Down a window of lines (and scroll as many). It saves by itself a moment after you stop typing, the whole file in one request, which the file
    server writes as one journaled change: after a power cut the file is the last save or
    the one before, never half of each. A file holds up to 16 KiB (one request).
 
@@ -19,6 +20,7 @@
 #define LINE_H 18
 #define TEXT_MAX FS_CHUNK
 #define SAVE_AFTER 800       /* ms without typing */
+#define ROWS ((EH - STATUS_H - PAD) / LINE_H)   /* the lines a window shows */
 
 struct edit {
     struct ui ui;
@@ -59,7 +61,7 @@ static long line_of(struct edit *e, long at) {
 static void draw(struct edit *e) {
     struct surface *s = &e->win;
     fill(s, 0, 0, EW, EH, rgb(252, 252, 250));
-    int rows = (EH - STATUS_H - PAD) / LINE_H;
+    int rows = ROWS;
     long cl = line_of(e, e->cur);
     if (cl < e->top) e->top = cl;
     if (cl >= e->top + rows) e->top = cl - rows + 1;
@@ -115,6 +117,36 @@ static void key(struct edit *e, u64 k) {
         for (long i = e->cur - 1; i < e->len - 1; i++) e->text[i] = e->text[i + 1];
         e->cur--;
         e->len--;
+    } else if (k == KEY_DELETE) {
+        if (e->cur >= e->len) return;
+        for (long i = e->cur; i < e->len - 1; i++) e->text[i] = e->text[i + 1];
+        e->len--;
+    } else if (k == KEY_HOME) {
+        e->cur = ls;
+        return;
+    } else if (k == KEY_END) {
+        e->cur = line_end(e, e->cur);
+        return;
+    } else if (k == KEY_PGUP || k == KEY_PGDN) {
+        /* ROWS lines up or down (fewer at the first or last), at the same column if the line
+           is that long, and the text scrolls as many, not past its last line */
+        long at = ls;
+        for (int r = 0; r < ROWS; r++) {
+            if (k == KEY_PGUP) {
+                if (at == 0) break;
+                at = line_start(e, at - 1);
+            } else {
+                long le = line_end(e, at);
+                if (le >= e->len) break;
+                at = le + 1;
+            }
+        }
+        long end = line_end(e, at), most = line_of(e, e->len) + 1 - ROWS;
+        e->cur = at + col < end ? at + col : end;
+        e->top += k == KEY_PGUP ? -ROWS : ROWS;
+        if (e->top > most) e->top = most;
+        if (e->top < 0) e->top = 0;
+        return;
     } else if (k == '\r' || k == '\n') {
         insert(e, '\n');
     } else if (k == KEY_LEFT) {

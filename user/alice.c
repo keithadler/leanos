@@ -9,13 +9,15 @@
    on it. The list shows each note's first line.
 
    The open note is edited at the cursor: the arrows move it (Up and Down by the lines as
-   they are shown, wrapped at the window's width), Backspace deletes before it, Return
-   starts a line, and the note scrolls to keep the cursor in view. A click puts the cursor
-   there. Tab goes to the list, where Up and Down choose a note and Return (or Tab) goes
-   back to it; a click in the list chooses one too. Ctrl+N (or the + button) makes a new
-   note; Ctrl+D (or Delete, under the list) asks to delete the open one, and Ctrl+D again
-   (or Delete again) deletes it: any other key keeps it. A note left empty disappears when
-   another is chosen.
+   they are shown, wrapped at the window's width), Home and End to the start and end of the
+   line it is on as shown, Page Up and Page Down a window of lines (the note scrolls by as
+   many); Backspace deletes before it, the Delete key the letter after it, Return starts a
+   line, and the note scrolls to keep the cursor in view. A click puts the cursor there.
+   Tab goes to the list, where Up and Down choose a note and Return (or Tab) goes back to
+   it; a click in the list chooses one too. Ctrl+N (or the + button) makes a new note;
+   Ctrl+D (or the Delete button, under the list) asks to delete the open one, and Ctrl+D
+   again (or the button again) deletes it: any other key keeps it. A note left empty
+   disappears when another is chosen.
 
    A note is saved a moment after the typing stops (and before another is chosen, and when
    the window closes): written whole to notes/N.txt.tmp, then put in place by one rename,
@@ -604,6 +606,23 @@ static void key(struct notes *n, struct line *l, u64 c) {
         if (n->goal < 0) n->goal = x_of(n, k, n->at);
         if (c == KEY_UP) n->at = k > 0 ? at_x(n, k - 1, n->goal) : 0;
         else n->at = k + 1 < n->nlines ? at_x(n, k + 1, n->goal) : n->len;
+    } else if (c == KEY_HOME) { n->at = LINES[k]; n->goal = -1; }
+    else if (c == KEY_END) { n->at = line_last(n, k); n->goal = -1; }
+    else if (c == KEY_PGUP || c == KEY_PGDN) {
+        /* as Up and Down, a window of lines at once, and the note scrolls as far (follow()
+           keeps the top in range): past the first line or the last, the very start or end */
+        int d = c == KEY_PGUP ? -TEXT_ROWS : TEXT_ROWS, to = k + d;
+        if (n->goal < 0) n->goal = x_of(n, k, n->at);
+        n->top = n->top + d > 0 ? n->top + d : 0;
+        if (c == KEY_PGUP && k == 0) n->at = 0;
+        else if (c == KEY_PGDN && k + 1 >= n->nlines) n->at = n->len;
+        else n->at = at_x(n, to < 0 ? 0 : to < n->nlines ? to : n->nlines - 1, n->goal);
+    } else if (c == KEY_DELETE) {
+        if (n->at >= n->len || n->locked) return;
+        char *t = TEXT;
+        for (int i = n->at + 1; i < n->len; i++) t[i - 1] = t[i];
+        n->len--;
+        changed(n);
     } else if (c == 8 || c == 127) {
         if (n->at == 0 || n->locked) return;
         char *t = TEXT;

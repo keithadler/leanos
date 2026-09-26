@@ -126,12 +126,20 @@ def open_port(path, baud):
     return fd
 
 
+# ESC [ N ~: Home and End (two numberings each), Delete, Page Up and Page Down
+TILDE_KEYS = {"1": b"\x1b[H", "7": b"\x1b[H", "4": b"\x1b[F", "8": b"\x1b[F",
+              "3": b"\x1b[3~", "5": b"\x1b[5~", "6": b"\x1b[6~"}
+
+
 class Keys:
     """What this terminal sends, turned into what user/input.c reads: plain bytes are keys;
-    the arrows as ESC [ A..D (a terminal in application mode sends ESC O A..D); Backspace as
-    127; Enter as a carriage return; a left click or drag, with `screen` set, as ESC m
-    d/v/u and x, y in three digits each, scaled from this terminal's cells to the Pi's
-    screen (xterm's SGR mouse reports). Other escape sequences and non-ASCII bytes have no
+    the arrows as ESC [ A..D (a terminal in application mode sends ESC O A..D); Home and End
+    as ESC [ H and ESC [ F (terminals send those, ESC O H and F, or ESC [ 1 ~ and 4 ~, or
+    7 ~ and 8 ~); Delete as ESC [ 3 ~, Page Up and Page Down as ESC [ 5 ~ and 6 ~ (the Mac's
+    Terminal keeps Home, End and the page keys to scroll its own window, unless Shift is
+    held); Backspace as 127; Enter as a carriage return; a left click or drag, with `screen`
+    set, as ESC m d/v/u and x, y in three digits each, scaled from this terminal's cells to
+    the Pi's screen (xterm's SGR mouse reports). Other escape sequences and non-ASCII bytes have no
     key in leanos and are dropped. Ctrl+] means quit."""
 
     def __init__(self, screen=None, size=None):
@@ -179,7 +187,7 @@ class Keys:
                 if i + 2 >= len(buf):
                     self.pending = buf[i:]
                     break
-                if buf[i + 2] in b"ABCD":
+                if buf[i + 2] in b"ABCDHF":
                     out += b"\x1b[" + bytes([buf[i + 2]])
                 i += 3
                 continue
@@ -193,8 +201,10 @@ class Keys:
                 self.pending = buf[i:]
                 break
             params, final = buf[i + 2:j].decode("latin-1"), chr(buf[j])
-            if params == "" and final in "ABCD":
+            if params == "" and final in "ABCDHF":
                 out += b"\x1b[" + final.encode()
+            elif final == "~" and params in TILDE_KEYS:
+                out += TILDE_KEYS[params]
             elif params.startswith("<") and final in "Mm":
                 out += self.mouse(params[1:], final)
             i = j + 1
@@ -444,9 +454,15 @@ def self_test():
     check(k.feed(b"hi\r") == (b"hi\r", False), "plain keys")
     check(k.feed(b"\x1b[A\x1bOB\x1b[C\x1b[D") == (b"\x1b[A\x1b[B\x1b[C\x1b[D", False), "arrow keys")
     check(k.feed(b"\x08\x7f\n\t\x03\x16") == (b"\x7f\x7f\r\t\x03\x16", False), "editing and copy/paste keys")
-    check(k.feed(b"\x1b[3~\x1b[1;5Ax\xc3\xa9") == (b"x", False), "unknown sequences and non-ASCII dropped")
+    check(k.feed(b"\x1b[H\x1b[F\x1bOH\x1bOF\x1b[1~\x1b[4~\x1b[7~\x1b[8~")
+          == (b"\x1b[H\x1b[F" * 4, False), "Home and End, as each kind of terminal sends them")
+    check(k.feed(b"\x1b[3~\x1b[5~\x1b[6~") == (b"\x1b[3~\x1b[5~\x1b[6~", False), "Delete, Page Up and Page Down")
+    check(k.feed(b"\x1b[2~\x1b[15~\x1b[3;5~\x1b[1;5A\x1b[1;2Hx\xc3\xa9\x1bOP") == (b"x", False),
+          "unknown sequences and non-ASCII dropped")
     check(k.feed(b"\x1b") == (b"", False) and k.feed(b"[") == (b"", False) and k.feed(b"B") == (b"\x1b[B", False),
           "a sequence split across reads")
+    check(k.feed(b"\x1b[") == (b"", False) and k.feed(b"6") == (b"", False) and k.feed(b"~") == (b"\x1b[6~", False),
+          "Page Down split across reads")
     check(k.feed(b"\x1b[<0;50;15M") == (b"\x1bmd506290", False), "a click")
     check(k.feed(b"\x1b[<32;100;30M\x1b[<0;1;1m") == (b"\x1bmv999590\x1bmu005010", False), "a drag and release")
     check(k.feed(b"\x1b[<2;5;5M\x1b[<64;5;5M") == (b"", False), "right button and wheel ignored")
@@ -533,8 +549,8 @@ def self_test():
                              "--log", os.path.join(tmp, "keys.log")],
                             stdin=kb_s, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     started(proc)
-    os.write(kb_m, b"ls\r\x1bOA\x1b[<0;50;15M\x1b[<0;50;15m\x7f")
-    want = b"ls\r\x1b[A\x1bmd506290\x1bmu506290\x7f"
+    os.write(kb_m, b"ls\r\x1bOA\x1b[<0;50;15M\x1b[<0;50;15m\x7f\x1bOH\x1b[4~\x1b[3~\x1b[5~\x1b[6~")
+    want = b"ls\r\x1b[A\x1bmd506290\x1bmu506290\x7f\x1b[H\x1b[F\x1b[3~\x1b[5~\x1b[6~"
     got = read_until(dev_m, want)
     check(got == want, f"keys: sent {want!r}, the device got {got!r}")
     os.write(dev_m, b"display: key 'l' to terminal\r\n")
@@ -560,7 +576,7 @@ def self_test():
         os.write(dev_m, b"leanos: idle, 5 tasks waiting\r\nmore\r\n")
         proc.communicate(timeout=10)
         check(proc.returncode == status, f"--until {until!r}: status {proc.returncode}, not {status}")
-    print("serial.py: self-test ok: keys, arrows and the mouse translated; the summary finds the step, the panic, "
+    print("serial.py: self-test ok: keys, arrows, Home, End, Delete, the page keys and the mouse translated; the summary finds the step, the panic, "
           "firmware lines and bad wiring; a pseudo-terminal at 115200 8N1 is watched, logged, typed into and let go")
     return 0
 

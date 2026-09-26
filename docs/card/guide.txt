@@ -46,12 +46,21 @@ Copy and paste
   In the browser console, Ctrl+C, Ctrl+V and Ctrl+O are leanos's (Cmd+V on a Mac types the
   host's clipboard as keys). Under make run, your terminal's Ctrl+C stops QEMU itself.
 
+Keys
+  Home, End, Delete (it deletes after the cursor; Backspace deletes before it), Page Up
+  and Page Down come from a USB keyboard, the browser console, and a serial terminal
+  (tools/serial.py --keys). Terminal, Notes and edit use them.
+
 Notes
   Each note is a file, notes/1.txt, notes/2.txt and so on, of up to 32 KiB.
   Arrows    move the cursor; Return starts a line, Backspace deletes before it
+  Delete    delete the letter after the cursor
+  Home, End the start or end of the line, as it is shown
+  Page Up, Page Down   a window of lines up or down
   Tab       go to the list: Up and Down choose a note, Return goes back to it
   Ctrl+N    a new note (the + button too)
-  Ctrl+D    delete this note: it asks, and Ctrl+D again deletes it (or Delete twice)
+  Ctrl+D    delete this note: it asks, and Ctrl+D again deletes it (or the Delete button
+            under the list, twice)
   A note left empty goes when you choose another.
 
 Files
@@ -115,6 +124,8 @@ Terminal
   Up, Down      the commands you ran before (the last 32; history lists them), and back to
                 the line you were typing
   Left, Right   move along the command line; what you type goes in at the cursor
+  Home, End     the start or end of the command line
+  Delete        delete the letter under the cursor (Backspace: the one before it)
   Tab           complete a command's name, or a file or folder name (a folder gets a /);
                 when several match, Tab completes what they share and a second Tab lists them
 
@@ -132,7 +143,8 @@ Programs on the card
           key or a click. Both keep going on the other tabs, and each has buttons too.
   hello   the smallest program
   fuzz    20,000 system calls with made-up arguments, each answer checked
-  edit    a text editor: run edit FILE gives it that file; it saves by itself
+  edit    a text editor: run edit FILE gives it that file; it saves by itself. Home, End,
+          Delete, Page Up and Page Down work as in Notes (its lines are not wrapped)
   web     a text web browser: run -net web lets it use the network
 
 Every program from the card runs in an open slot: it gets its own memory and a window,

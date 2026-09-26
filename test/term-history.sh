@@ -3,7 +3,10 @@
 # are recalled with Up and Down (ESC [ A and B on the serial line, as the browser console
 # sends them, and the USB keyboard's arrows): an empty line and a command repeated at once
 # are not kept, the line being typed comes back after Down, and a recalled line runs and
-# can be edited where the cursor is (Left, Right, Backspace). Tab completes a command's
+# can be edited where the cursor is (Left, Right, Backspace). Home and End go to the line's
+# start and end and Delete deletes the letter under the cursor (nothing at the end), as the
+# serial line sends them (each way a terminal does) and from the USB keyboard; a sequence
+# no key has (Insert, Ctrl+Right) types nothing. Tab completes a command's
 # name and a file or folder name (a folder with a '/', in the current folder or one the
 # word names), completes what several names share, lists them on a second Tab, and does
 # nothing when no name matches.
@@ -20,6 +23,7 @@ sys.path.insert(0, "test")
 from run import boot, mouse, wait_for, pause, snap, usb_key, DOCK
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 UP, DOWN, RIGHT, LEFT = b"\x1b[A", b"\x1b[B", b"\x1b[C", b"\x1b[D"
+HOME, END, DELETE = b"\x1b[H", b"\x1b[F", b"\x1b[3~"
 steps = [wait_for("usb: ready"),
          *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          b"write a.txt one\r", wait_for("terminal: write a.txt"),
@@ -34,6 +38,17 @@ steps = [wait_for("usb: ready"),
          UP, *[LEFT] * 7, RIGHT, pause(0.3), *usb_key("right"), pause(0.5), snap("term-cursor"), b"2\r",
          wait_for("terminal: write b.txt2"),
          UP, *[LEFT] * 5, b"\x7f\x7f\r", wait_for("terminal: write b.tx "),
+         # Home, End and Delete (a moment between the serial line and the USB keyboard)
+         b"rite c.txt ab", HOME, b"w", END, b"c", DELETE, b"\r", wait_for("terminal: write c.txt"),
+         b"xwrite d.txt 12", pause(0.3), *usb_key("home"), *usb_key("delete"), *usb_key("end"), pause(0.3),
+         b"3", *[LEFT] * 3, DELETE, b"\r", wait_for("terminal: write d.txt"),
+         b"ite e.txt q", b"\x1bOH", b"wr", b"\x1b[2~\x1b[1;5C", b"\x1b[8~", b"!\r", wait_for("terminal: write e.txt"),
+         b"ite f.txt z", b"\x1b[1~", b"r", b"\x1b[7~", b"w", b"\x1b[4~", b"yx", pause(0.3), *usb_key("left"),
+         *usb_key("delete"), pause(0.3), b"\r", wait_for("terminal: write f.txt"),
+         b"grep abc c.txt\r", wait_for("terminal: grep abc"), b"cat d.txt\r", wait_for("terminal: cat d.txt"),
+         b"grep 23 d.txt\r", wait_for("terminal: grep 23"), b"cat e.txt\r", wait_for("terminal: cat e.txt"),
+         b"grep q! e.txt\r", wait_for("terminal: grep q!"), b"cat f.txt\r", wait_for("terminal: cat f.txt"),
+         b"grep zy f.txt\r", wait_for("terminal: grep zy"),
          # Tab: two commands start with ca, listed on the second Tab (from the USB keyboard)
          b"ca\t", pause(0.3), *usb_key("tab"), wait_for("terminal: completions for ca"),
          b"t\t", wait_for("terminal: completed cat"),
@@ -48,7 +63,7 @@ steps = [wait_for("usb: ready"),
          b"cat docs/i\t\r", wait_for("terminal: cat docs/in.txt"),
          b"cat zz\t\r", wait_for("terminal: cat zz"),
          b"ve\ta.\t\r"]
-sys.exit(boot(90, usb=True, steps=steps, until="terminal: verify", settle=0.5))
+sys.exit(boot(120, usb=True, steps=steps, until="terminal: verify", settle=0.5))
 PY
 )
 status=$?
@@ -69,7 +84,19 @@ count 1 "terminal: write a.txt -> ok"
 has "terminal: write b.txt -> ok"
 has "terminal: write b.txt2 -> ok"
 has "terminal: write b.tx -> ok"
-[ "$(echo "$out" | grep -c '^terminal: write ')" = 5 ] || fail "a command ran that was not asked for"
+[ "$(echo "$out" | grep -c '^terminal: write ')" = 9 ] || fail "a command ran that was not asked for"
+
+# Home, End and Delete: write c.txt abc (Delete at the end did nothing), write d.txt 23 (the
+# x before it and the 1 after the cursor deleted), write e.txt q! (the unknown sequences
+# typed nothing), write f.txt zy (the x under the cursor deleted)
+for f in "c.txt" "d.txt" "e.txt" "f.txt"; do has "terminal: write $f -> ok"; done
+has "terminal: grep abc -> 1 line"
+has "terminal: cat d.txt -> 2 bytes"
+has "terminal: grep 23 -> 1 line"
+has "terminal: cat e.txt -> 2 bytes"
+has "terminal: grep q! -> 1 line"
+has "terminal: cat f.txt -> 2 bytes"
+has "terminal: grep zy -> 1 line"
 
 # Tab completion
 has "terminal: completions for ca -> 2: caps cat"

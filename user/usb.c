@@ -374,7 +374,8 @@ static void enumerate(struct usb *u, int ls, int depth) {
     }
 }
 
-/* HID usage to a key leanos knows: ASCII, or 128-131 for the arrows. 0 for anything else. */
+/* HID usage to a key leanos knows: ASCII, 128-131 for the arrows, 132-136 for Home, End,
+   Delete (forward), Page Up and Page Down (user/app.h). 0 for anything else. */
 static int key_of(int usage, int shift) {
     static const char plain[] = "abcdefghijklmnopqrstuvwxyz1234567890\r\x1b\b\t -=[]\\#;'`,./";
     static const char shifted[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()\r\x1b\b\t _+{}|~:\"~<>?";
@@ -383,6 +384,11 @@ static int key_of(int usage, int shift) {
     if (usage == 0x51) return 129;   /* down */
     if (usage == 0x4F) return 130;   /* right */
     if (usage == 0x50) return 131;   /* left */
+    if (usage == 0x4A) return 132;   /* home */
+    if (usage == 0x4D) return 133;   /* end */
+    if (usage == 0x4C) return 134;   /* delete forward */
+    if (usage == 0x4B) return 135;   /* page up */
+    if (usage == 0x4E) return 136;   /* page down */
     return 0;
 }
 

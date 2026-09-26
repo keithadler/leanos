@@ -13,8 +13,16 @@
 #      down the window, and four more pastes go in there: 20 KiB, saved in two pieces and
 #      one rename.
 #   4. Note 4: Ctrl+D asks, a key keeps it, Ctrl+D twice deletes it. A new empty note is
-#      dropped when Tab and Up go back through the list; Return goes back to the note, and
-#      a key typed there lands at its end. A click in the list chooses note 1.
+#      dropped when Tab and Up go back through the list, to note 3, the long one. Return goes
+#      back into it, at its start, and the keys above the arrows move and edit it, from the
+#      serial line and from the USB keyboard: Page Down to its very end (ENDMARK typed
+#      there), 30 short lines, Page Up a window of lines (14) and again (a mark on each line
+#      it lands on, after Home), Page Down back, Home and Delete (the mark goes), End and a
+#      letter, Delete at the line's end (the next line joins it); then a long line that
+#      wraps, Home to the start of its last line as shown (not of the line), Up, End to the
+#      end of that shown line and Delete (the space between them goes); Page Up to the very
+#      start (TOPMARK). Tab and Up go on to note 2, and a key typed there lands at its end.
+#      A click in the list chooses note 1.
 #   5. Terminal fills notes/9.txt with 40 KiB, more than a note holds. Notes closed and
 #      started again from the dock: the three notes are back, as saved, and note 9 is shown
 #      (its first 32 KiB) but read-only: keys typed there change nothing. Terminal's cat,
@@ -30,11 +38,14 @@ rm -f "$T"/two-notes.* "$T"/long-note.* "$T"/notes-back.*
 out=$(python3 - <<'PY'
 import sys
 sys.path.insert(0, "test")
-from run import boot, fresh_card, mouse, wait_for, pause, snap, wclick, CLOSE, DOCK
+from run import boot, fresh_card, mouse, wait_for, pause, snap, wclick, usb_key, CLOSE, DOCK
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 keys = lambda s: [c.encode() for c in s]
 line = lambda s: [s.encode() + b"\r"]              # a whole Terminal command at once
 UP, DOWN, RIGHT, LEFT = b"\x1b[A", b"\x1b[B", b"\x1b[C", b"\x1b[D"
+HOME, END, DELETE, PGUP, PGDN = b"\x1b[H", b"\x1b[F", b"\x1b[3~", b"\x1b[5~", b"\x1b[6~"
+# many keys, a moment between each 20, so a busy Notes never falls a whole queue behind
+many = lambda k, n: [x for i in range(n) for x in ([k] + ([pause(0.5)] if i % 20 == 19 else []))]
 CTRL_N, CTRL_D, CTRL_C, CTRL_V, TAB = b"\x0e", b"\x04", b"\x03", b"\x16", b"\t"
 row = lambda i: wclick("alice", 60, 30 + 48 + 28 * i + 14)     # a note in the list
 TERM, NOTES = click(*DOCK["Terminal"]), click(*DOCK["Notes"])  # to the front
@@ -64,7 +75,17 @@ steps = [wait_for("alice: opened"),
          CTRL_D, wait_for("alice: asked before deleting note 4"), *keys("x"), wait_for("alice: kept note 4"),
          CTRL_D, wait_for("alice: asked before deleting note 4", 2), CTRL_D, wait_for("alice: deleted note 4"),
          CTRL_N, wait_for("alice: new note 4", 2), TAB, UP, wait_for("alice: showing note 3"),
-         UP, wait_for("alice: showing note 2"), b"\r", *keys("!"), wait_for("alice: saved note 2 (17"),
+         # the keys above the arrows, in note 3 (the cursor at its start)
+         b"\r", *many(PGDN, 80), pause(0.5), *keys("ENDMARK\r"),
+         *[x for i in range(1, 31) for x in keys(f"Pq{i:02d}\r")], pause(0.5),
+         # (a moment between the serial line and the USB keyboard: they reach the display apart)
+         PGUP, *keys("@"), pause(0.3), *usb_key("pgup"), *usb_key("home"), pause(0.3), *keys("="), pause(0.3),
+         *usb_key("pgdn"), pause(0.3), b"\x1b[1~", DELETE, pause(0.3), *usb_key("end"), pause(0.3), *keys("!"),
+         pause(0.3), *usb_key("delete"), pause(0.3),
+         *many(PGDN, 3), *keys(" ".join(f"wq{i:02d}" for i in range(1, 41))), pause(0.5),
+         b"\x1b[7~", *keys("#"), UP, b"\x1b[8~", DELETE, *many(PGUP, 80), pause(0.5), *keys("TOPMARK"),
+         wait_for("alice: saved note 3 (20845"),
+         TAB, UP, wait_for("alice: showing note 2"), b"\r", *keys("!"), wait_for("alice: saved note 2 (17"),
          *row(0), wait_for("alice: showing note 1"),
          # 5. a note too long; Notes again: what came back, and the files
          *TERM, *line("fill notes/9.txt 40 y"), wait_for("terminal: fill notes/9.txt"),
@@ -80,16 +101,25 @@ steps = [wait_for("alice: opened"),
          *line("grep SabcMIDdef notes/2.txt"), wait_for("terminal: grep SabcMIDdef"),
          *line("grep xyz+E! notes/2.txt"), wait_for("terminal: grep xyz+E!"),
          *line("grep legacy notes/1.txt"), wait_for("terminal: grep legacy"),
-         *line("wc notes/2.txt"), wait_for("terminal: wc"),
+         *line("head -n 1 notes/3.txt | grep TOPMARK"), wait_for("terminal: grep TOPMARK"),
+         *line("tail -n 31 notes/3.txt | grep ENDMARK"), wait_for("terminal: grep ENDMARK"),
+         *line("tail -n 30 notes/3.txt | grep ENDMARK"), wait_for("terminal: grep ENDMARK", 2),
+         *line("grep =Pq03 notes/3.txt"), wait_for("terminal: grep =Pq03"),
+         *line("grep @Pq notes/3.txt"), wait_for("terminal: grep @Pq"),
+         *line("grep Pq17!Pq18 notes/3.txt"), wait_for("terminal: grep Pq17!Pq18"),
+         *line("grep Pq notes/3.txt"), wait_for("terminal: grep Pq "),
+         *line("grep #wq01 notes/3.txt"), wait_for("terminal: grep #wq01"),
+         *line("grep #wq notes/3.txt | wc"), wait_for("terminal: wc"),
+         *line("wc notes/2.txt"), wait_for("terminal: wc notes/2.txt"),
          *line("ls notes"), wait_for("terminal: ls notes")]
-first = boot(150, steps=steps, until="terminal: ls notes", sd=card, settle=0.3)
+first = boot(210, steps=steps, until="terminal: ls notes", sd=card, settle=0.3, usb=True)
 print("---- boot 2", flush=True)
 sys.exit(first or boot(40, sd=card))
 PY
 )
 status=$?
 echo "$out" > "$T/serial.txt"
-echo "$out" | grep -E "^(alice|edit: copied|terminal: (write|mkdir|fill|cat|grep|wc|ls)|---- boot)" | sed 's/^/  | /'
+echo "$out" | grep -E "^(alice|edit: copied|terminal: (write|mkdir|fill|cat|grep|wc|ls|head|tail)|---- boot)" | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the run did not finish (status $status)"
 echo "$out" | grep -qE "PANIC|exception in the kernel" && fail "the kernel stopped"
 echo "$out" | grep -q "^leanos: alice stopped" && fail "Notes stopped"
@@ -130,6 +160,7 @@ alice: deleted note 4
 alice: new note 4
 alice: removed note 4, which was empty
 alice: showing note 3 (20480 bytes)
+alice: saved note 3 (20845 bytes)
 alice: showing note 2 (16 bytes)
 alice: notes/2.txt.tmp is there already: left alone
 alice: saved note 2 (17 bytes)
@@ -158,7 +189,7 @@ print("\n".join(keep))' "$want")
 has "edit: copied 4096 bytes -> ok"
 has "terminal: cat notes/1.txt -> 20 bytes"
 has "terminal: cat notes/2.txt -> 17 bytes"
-has "terminal: cat notes/3.txt -> 20480 bytes"
+has "terminal: cat notes/3.txt -> 20845 bytes"
 has "terminal: cat notes/9.txt -> 40960 bytes"
 has "terminal: cat notes/2.txt.tmp -> 7 bytes"
 has "terminal: cat notes.txt -> no such file"
@@ -167,6 +198,26 @@ has "terminal: grep xyz+E! -> 1 line"
 has "terminal: grep legacy -> 1 line"
 has "terminal: ls notes -> 5 files"
 has "terminal: wc notes/2.txt -> 1 line, 2 words, 17 bytes"
+
+# The keys above the arrows, in note 3: Page Down reached its very end (ENDMARK is on the
+# line before the 31 after it: 30 short ones, two of them joined, and the long one); Page
+# Up went 14 lines up (from the empty line after Pq30 to Pq17, and on to Pq03), and Page
+# Down 14 back; Home and Delete took the @ away again; End and Delete joined Pq17! and
+# Pq18; Home in the long line went to its last line as shown, not its start, and End on the
+# line shown before it went to just before the space that Delete took (39 words left of
+# 40); Page Up reached the very start (TOPMARK on the first line).
+has "terminal: head notes/3.txt -> 1 line"
+has "terminal: grep TOPMARK -> 1 line"
+has "terminal: grep ENDMARK -> 1 line"
+has "terminal: grep ENDMARK -> 0 lines"
+echo "$out" | grep -qE "^terminal: tail notes/3.txt -> 31 lines of [0-9]+$" || fail "tail did not show 31 lines of note 3"
+has "terminal: grep =Pq03 -> 1 line"
+has "terminal: grep @Pq -> 0 lines"
+has "terminal: grep Pq17!Pq18 -> 1 line"
+has "terminal: grep Pq -> 29 lines"
+has "terminal: grep #wq01 -> 0 lines"
+has "terminal: grep #wq -> 1 line"
+echo "$out" | grep -qE "^terminal: wc -> [01] lines?, 39 words, " || fail "End and Delete in the long line: not 39 words"
 
 # The second boot: the notes are there.
 boot2=$(echo "$out" | sed -n '/^---- boot 2/,$p')

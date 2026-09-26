@@ -20,8 +20,11 @@ enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START 
        OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12 };   /* 11: no request (none reads the clipboard) */
 enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7,
        EV_PASTE = 8 };
-/* The arrow keys, as EV_KEY codes (the input driver turns ESC [ A..D into these). */
-enum { KEY_UP = 128, KEY_DOWN = 129, KEY_RIGHT = 130, KEY_LEFT = 131 };
+/* The arrow keys and the keys above them, as EV_KEY codes: the input driver turns what a
+   terminal sends (ESC [ A..D, ESC [ H, ESC [ 3 ~ and so on, user/input.c) into these, and
+   the USB driver a keyboard's keys. KEY_DELETE deletes forward; Backspace is 127. */
+enum { KEY_UP = 128, KEY_DOWN = 129, KEY_RIGHT = 130, KEY_LEFT = 131,
+       KEY_HOME = 132, KEY_END = 133, KEY_DELETE = 134, KEY_PGUP = 135, KEY_PGDN = 136 };
 enum { SET_BACKGROUND = 1, SET_ZONE = 2 };
 
 #define SPARE 3

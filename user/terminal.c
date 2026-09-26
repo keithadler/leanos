@@ -8,12 +8,14 @@
    command line, line breaks as spaces: pasted text never runs a command until you press
    Return.
 
-   The command line edits as a shell's does: Left and Right move the cursor, and typing,
-   Backspace and a paste work where it is. Up and Down step through the last HIST commands,
-   which history lists (the line being typed is kept, and Down past the newest comes back to
-   it). Tab completes a command's name at the start of the line, and a file or folder name
-   after it (a folder with a '/'), from the file server's listing; when several match, it
-   completes what they share, and a second Tab lists them.
+   The command line edits as a shell's does: Left and Right move the cursor, Home and End
+   to the line's start and end, and typing, Backspace, Delete (the letter under the cursor)
+   and a paste work where it is. Up and Down step through the last HIST commands, which
+   history lists (the line being typed is kept, and Down past the newest comes back to it).
+   Page Up and Page Down do nothing: Terminal keeps no more lines than it shows. Tab
+   completes a command's name at the start of the line, and a file or folder name after it
+   (a folder with a '/'), from the file server's listing; when several match, it completes
+   what they share, and a second Tab lists them.
 
    CMD > FILE puts what CMD prints in FILE instead of on the screen (made in FILE.part~, then
    put in place by one rename, as cp and fill do: FILE is its old self or the new one), and
@@ -1634,7 +1636,14 @@ __attribute__((section(".text.start"))) void _start(void) {
         else if (k == KEY_UP || k == KEY_DOWN) recall(t, t->hpos + (k == KEY_UP ? -1 : 1));
         else if (k == KEY_LEFT) t->cur -= t->cur > 0;
         else if (k == KEY_RIGHT) t->cur += t->cur < t->len;
-        else if (k == 8 || k == 127) {
+        else if (k == KEY_HOME) t->cur = 0;
+        else if (k == KEY_END) t->cur = t->len;
+        else if (k == KEY_DELETE) {
+            if (t->cur < t->len) {
+                for (int i = t->cur + 1; i < t->len; i++) t->cmd[i - 1] = t->cmd[i];
+                t->len--;
+            }
+        } else if (k == 8 || k == 127) {
             if (t->cur > 0) {
                 for (int i = t->cur; i < t->len; i++) t->cmd[i - 1] = t->cmd[i];
                 t->cur--;

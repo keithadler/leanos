@@ -175,12 +175,14 @@ inputEl.addEventListener('mousemove', (e) => {
    window (bytes 3, 22 and 15, as a serial terminal sends them); the host's own paste (Cmd+V
    on a Mac) types its text. */
 inputEl.addEventListener('keydown', (e) => {
-  const arrows = {ArrowUp: 'A', ArrowDown: 'B', ArrowRight: 'C', ArrowLeft: 'D'};
+  /* the arrows, Home, End, Delete (forward), Page Up and Page Down, as a terminal sends them */
+  const moves = {ArrowUp: '[A', ArrowDown: '[B', ArrowRight: '[C', ArrowLeft: '[D', Home: '[H', End: '[F',
+                 Delete: '[3~', PageUp: '[5~', PageDown: '[6~'};
   const k = e.key.toLowerCase();
   if (e.ctrlKey && !e.metaKey && !e.altKey && (k === 'c' || k === 'v' || k === 'o')) {
     sendBytes(k === 'c' ? '\x03' : k === 'v' ? '\x16' : '\x0f'); e.preventDefault();
   }
-  else if (arrows[e.key]) { sendBytes('\x1b[' + arrows[e.key]); e.preventDefault(); }
+  else if (moves[e.key]) { sendBytes('\x1b' + moves[e.key]); e.preventDefault(); }
   else if (e.key === 'Enter') { sendBytes('\r'); e.preventDefault(); }
   else if (e.key === 'Backspace') { sendBytes('\x7f'); e.preventDefault(); }
   else if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) { sendBytes('\t'); e.preventDefault(); }

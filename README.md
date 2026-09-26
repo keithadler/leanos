@@ -178,9 +178,9 @@ Things to try once it is up:
 - Pick a time zone in **Settings**: the menu bar, Clock and Terminal's `date` show the time there.
 - Click the **globe** in the dock and go to `info.cern.ch`.
 - In **Notes**, Ctrl+N (or +) makes a new note and the list on the left shows each one's
-  first line. The arrows move the cursor, long notes wrap and scroll, Tab goes to the list
-  (Up and Down, then Return), and Ctrl+D twice deletes a note. Each note is a file:
-  `cat notes/1.txt` in Terminal.
+  first line. The arrows, Home, End, Page Up and Page Down move the cursor (Delete deletes
+  after it), long notes wrap and scroll, Tab goes to the list (Up and Down, then Return),
+  and Ctrl+D twice deletes a note. Each note is a file: `cat notes/1.txt` in Terminal.
 - `run edit notes/1.txt` in Terminal edits that one file, and nothing else.
 - Type in Notes, press Ctrl+C, click Terminal and press Ctrl+V: the text is on its command
   line, and nothing runs until you press Return.
