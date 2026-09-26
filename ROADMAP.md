@@ -131,9 +131,34 @@ its glow per column and looks at the dot grid only on rows that have dots; and a
 redraws the two windows whose look changed instead of the whole screen. The output matches
 the old drawing to within rounding (at most 5 of 255 on a channel, in the shadows).
 
-Next for speed: a real Pi 4 maps the framebuffer uncached, where reading it back to blend
-is slow; drawing into a cached back buffer and copying out changed rectangles would fix
-that, and needs more memory for the display server than its 1 MiB slot.
+Done for speed: the display never reads the screen. A real Pi 4 maps the framebuffer
+uncached, and blending (shadows, anti-aliased corners and text, the menu bar's and the
+dock's glass) read back every pixel it changed. A cached back buffer of the whole screen
+(2.4 MB) would not fit the display's 1 MiB; a band does. The display now composites each
+rectangle it redraws a band of rows at a time (32 rows of the full width, more of a
+narrower rectangle) in 128 KiB of its own memory, pages 168 to 199 of its spare run,
+between its assets and its window table, and copies each finished band out row after row
+in 16-byte stores. The screens are the same, pixel for pixel: 26 screens compared before
+and after (the boot checks, the desktop, drags, off the screen's edges too, menus,
+minimize, zoom, the dock's labels, a new background, the shutdown screen), identical but
+for the boot screen's hash of the display's own code. Counted with Notes' window open:
+
+| | screen reads before | after | screen writes before | after |
+|---|---|---|---|---|
+| a full redraw | 118,956 | 0 | 806,882 | 614,400 |
+| a click on a window | 49,840 | 0 | 235,749 | 112,516 |
+| one frame of a window drag | 15,968 | 0 | 172,992 | 84,115 |
+
+Each pixel is now written once, in order (a full redraw is 153,600 stores). Under QEMU,
+where the framebuffer is ordinary memory, the copying costs about a tenth of the drawing
+time; a shadow's table made once per radius, one multiply per background pixel instead of
+two, and the dock asking the kernel which apps run once per rectangle instead of once per
+band more than pay for it. Alternating the old display and the new, a full redraw takes
+about 6 ms instead of 7, a click 1.7 ms instead of 2.4, and a drag frame 1.4 ms instead of
+2.1 (host timings vary; counted in instructions, 6 to 9% fewer).
+
+Next for speed: measure it on a Pi 4. And a window its program redraws is composited
+whole, with its shadow, however little of it changed.
 
 Fixed: the desktop froze with 8 windows waiting. The display holds each waiting window's
 call until it has an event, and the kernel gives a task 8 reply slots for its 12 windows.

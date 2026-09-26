@@ -1,4 +1,6 @@
 /* The display server. It owns the framebuffer (capability 5) and nothing else can reach it.
+   It only ever writes it: it draws into a band of its own memory and copies that out (see
+   "the band").
 
    Clients call it. RAISE (7): w1 w2 = a card file's name, bring its windows forward.
    PENDING (8): Apps asks which pinned program the dock wants started. OPEN: w0 = 1, w1 = width << 16 | height, w2 = up to 8 bytes of title,
@@ -63,7 +65,8 @@
    when it starts an app again. Its capability list never grows without bound.
 
    Its fonts and icons were loaded at boot into the start of its spare run (capability 3),
-   which it maps read-only. The desktop's background is a pattern it computes itself. */
+   whose first 168 pages it maps read-only; the band and the window table, after them, it
+   maps read-write. The desktop's background is a pattern it computes itself. */
 #include "lib.h"
 #include "gfx.h"
 #include "assets.h"
@@ -89,6 +92,12 @@ __attribute__((noinline)) static void rounded(struct surface *s, int x, int y, i
 #define WIN_PAGE 2048   /* window k's pixels are mapped at WIN_PAGE + WIN_MAX_PAGES k */
 #define WIN_MAX_PAGES 184
 #define ASSET_PAGE 4800   /* after the windows: WIN_PAGE + WIN_MAX_PAGES * MAX_WIN = 4256 */
+/* The band (see "the band"): 32 pages of the spare run, 168 to 199, between the assets
+   (read-only, pages 0 to 167) and the window table (200 to 227), mapped read-write here. */
+#define BAND_OFF 168
+#define BAND_PAGES 32
+#define BAND_PAGE 5000
+#define BAND_PX (BAND_PAGES * 1024)   /* pixels */
 #define MAX_WIN 12
 #define WIN_TABLE_PAGE 5100   /* the window table: the spare run's last 28 pages, read-write */
 #define ICON_PAGE 4300        /* window k's icon, lent by its program: pages 4300 + 4 k */
@@ -104,6 +113,7 @@ __attribute__((noinline)) static void rounded(struct surface *s, int x, int y, i
 #define W 1024
 #define H 600
 #define RADIUS 12
+#define MENU_R 10       /* the menus' corners */
 
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
        OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12 };
@@ -119,6 +129,8 @@ enum { SET_BACKGROUND = 1, SET_ZONE = 2 };
 #define POWER 11        /* the power capability: switch off, restart */
 #define APPS_LAUNCH 12  /* the launch capability for Apps (slot 16) */
 enum { POWER_OFF = 0, POWER_RESTART = 1 };
+enum { SCENE_DESKTOP = 0, SCENE_BOOT = 1, SCENE_OFF = 2 };
+#define NPROG 6         /* the programs the boot screen shows checked */
 enum { F_UI = 1, F_UI_BOLD = 2, F_SMALL = 3, F_HUGE = 4, F_MEDIUM = 5 };
 
 /* The dock. */
@@ -177,7 +189,15 @@ struct win {
 struct state {
     unsigned char ignored[32];   /* requests not understood, per badge, so a flood logs once */
     unsigned char said[32];      /* refused windows, raises and closes logged, per badge: a few, not a flood */
+    /* What the drawing draws into: the band being composited (see "the band"). The screen
+       itself is only ever written, a band at a time. */
     struct surface screen;
+    unsigned *fb;
+    int scene;                  /* what composite draws: SCENE_DESKTOP, SCENE_BOOT or SCENE_OFF */
+    int boot_done, boot_shown;  /* the boot screen: its bar (0..1000), and how many checks it shows */
+    u64 boot_code[NPROG], boot_word[NPROG];   /* the kernel's verdict on each program, and its hash */
+    /* the shadows' tables (shadow_keep): the windows', and the menus' */
+    unsigned short keep_win[SHADOW_KEEP(RADIUS)], keep_menu[SHADOW_KEEP(MENU_R)];
     struct font ui, ui_bold, small, huge, medium;
     struct picture icons[DOCK_ALL];
     char pending[16];           /* a pinned program to start when Apps next asks */
@@ -189,9 +209,10 @@ struct state {
     /* the background pattern: a color per row, a glow per column, and a 32 x 32 tile */
     unsigned bg_row[H];
     /* the glow, per column, ready to blend: the weight left for the row's color, and the
-       glow color's red+blue and green already multiplied by the glow's weight */
+       glow color's red+blue (low 32 bits) and green (high 32) already multiplied by the
+       glow's weight */
     unsigned short glow_keep[W];
-    unsigned glow_rb[W], glow_g[W];
+    u64 glow[W];
     unsigned char bg_tile[32 * 32];
     unsigned char bg_dot_row[32];   /* does this row of the tile have any dot */
     struct win *win;            /* MAX_WIN of them, in the spare run (WIN_TABLE_PAGE) */
@@ -200,6 +221,8 @@ struct state {
     int px, py;                 /* pointer */
     int drag, grab_x, grab_y, drag_x0, drag_y0;
     int hover;                  /* dock icon under the pointer + 1, or 0 */
+    unsigned dock_live;         /* which dock items run (running), a bit each: asked of the kernel
+                                   once a rectangle, not once a band */
     int verified;               /* how many programs the boot checks passed */
     int theme;
     /* the capability list, as the kernel holds it: who granted each one (0: the server's
@@ -281,11 +304,18 @@ COLD static int ease(int t) {
 
 COLD static unsigned splash_bg(int y) { return mix(rgb(12, 16, 30), rgb(22, 34, 60), (unsigned)(y * 255 / (H - 1))); }
 
+/* The progress bar, `done` of 1000, only within its box (PBAR_BOX), over the background. */
+#define PBAR_X (W / 2 - PBAR_W / 2)
+#define PBAR_BOX PBAR_X - 12, PBAR_Y - 12, PBAR_W + 24, PBAR_H + 24
 COLD static void splash_bar(struct state *st, int done /* 0..1000 */) {
     struct surface *s = &st->screen;
-    int x = W / 2 - PBAR_W / 2;
-    clip_to(s, x - 12, PBAR_Y - 12, PBAR_W + 24, PBAR_H + 24);
-    for (int j = s->cy0; j < s->cy1; j++) fill(s, s->cx0, j, s->cx1 - s->cx0, 1, splash_bg(j));
+    int x = PBAR_X;
+    int cx0 = s->cx0, cy0 = s->cy0, cx1 = s->cx1, cy1 = s->cy1;
+    clip_to(s, PBAR_BOX);
+    if (s->cx0 < cx0) s->cx0 = cx0;
+    if (s->cy0 < cy0) s->cy0 = cy0;
+    if (s->cx1 > cx1) s->cx1 = cx1;
+    if (s->cy1 > cy1) s->cy1 = cy1;
     rounded(s, x, PBAR_Y, PBAR_W, PBAR_H, PBAR_H / 2, rgb(42, 52, 82), 255);
     int filled = PBAR_W * done / 1000;
     if (filled >= PBAR_H) {
@@ -298,12 +328,14 @@ COLD static void splash_bar(struct state *st, int done /* 0..1000 */) {
         for (int k = 5; k >= 1; k--)
             rounded(s, x + filled - 3 - k, PBAR_Y - k + 3, 2 * k + 3, 2 * k, k, rgb(200, 255, 245), 24);
     }
-    clip_all(s);
+    s->cx0 = cx0;
+    s->cy0 = cy0;
+    s->cx1 = cx1;
+    s->cy1 = cy1;
 }
 
 /* The boot checks: what the kernel decided about each task's code, from bootinfo. */
 /* The programs checked at boot, and their slots; the apps are checked when they start. */
-#define NPROG 6
 static const char *const prog_names[NPROG] = {"Notes", "Display server", "Test: mallory", "Test: carol",
                                                "Input driver", "File server"};
 static const int prog_slot[NPROG] = {0, 1, 2, 3, 4, 8};
@@ -339,10 +371,11 @@ COLD static void boot_check_line(struct state *st, int k, u64 verdict_code, u64 
               verdict_code == 1 ? rgb(120, 132, 160) : rgb(236, 110, 110));
 }
 
-COLD static void splash(struct state *st) {
+/* The boot screen, within the clip (composite draws it while st->scene is SCENE_BOOT): the
+   logo and its words, the bar, and the checks shown so far. */
+COLD static void boot_screen(struct state *st) {
     struct surface *s = &st->screen;
-    clip_all(s);
-    for (int y = 0; y < H; y++) fill(s, 0, y, W, 1, splash_bg(y));
+    for (int y = s->cy0; y < s->cy1; y++) fill(s, s->cx0, y, s->cx1 - s->cx0, 1, splash_bg(y));
     logo(s, W / 2 - 66, 150, 132);
     const char *name = "leanos";
     font_text(s, &st->huge, W / 2 - text_w(&st->huge, name) / 2, 356, name, rgb(244, 246, 252));
@@ -350,29 +383,46 @@ COLD static void splash(struct state *st) {
     font_text(s, &st->ui, W / 2 - text_w(&st->ui, tag) / 2, 396, tag, rgb(140, 152, 182));
     const char *who = "\xc2\xa9 2026 Keith Adler";
     font_text(s, &st->small, W / 2 - text_w(&st->small, who) / 2, H - 20, who, rgb(104, 114, 142));
+    splash_bar(st, st->boot_done);
+    for (int k = 0; k < st->boot_shown; k++) boot_check_line(st, k, st->boot_code[k], st->boot_word[k]);
+}
+
+static void composite(struct state *st, int x, int y, int w, int h);
+
+COLD static void splash(struct state *st) {
     /* The kernel has already measured every program against the boot manifest; the bar
        walks through its verdicts, one program per step, eased. */
-    u64 code[NPROG], word[NPROG];
     for (int k = 0; k < NPROG; k++) {
         struct res r = sys1(SYS_BOOTINFO, (u64)prog_slot[k]);
-        code[k] = r.x[0] == OK ? r.x[1] : 0;
-        word[k] = r.x[2];
+        st->boot_code[k] = r.x[0] == OK ? r.x[1] : 0;
+        st->boot_word[k] = r.x[2];
     }
+    st->scene = SCENE_BOOT;
+    st->boot_done = st->boot_shown = 0;
+    composite(st, 0, 0, W, H);
     u64 start = millis();
-    int shown = 0;
     for (;;) {
         u64 t = millis() - start;
-        int done = ease((int)(t * 1000 / SPLASH_MS));
-        splash_bar(st, done);
-        while (shown < NPROG && done >= (shown + 1) * 1000 / NPROG - 60) {
-            boot_check_line(st, shown, code[shown], word[shown]);
-            shown++;
+        st->boot_done = ease((int)(t * 1000 / SPLASH_MS));
+        composite(st, PBAR_BOX);
+        while (st->boot_shown < NPROG && st->boot_done >= (st->boot_shown + 1) * 1000 / NPROG - 60) {
+            st->boot_shown++;
+            composite(st, W / 2 - 138, CHECK_Y - 8, 276, NPROG * CHECK_LINE + 16);   /* the checks */
         }
-        if (t >= SPLASH_MS && shown == NPROG) break;
+        if (t >= SPLASH_MS && st->boot_shown == NPROG) break;
     }
+    st->scene = SCENE_DESKTOP;
     int ok = 0;
-    for (int k = 0; k < NPROG; k++) ok += code[k] == 1;
+    for (int k = 0; k < NPROG; k++) ok += st->boot_code[k] == 1;
     st->verified = ok;
+}
+
+/* The screen once the machine has shut down (the leanos menu's Shut down). */
+COLD static void off_screen(struct state *st) {
+    struct surface *s = &st->screen;
+    fill(s, 0, 0, W, H, rgb(12, 14, 22));
+    const char *msg = "leanos has shut down. You can switch off the Pi.";
+    font_text(s, &st->medium, W / 2 - text_w(&st->medium, msg) / 2, H / 2, msg, rgb(210, 214, 228));
 }
 
 /* ---- the desktop ---- */
@@ -403,8 +453,8 @@ static void draw_window(struct state *st, int k) {
     struct win *w = &st->win[k];
     int ow = outer_w(w), oh = outer_h(w), x = w->x, y = w->y;
     int focus = focused(st) == k;
-    shadow(s, x, y, ow, oh, RADIUS, 0);
-    if (focus) shadow(s, x, y, ow, oh, RADIUS, 2);
+    shadow(s, x, y, ow, oh, RADIUS, 0, st->keep_win);
+    if (focus) shadow(s, x, y, ow, oh, RADIUS, 2, st->keep_win);
     /* The rest only inside the window's frame: its buttons and its title (the program's
        words) must not reach past a narrow window onto what is beside it, where clicks go to
        another window. */
@@ -474,8 +524,6 @@ static void top_bar(struct state *st) {
     }
     font_text(s, &st->small, rx - text_w(&st->small, right), 19, right, rgb(190, 196, 210));
 }
-
-static void composite(struct state *st, int x, int y, int w, int h);
 
 /* The menu bar's clock: the kernel's time of day in the time zone, to the minute. Every
    zone is a whole number of minutes from UTC, so its minutes turn over with UTC's. */
@@ -623,7 +671,7 @@ static void dock(struct state *st) {
     for (int i = 0; i < DOCK_ALL; i++) {
         int lift = st->hover == i + 1 ? 4 : 0;
         icon(s, dock_icon_x(i), DOCK_Y + (DOCK_H - ICON) / 2 - 4 - lift, &st->icons[i]);
-        if (running(st, i))
+        if ((st->dock_live >> i) & 1)
             dock_dot(st, dock_icon_x(i) + ICON / 2,
                      i < DOCK_N ? badge_in(dock_slot[i]) : st->win[window_of(st, pin_files[i - DOCK_N])].badge);
     }
@@ -642,9 +690,11 @@ static void dock(struct state *st) {
 }
 
 /* The background: indigo at the top to deep teal at the bottom, a soft glow toward the left,
-   and a fine grid of dots over it. Built once; drawing a pixel is two multiply-adds (the
-   same arithmetic as mix(), split so the glow's half is done once per column), and only
-   the rows of the grid that have dots look at the dots. */
+   and a fine grid of dots over it. Built once; drawing a pixel is one multiply-add (the
+   same arithmetic as mix(), split so the glow's half is done once per column, with red and
+   blue in the low half of a 64-bit word and green in the high half: neither half can carry
+   into the other, as the weights add up to 256), and only the rows of the grid that have
+   dots look at the dots. */
 COLD static void make_background(struct state *st) {
     int t = st->theme;
     for (int y = 0; y < H; y++) st->bg_row[y] = mix(theme_top[t], theme_bottom[t], (unsigned)(y * 255 / (H - 1)));
@@ -654,8 +704,7 @@ COLD static void make_background(struct state *st) {
         unsigned u = (unsigned)(a < 0 ? 0 : a);     /* under 128, so mix() uses it as is */
         unsigned g = theme_glow[t];
         st->glow_keep[x] = (unsigned short)(256 - u);
-        st->glow_rb[x] = (g & 0xFF00FFu) * u;
-        st->glow_g[x] = (g & 0x00FF00u) * u;
+        st->glow[x] = (u64)((g & 0xFF00FFu) * u) | (u64)((g & 0x00FF00u) * u) << 32;
     }
     for (int j = 0; j < 32; j++)
         for (int i = 0; i < 32; i++) {
@@ -675,17 +724,19 @@ static void background(struct state *st) {
     struct surface *s = &st->screen;
     for (int y = s->cy0; y < s->cy1; y++) {
         unsigned *row = s->px + y * s->stride;
-        unsigned brb = st->bg_row[y] & 0xFF00FFu, bg = st->bg_row[y] & 0x00FF00u;
-        for (int x = s->cx0; x < s->cx1; x++) {
-            unsigned k = st->glow_keep[x];
-            row[x] = (((brb * k + st->glow_rb[x]) >> 8) & 0xFF00FFu) | (((bg * k + st->glow_g[x]) >> 8) & 0x00FF00u);
+        u64 c = (u64)(st->bg_row[y] & 0xFF00FFu) | (u64)(st->bg_row[y] & 0x00FF00u) << 32;
+#define BG_PIXEL(x) ({ u64 v_ = c * st->glow_keep[x] + st->glow[x]; \
+                       (unsigned)((v_ >> 8) & 0xFF00FFu) | (unsigned)((v_ >> 40) & 0x00FF00u); })
+        if (!st->bg_dot_row[y & 31]) {
+            for (int x = s->cx0; x < s->cx1; x++) row[x] = BG_PIXEL(x);
+            continue;
         }
-        if (!st->bg_dot_row[y & 31]) continue;
         const unsigned char *tile = st->bg_tile + (y & 31) * 32;
         for (int x = s->cx0; x < s->cx1; x++) {
-            unsigned dot = tile[x & 31];
-            if (dot) row[x] = mix(row[x], rgb(200, 220, 255), dot);
+            unsigned v = BG_PIXEL(x), dot = tile[x & 31];
+            row[x] = dot ? mix(v, rgb(200, 220, 255), dot) : v;
         }
+#undef BG_PIXEL
     }
 }
 
@@ -709,8 +760,8 @@ static int menu_n(int m) { return m == 3 ? 3 : 2; }
 static void menu(struct state *st) {
     struct surface *s = &st->screen;
     int x = menu_left(st, st->menu), n = menu_n(st->menu);
-    shadow(s, x, MENU_Y, MENU_W, MENU_H(n), 10, 0);
-    rounded(s, x, MENU_Y, MENU_W, MENU_H(n), 10, rgb(248, 248, 250), 255);
+    shadow(s, x, MENU_Y, MENU_W, MENU_H(n), MENU_R, 0, st->keep_menu);
+    rounded(s, x, MENU_Y, MENU_W, MENU_H(n), MENU_R, rgb(248, 248, 250), 255);
     for (int i = 0; i < n; i++) {
         int y = MENU_Y + 6 + i * MENU_ITEM + 19;
         const char *key = menu_keys[st->menu - 1][i];
@@ -743,10 +794,14 @@ static long opaque_part(const struct win *w, int x0, int y0, int x1, int y1, int
     return best;
 }
 
-/* Draw (x0, y0)-(x1, y1) from window z[from] up: background and bar only if from is 0. */
-static void composite_from(struct state *st, int x0, int y0, int x1, int y1, int from) {
+/* Draw what is in the clip from window z[from] up: background and bar only if from is 0. */
+static void draw_layers(struct state *st, int from) {
     struct surface *s = &st->screen;
-    clip_to(s, x0, y0, x1 - x0, y1 - y0);
+    if (st->scene != SCENE_DESKTOP) {
+        if (st->scene == SCENE_BOOT) boot_screen(st);
+        else off_screen(st);
+        return;
+    }
     if (from == 0) {
         background(st);
         if (s->cy0 < BAR_H + 1) top_bar(st);
@@ -762,7 +817,68 @@ static void composite_from(struct state *st, int x0, int y0, int x1, int y1, int
         s->cy0 < MENU_Y + MENU_H(menu_n(st->menu)) + 12)
         menu(st);
     pointer(s, st->px, st->py);
-    clip_all(s);
+}
+
+/* ---- the band ----
+
+   A real Pi 4 maps the framebuffer uncached (LeanOS/Kernel.lean, attrNoCache): every read of
+   it goes out to memory, and blending (shadows, anti-aliased corners and text, the menu
+   bar's and the dock's glass) reads each pixel it changes. So the display never reads the
+   screen. It composites a rectangle a band of rows at a time into the band, 128 KiB of its
+   own cached memory, drawing every layer that reaches the band clipped to it, and copies each
+   finished band out to the screen, row after row, in 16-byte stores. A band holds as many of
+   the rectangle's rows as fit: 32 of the whole width, all 19 of the pointer's. Every pixel
+   of the rectangle is written to the screen once, and none is read from it. The drawing
+   is the same, pixel for pixel, as drawing on the screen itself: each pixel's value depends
+   only on the layers under it, never on the clip. */
+
+typedef u64 __attribute__((may_alias)) pixel_pair;
+
+/* Rows [y0, y1) of columns [x0, x1) out to the screen. Pixel (x, y) is in the band at
+   (y - y0) * stride + x - (x0 & ~1): each of its rows starts at an even column, as the
+   screen's 64-bit words do, so both are read and written whole words at a time, in order. */
+static void band_out(struct state *st, int x0, int y0, int x1, int y1, int stride) {
+    const unsigned *band = (const unsigned *)PAGE(BAND_PAGE);
+    for (int y = y0; y < y1; y++) {
+        const unsigned *from = band + (y - y0) * stride + (x0 & 1);
+        unsigned *to = st->fb + y * W + x0;
+        int n = x1 - x0;
+        if (x0 & 1) {
+            *to++ = *from++;
+            n--;
+        }
+        pixel_pair *t = (pixel_pair *)to;
+        const pixel_pair *f = (const pixel_pair *)from;
+        int i = 0, pairs = n / 2;
+        for (; i + 2 <= pairs; i += 2) {    /* 16 bytes a store */
+            pixel_pair a = f[i], b = f[i + 1];
+            t[i] = a;
+            t[i + 1] = b;
+        }
+        if (i < pairs) t[i] = f[i];
+        if (n & 1) to[n - 1] = from[n - 1];
+    }
+}
+
+/* Draw (x0, y0)-(x1, y1) from window z[from] up (draw_layers), a band at a time. */
+static void composite_from(struct state *st, int x0, int y0, int x1, int y1, int from) {
+    struct surface *s = &st->screen;
+    if (st->scene == SCENE_DESKTOP && y1 > DOCK_Y - 40) {   /* the dock is drawn (draw_layers) */
+        st->dock_live = 0;
+        for (int i = 0; i < DOCK_ALL; i++) st->dock_live |= (unsigned)running(st, i) << i;
+    }
+    int bx = x0 & ~1, stride = (x1 - bx + 1) & ~1, rows = BAND_PX / stride;
+    for (int by = y0; by < y1; by += rows) {
+        int by1 = y1 - by < rows ? y1 : by + rows;
+        s->px = (unsigned *)(PAGE(BAND_PAGE) - 4 * ((u64)by * (u64)stride + (u64)bx));
+        s->stride = stride;
+        s->cx0 = x0;
+        s->cy0 = by;
+        s->cx1 = x1;
+        s->cy1 = by1;
+        draw_layers(st, from);
+        band_out(st, x0, by, x1, by1, stride);
+    }
 }
 
 /* Redraw one rectangle of the screen: background, bar, windows bottom to top, dock, pointer.
@@ -777,7 +893,7 @@ static void composite_depth(struct state *st, int x0, int y0, int x1, int y1, in
     if (x0 >= x1 || y0 >= y1) return;
     int o[4], top = -1;
     long whole = (long)(x1 - x0) * (y1 - y0);
-    for (int i = st->nz - 1; i >= 0 && depth < 4; i--) {
+    for (int i = st->nz - 1; i >= 0 && depth < 4 && st->scene == SCENE_DESKTOP; i--) {
         long a = opaque_part(&st->win[st->z[i]], x0, y0, x1, y1, o);
         if (a == whole || a >= 64 * 64) {   /* worth splitting for */
             top = i;
@@ -1458,13 +1574,11 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
             say(l);
             if (!restart) {
                 /* A Pi cannot cut its own power: the kernel halts. Say it is safe. */
-                struct surface *sc = &st->screen;
-                fill(sc, 0, 0, W, H, rgb(12, 14, 22));
-                const char *msg = "leanos has shut down. You can switch off the Pi.";
-                font_text(sc, &st->medium, W / 2 - text_w(&st->medium, msg) / 2, H / 2, msg,
-                          rgb(210, 214, 228));
+                st->scene = SCENE_OFF;
+                composite(st, 0, 0, W, H);
             }
             sys(SYS_POWER, POWER, restart ? POWER_RESTART : POWER_OFF, 0, 0, 0);
+            st->scene = SCENE_DESKTOP;
         }
         composite(st, ox, oy, 12, 19);
         composite(st, st->px, st->py, 12, 19);
@@ -2013,8 +2127,13 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
         exit_task();
     }
     /* The assets: a read-only view of the start of the spare run. */
-    struct res ro = sys(SYS_DERIVE, 3, R, 0, 200, 0);
+    struct res ro = sys(SYS_DERIVE, 3, R, 0, BAND_OFF, 0);
     sys2(SYS_MAP, ro.x[1], ASSET_PAGE);
+    /* The band, after them: this server's own memory, read-write, cached. */
+    struct res band = sys(SYS_DERIVE, 3, R | 2 /* write */, BAND_OFF, BAND_PAGES, 0);
+    sys2(SYS_MAP, band.x[1], BAND_PAGE);
+    _Static_assert(ASSET_PAGE + BAND_OFF <= BAND_PAGE && BAND_PAGE + BAND_PAGES <= WIN_TABLE_PAGE &&
+                   BAND_OFF + BAND_PAGES == 200, "the assets, the band and the window table, in order");
     /* The window table is too big for the data pages: it lives in the spare run's tail,
        past the assets, which is this server's own memory. */
     struct res rw = sys(SYS_DERIVE, 3, R | 2 /* write: W is the screen's width here */, 200, 28, 0);
@@ -2033,7 +2152,9 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
     for (int i = 0; i < DOCK_ALL; i++) st->icons[i] = picture_of(assets, ASSET_ICON, 10 + i);
     st->pending[0] = 0;
 
-    st->screen = surface_of((unsigned *)PAGE(FB_PAGE), W, H);
+    st->fb = (unsigned *)PAGE(FB_PAGE);
+    st->screen = surface_of((unsigned *)PAGE(BAND_PAGE), W, H);   /* composite_from points it at the band */
+    st->scene = SCENE_DESKTOP;
     st->theme = 0;
     st->full_reported = st->click_reported = 0;
     st->menu = 0;
@@ -2049,6 +2170,8 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
     for (int p = 0; p < NSLOT; p++) st->hold[p] = st->parked[p] = 0;
     st->parked_said = 0;
     make_background(st);
+    shadow_keep(st->keep_win, RADIUS);
+    shadow_keep(st->keep_menu, MENU_R);
     st->px = W / 2;
     st->py = H / 2;
     splash(st);

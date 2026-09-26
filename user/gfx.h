@@ -130,17 +130,11 @@ static inline unsigned darken(unsigned c, unsigned f) {
    depends only on its distance to the lowered rectangle. That is worked out once per
    pixel (a square root only in the corners), in one pass, from two small tables. And the
    rectangle hides everything under it but its corners, so that part is skipped: the work
-   follows the edge, not the area. */
-#define SHADOW_MAX_R 32
-static inline void shadow(struct surface *s, int x, int y, int w, int h, int r, int drop) {
-    if (r > SHADOW_MAX_R) r = SHADOW_MAX_R;
-    int by = y + 4 + drop;                      /* the layers' base: the rectangle, lowered */
-    /* keep_n[n]: what n full layers leave of the pixel under them (0..256) */
-    unsigned keep_n[8];
-    keep_n[0] = 256;
-    for (int n = 1; n < 8; n++) keep_n[n] = keep_n[n - 1] * 246 >> 8;
-    /* keep_e[e]: what the six layers leave at distance e (1/16 px) from a corner's center */
-    unsigned short keep_e[(SHADOW_MAX_R + 7) * 16 + 1];
+   follows the edge, not the area. The larger table depends only on r: shadow_keep makes
+   it once, for every shadow of that radius (keep_e, made for the r it is given with). */
+#define SHADOW_KEEP(r) (((r) + 7) * 16 + 1)   /* the table's entries for radius r */
+/* keep_e[e]: what the six layers leave at distance e (1/16 px) from a corner's center */
+static inline void shadow_keep(unsigned short *keep_e, int r) {
     int emax = (r + 7) * 16;
     for (int e = 0; e <= emax; e++) {
         unsigned f = 256;
@@ -152,6 +146,15 @@ static inline void shadow(struct surface *s, int x, int y, int w, int h, int r, 
         }
         keep_e[e] = (unsigned short)f;
     }
+}
+static inline void shadow(struct surface *s, int x, int y, int w, int h, int r, int drop,
+                          const unsigned short *keep_e) {
+    int by = y + 4 + drop;                      /* the layers' base: the rectangle, lowered */
+    /* keep_n[n]: what n full layers leave of the pixel under them (0..256) */
+    unsigned keep_n[8];
+    keep_n[0] = 256;
+    for (int n = 1; n < 8; n++) keep_n[n] = keep_n[n - 1] * 246 >> 8;
+    int emax = (r + 7) * 16;
     int x0 = x - 6 < s->cx0 ? s->cx0 : x - 6, x1 = x + w + 6 > s->cx1 ? s->cx1 : x + w + 6;
     int y0 = by - 6 < s->cy0 ? s->cy0 : by - 6, y1 = by + h + 6 > s->cy1 ? s->cy1 : by + h + 6;
     for (int j = y0; j < y1; j++) {

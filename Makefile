@@ -112,9 +112,12 @@ DISPLAY_ASSETS := font:1:$(FONTS)/Inter-Regular.ttf:15 font:2:$(FONTS)/Inter-Sem
 ALICE_ASSETS := font:5:$(FONTS)/Inter-SemiBold.ttf:20 font:6:$(FONTS)/Inter-Regular.ttf:17 \
   font:3:$(FONTS)/Inter-Regular.ttf:12
 
+# The display maps only the first 168 pages of its spare run as assets (BAND_OFF in
+# user/display.c): its band and window table follow them.
 build/assets/display.bin: tools/mkassets.py Makefile $(wildcard assets/*/*)
 	@mkdir -p build/assets
 	python3 tools/mkassets.py $@ $(DISPLAY_ASSETS)
+	@[ $$(wc -c < $@) -le $$((168 * 4096)) ] || { echo "$@: more than the 168 pages the display maps (BAND_OFF)"; rm -f $@; exit 1; }
 
 TERMINAL_ASSETS := font:1:$(FONTS)/JetBrainsMono-Regular.ttf:14
 SETTINGS_ASSETS := font:1:$(FONTS)/Inter-Regular.ttf:14 font:2:$(FONTS)/Inter-SemiBold.ttf:16 \
