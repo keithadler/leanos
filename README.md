@@ -47,7 +47,7 @@ This is the start. The next steps, in order:
 
 - **A desktop** at 1024×600: windows you can drag, minimize, zoom and go through with
   Ctrl+O, a menu bar with the date and time in the time zone chosen in Settings, and a dock. Built-in apps: Notes, Files, Terminal, Settings,
-  Security and Apps; the dock also keeps Clock, Calculator, Tour and Web from the SD card. What
+  Security and Apps (every program on the card, ten to a page; type to find one); the dock also keeps Clock, Calculator, Tour and Web from the SD card. What
   opens at startup is a list on the SD card (`startup.txt`: Apps and the tour, to begin with).
 - **Copy and paste, by hand only**: Ctrl+C and Ctrl+V (or the Edit menu in the menu bar)
   between Notes, Terminal and `edit`. The display server keeps the clipboard. It asks the
@@ -159,7 +159,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 39 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Files as a file manager, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 40 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Files as a file manager, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash

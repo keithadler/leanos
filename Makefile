@@ -270,8 +270,8 @@ pi-bringup: build/pi-bringup/kernel8.img $(DISK_ELFS) $(DISK_ICONS) tools/mkpiim
 	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup.txt
 
 # The self-test card: the bring-up card (its kernel and config.txt: the firmware's log, LED
-# codes, step times, more of the board), with selftest first on the data partition (Apps lists
-# the first 10 programs) and a startup.txt that opens Apps and then selftest, in front. The
+# codes, step times, more of the board), with selftest first on the data partition (the first
+# program on Apps' first page) and a startup.txt that opens Apps and then selftest, in front. The
 # variables are for test/selftest.sh, which builds the same card with QEMU's kernel and
 # stand-in firmware and boots it.
 SELFTEST_IMG ?= build/leanos-pi4-selftest.img

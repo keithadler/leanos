@@ -7,7 +7,8 @@ The dock
   Settings  the background and the time zone (both kept on the card, in settings.txt),
             and the Raspberry Pi's speed and light
   Security  what every program's boot check found, and what is proved
-  Apps      every program, built in or on the card, with its icon; click one to start it
+  Apps      every program, built in or on the card, with its icon; click one to start it,
+            or type part of its name and press Return (Page Down: the next page)
 
 The leanos menu
   Click the logo at the top left: Restart, or Shut down.
