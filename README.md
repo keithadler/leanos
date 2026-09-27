@@ -55,9 +55,10 @@ This is the start. The next steps, in order:
   window, and hands the text only to the window in front when you press Ctrl+V. No program
   can read the clipboard, or put text on it, by asking.
 - **Programs from the SD card**: `web` (a text web browser), `edit` (a text editor),
-  `clock`, `calc`, `snake`, `life`, `tiles` (2048), `mines` (Minesweeper), `tour`, `fuzz`
-  and `hello`. Up to six run at once, each confined to its own memory, a window, its own
-  folder, the files you hand it, and the network only if you allow it.
+  `calendar` (a month at a time, with events kept on the card), `clock`, `calc`, `snake`,
+  `life`, `tiles` (2048), `mines` (Minesweeper), `tour`, `fuzz` and `hello`. Up to six run
+  at once, each confined to its own memory, a window, its own folder, the files you hand it,
+  and the network only if you allow it.
 - **A real file system** on the SD card: folders, large files, and a write-ahead journal so
   a power cut never leaves a change half done (proved for a model of the journal, and
   tested by cutting the power twelve times mid-write).
@@ -159,7 +160,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 41 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, Files as a file manager, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 42 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, the calendar and its events, Files as a file manager, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -186,6 +187,9 @@ Things to try once it is up:
   after it), long notes wrap and scroll, Tab goes to the list (Up and Down, then Return),
   and Ctrl+D twice deletes a note. Each note is a file: `cat notes/1.txt` in Terminal.
 - `run edit notes/1.txt` in Terminal edits that one file, and nothing else.
+- `run calendar` shows the month, today in blue once a time server has said the date. The
+  arrows, Page Up and Page Down go through the days and months; Return adds an event to the
+  day selected, kept in `apps/calendar/events.txt`, one line each.
 - Type in Notes, press Ctrl+C, click Terminal and press Ctrl+V: the text is on its command
   line, and nothing runs until you press Return.
 - `run web` (without `-net`) and watch the network refuse it.
