@@ -10,7 +10,13 @@
    first, and each event says which window it is for (event.win). The display holds one
    waiting call per program, however many windows it has. An app closes a window of its
    own with app_close; one whose close button was clicked is gone when the app hears its
-   EV_CLOSE. An app with one window never sees any of this: its events are all for 0. */
+   EV_CLOSE. An app with one window never sees any of this: its events are all for 0.
+
+   A window hears a click in it as EV_DOWN (a, b: where, in the window's pixels), the press
+   alone. One opened with app_open_drag hears a drag as well: from a press in it until the
+   button comes up, every move (EV_MOVE) and the release (EV_UP) are its, wherever the
+   pointer goes (off its left or top edge: negative, so take a and b as int). Moves it has
+   not taken yet are merged, so a slow program hears where the pointer is now. */
 #pragma once
 #include "lib.h"
 #include "gfx.h"
@@ -36,6 +42,7 @@ enum { SET_BACKGROUND = 1, SET_ZONE = 2 };
    in the kind word, from bit EV_WIN up: a program with one window gets the kind alone. */
 struct event { u64 kind, a, b, win; };
 #define EV_WIN 8
+#define OPEN_DRAG (1UL << 32) /* in OPEN's size word: the window hears drags (app_open_drag) */
 
 #define NSLOTS 17  /* program slots in the manifest */
 
@@ -51,13 +58,13 @@ static inline struct surface app_surface_at(u64 offset, int w, int h) {
 static inline struct surface app_surface(int w, int h) { return app_surface_at(APP_WIN_OFFSET, w, h); }
 
 /* Ask the display for a window showing the pixels app_surface_at(offset) returns; its
-   number goes in *id. */
-static inline u64 app_open_id(u64 offset, int w, int h, const char *title, u64 *id) {
+   number goes in *id. `drag`: OPEN_DRAG, or 0. */
+static inline u64 app_open_as(u64 offset, int w, int h, u64 drag, const char *title, u64 *id) {
     u64 pages = ((u64)w * (u64)h * 4 + 4095) / 4096, t = 0;
     for (int i = 0; i < 8 && title[i]; i++) t |= (u64)(unsigned char)title[i] << (8 * i);
     struct res ro = sys(SYS_DERIVE, SPARE, R, offset, pages, 0);
     if (ro.status != OK) return ro.status;
-    struct res r = sys(SYS_CALL, ENDPOINT, OP_OPEN, (u64)w << 16 | (u64)h, t, ro.x[1] + 1);
+    struct res r = sys(SYS_CALL, ENDPOINT, OP_OPEN, drag | (u64)w << 16 | (u64)h, t, ro.x[1] + 1);
     if (r.status != OK || r.x[1] != 0) return BAD_ARG;
     *id = r.x[2];
     /* If the loader put this program's icon and name in its image (pages 12-15 of the code
@@ -70,11 +77,20 @@ static inline u64 app_open_id(u64 offset, int w, int h, const char *title, u64 *
     }
     return OK;
 }
+static inline u64 app_open_id(u64 offset, int w, int h, const char *title, u64 *id) {
+    return app_open_as(offset, w, h, 0, title, id);
+}
 static inline u64 app_open_at(u64 offset, int w, int h, const char *title) {
     u64 id;
     return app_open_id(offset, w, h, title, &id);
 }
 static inline u64 app_open(int w, int h, const char *title) { return app_open_at(APP_WIN_OFFSET, w, h, title); }
+
+/* A window that hears drags (see the top), its pixels `offset` pages into the spare run. */
+static inline u64 app_open_drag(u64 offset, int w, int h, const char *title) {
+    u64 id;
+    return app_open_as(offset, w, h, OPEN_DRAG, title, &id);
+}
 
 /* Another window (or a first): its number, or -1 if the display refused it. Each window
    needs pixels of its own in the spare run, at offsets that do not overlap. */
