@@ -137,6 +137,11 @@ Programs on the card
   snake   the arrow keys steer; space plays again
   life    Conway's Game of Life; space pauses, a click adds a cell, r reseeds
   tiles   2048: the arrow keys slide the tiles
+  mines   Minesweeper: a click opens a cell (the first is never a mine), a click on the
+          lit Flag button makes clicks flag, a click on a number whose flags are all
+          placed opens the rest around it. The arrows move a cursor, Space opens, F flags,
+          N starts again, 1 2 3 choose Beginner, Intermediate or Expert. Best times are
+          kept in apps/mines/best.txt.
   clock   the time in your time zone (until a time server answers, how long the Pi has been
           up), a stopwatch and a timer: click a tab at the top, or press C, S or T.
           Stopwatch: space starts and stops it, L takes a lap, R resets it.
