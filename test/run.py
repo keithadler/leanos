@@ -431,7 +431,7 @@ APP_STEPS = [*keys("Hi"), *wclick("alice", *CLOSE), wait_for("alice: window clos
              *keys("abc"),
              *wclick("Terminal", 230, 280), b"run clock\r", wait_for("clock: ticked 3 times"),
              *click(*DOCK["Files"]), wait_for("files: opened"),
-             *[b"\x1b[B"] * 13, wait_for("files: showing hello.txt"),
+             *[b"\x1b[B"] * 14, wait_for("files: showing hello.txt"),
              *click(*DOCK["Security"]), wait_for("security: 13")]
 
 if __name__ == "__main__":
