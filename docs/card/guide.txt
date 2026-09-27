@@ -160,6 +160,10 @@ Programs on the card
   edit    a text editor: run edit FILE gives it that file; it saves by itself. Home, End,
           Delete, Page Up and Page Down work as in Notes (its lines are not wrapped)
   web     a text web browser: run -net web lets it use the network
+  view    a picture viewer: run view FILE shows a BMP, PPM or PGM; run view alone shows the
+          pictures in its folder, apps/view. Left and Right (or N and P) go through them, F
+          fits one to the window, 1 shows it at its own size, + and - zoom, and the arrows
+          (or a click) move across one larger than the window
 
 Every program from the card runs in an open slot: it gets its own memory and a window,
 and nothing else, whatever it was written to do. Up to six run at once.

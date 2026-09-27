@@ -183,7 +183,7 @@ build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/f
 build/user/usb.elf: user/xhci.c
 
 # Programs that live on the SD card, not in the kernel image: stripped ELF files.
-DISK_PROGS := hello clock tour calc snake life tiles fuzz edit web mines calendar
+DISK_PROGS := hello clock tour calc snake life tiles fuzz edit web mines calendar view
 DISK_ELFS := $(patsubst %,build/progs/%.elf,$(DISK_PROGS))
 build/progs/%.elf: user/progs/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/ui.h user/date.h user/zone.h \
   user/user.ld build/user/font.h
@@ -217,27 +217,36 @@ ICON_SRC_edit := pencil_3d
 ICON_SRC_web := globe_with_meridians_3d
 ICON_SRC_mines := bomb_3d
 ICON_SRC_calendar := spiral_calendar_3d
+ICON_SRC_view := framed_picture_3d
 ICON_SRC_selftest := lady_beetle_3d
 DISK_ICONS := $(patsubst %,build/icons/%.icon,$(DISK_PROGS))
 build/icons/%.icon: tools/mkicon.py tools/mkassets.py
 	@mkdir -p build/icons
 	python3 tools/mkicon.py $@ assets/icons/$(ICON_SRC_$*).png 56
-# The card people use: the same, and startup.txt (Apps and the tour open at boot). The tests
-# boot the plain card, so they see the system as it starts with nothing asked of it.
-build/sd-desktop.img: tools/mksd.py $(DISK_ELFS) $(DISK_ICONS) $(patsubst %,docs/card/%,$(DISK_DOCS)) docs/card/startup.txt
+# Pictures for view to show at first, in its own folder (tools/mksamples.py makes them).
+VIEW_SAMPLES := colors.bmp sunset.ppm
+SAMPLE_FILES := $(patsubst %,build/samples/%,$(VIEW_SAMPLES))
+SAMPLE_SPECS := $(foreach f,$(VIEW_SAMPLES),apps/view/$(f)=build/samples/$(f))
+build/samples/%: tools/mksamples.py
+	python3 tools/mksamples.py $@
+# The card people use: the same, and startup.txt (Apps and the tour open at boot) and view's
+# pictures. The tests boot the plain card, so they see the system as it starts with nothing
+# asked of it.
+build/sd-desktop.img: tools/mksd.py $(DISK_ELFS) $(DISK_ICONS) $(patsubst %,docs/card/%,$(DISK_DOCS)) docs/card/startup.txt \
+  $(SAMPLE_FILES)
 	python3 tools/mksd.py $@ $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) \
 	  $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) \
-	  startup.txt=docs/card/startup.txt
+	  startup.txt=docs/card/startup.txt $(SAMPLE_SPECS)
 build/sd-template.img: tools/mksd.py $(DISK_ELFS) $(DISK_ICONS) $(patsubst %,docs/card/%,$(DISK_DOCS))
 	python3 tools/mksd.py $@ $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) \
 	  $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d))
 
 # An SD card image a Raspberry Pi 4 boots (tools/mkpiimage.py); the firmware files come from
 # tools/fetch-firmware.sh, which you run once.
-pi-image: build/pi/kernel8.img $(DISK_ELFS) $(DISK_ICONS) tools/mkpiimage.py tools/mksd.py
+pi-image: build/pi/kernel8.img $(DISK_ELFS) $(DISK_ICONS) $(SAMPLE_FILES) tools/mkpiimage.py tools/mksd.py
 	python3 tools/mkpiimage.py build/leanos-pi4.img --kernel build/pi/kernel8.img \
 	  $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) \
-	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup.txt
+	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup.txt $(SAMPLE_SPECS)
 
 # The kernel for a real Pi: the same, except that switching off halts instead of ending the
 # emulator through semihosting (a Pi has no debugger to take that call), and the green LED
@@ -266,10 +275,10 @@ build/pi-bringup/kernel8.img: $(BRINGUP_ARCH_O) $(INIT_O) arch/kernel.ld
 	$(LD) -T arch/kernel.ld --gc-sections $(BRINGUP_ARCH_O) $(INIT_O) -o build/pi-bringup/leanos.elf
 	$(OBJCOPY) -O binary build/pi-bringup/leanos.elf $@
 
-pi-bringup: build/pi-bringup/kernel8.img $(DISK_ELFS) $(DISK_ICONS) tools/mkpiimage.py tools/mksd.py
+pi-bringup: build/pi-bringup/kernel8.img $(DISK_ELFS) $(DISK_ICONS) $(SAMPLE_FILES) tools/mkpiimage.py tools/mksd.py
 	python3 tools/mkpiimage.py build/leanos-pi4-bringup.img --kernel build/pi-bringup/kernel8.img --bringup \
 	  $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) \
-	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup.txt
+	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup.txt $(SAMPLE_SPECS)
 
 # The self-test card: the bring-up card (its kernel and config.txt: the firmware's log, LED
 # codes, step times, more of the board), with selftest first on the data partition (the first
@@ -280,11 +289,11 @@ SELFTEST_IMG ?= build/leanos-pi4-selftest.img
 SELFTEST_KERNEL ?= build/pi-bringup/kernel8.img
 SELFTEST_FIRMWARE ?= build/firmware
 pi-selftest: $(SELFTEST_KERNEL) $(SELFTEST_ELF) build/icons/selftest.icon $(DISK_ELFS) $(DISK_ICONS) \
-  docs/card/startup-selftest.txt tools/mkpiimage.py tools/mksd.py
+  $(SAMPLE_FILES) docs/card/startup-selftest.txt tools/mkpiimage.py tools/mksd.py
 	python3 tools/mkpiimage.py $(SELFTEST_IMG) --kernel $(SELFTEST_KERNEL) --firmware $(SELFTEST_FIRMWARE) --selftest \
 	  selftest=$(SELFTEST_ELF) selftest.icon=build/icons/selftest.icon \
 	  $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) \
-	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup-selftest.txt
+	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup-selftest.txt $(SAMPLE_SPECS)
 
 build/user/%.bin: build/user/%.elf
 	$(OBJCOPY) -O binary $< $@

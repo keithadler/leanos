@@ -2,7 +2,8 @@
 """Writes an SD card image for leanos: a partition table (MBR) and a data partition of type
 0xDA holding the file server's file system (user/fs.c: a superblock, a journal, a bitmap of
 4 KiB clusters, inodes, and the files, all in the top folder), with welcome.txt and the
-programs given, so Terminal can run them (`run NAME`).
+programs given, so Terminal can run them (`run NAME`). A NAME with '/' in it goes in folders,
+made as needed: apps/view/colors.bmp=FILE puts a picture in view's own folder.
 
 The machine layer finds the data partition at boot and keeps every block the file server
 reads or writes inside it; a real card's boot partition is never touched. tools/mkpiimage.py
@@ -56,7 +57,8 @@ def geometry(total, journal=JOURNAL, inodes=INODES):
 
 
 def file_system(files, total):
-    """The data partition's contents: every file in the top folder."""
+    """The data partition's contents: the files, in the top folder or (a name with '/') in
+    folders under it."""
     g = geometry(total)
     disk = bytearray(g["data_start"] * SECTOR)
     clusters = {}                                    # cluster number -> 4 KiB
@@ -85,17 +87,40 @@ def file_system(files, total):
         struct.pack_into("<HHI12III", inodes, 64 * ino, kind, 0, len(content),
                          *(direct + [0] * (NDIRECT - len(direct))), indirect, 0)
 
-    entries = bytearray()
-    for i, (name, content) in enumerate(files):
-        raw = name.encode()
-        if len(raw) > NAME_MAX or not name.isprintable() or "/" in name or " " in name:
-            sys.exit(f"bad file name: {name}")
-        ino = 2 + i
-        if ino >= g["inode_count"]:
-            sys.exit("too many files")
-        write_inode(ino, FS_FILE, content)
-        entries += struct.pack("<II", ino, FS_FILE) + raw.ljust(56, b"\0")
-    write_inode(1, FS_DIR, bytes(entries))           # the top folder
+    # the tree: a folder is a dict of name -> content (bytes) or folder, in the order given
+    top = {}
+    for name, content in files:
+        parts = name.split("/")
+        for part in parts:
+            if not part or len(part.encode()) > NAME_MAX or not part.isprintable() or " " in part:
+                sys.exit(f"bad file name: {name}")
+        folder = top
+        for part in parts[:-1]:
+            folder = folder.setdefault(part, {})
+            if not isinstance(folder, dict):
+                sys.exit(f"{name}: {part} is a file, not a folder")
+        if parts[-1] in folder:
+            sys.exit(f"{name} is on the card twice")
+        folder[parts[-1]] = content
+    next_ino = [2]
+
+    def write_folder(ino, folder):
+        """Each entry first (a folder's own entries before it), then the folder itself."""
+        entries = bytearray()
+        for name, content in folder.items():
+            child = next_ino[0]
+            next_ino[0] += 1
+            if child >= g["inode_count"]:
+                sys.exit("too many files")
+            kind = FS_DIR if isinstance(content, dict) else FS_FILE
+            if kind == FS_DIR:
+                write_folder(child, content)
+            else:
+                write_inode(child, FS_FILE, content)
+            entries += struct.pack("<II", child, kind) + name.encode().ljust(56, b"\0")
+        write_inode(ino, FS_DIR, bytes(entries))
+
+    write_folder(1, top)                             # the top folder
 
     for c in range(next_cluster[0]):
         bitmap[c // 8] |= 1 << (c % 8)
