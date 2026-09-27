@@ -7,7 +7,8 @@
 #   1. The first click, in the middle, opens an area: on the screen exactly the cells the
 #      board says it opens are open, and the rest are not.
 #   2. The Flag button, lit, makes a click flag a mine; out again, the keys move the cursor
-#      to another cell, and F flags and unflags it. On the screen: the flag, on a closed cell.
+#      to another cell, and F flags and unflags it. A right click (ESC m D, then U) flags a
+#      third cell and another takes the flag back. On the screen: the flags, on closed cells.
 #   3. A click on another mine loses: that one on red, every other mine shown, the flagged
 #      one still flagged.
 #   4. N starts a new game; the same first click places the same mines. The keys flag a mine
@@ -67,7 +68,7 @@ out=$(SEED=$SEED python3 - "$T" <<'PY'
 import os, sys
 sys.path.insert(0, "test")
 sys.path.insert(0, sys.argv[1])
-from run import boot, mouse, wait_for, pause, snap, wclick, CLOSE, DOCK, TITLE_H
+from run import boot, mouse, wait_for, pause, snap, wclick, wmouse, CLOSE, DOCK, TITLE_H
 from board import board, flood, around, near
 click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
 line = lambda s: [s.encode() + b"\r"]
@@ -77,6 +78,7 @@ SEED = int(os.environ["SEED"])
 # 74 x 26; the levels along the bottom from (9, 300), 160 x 24 each
 CS, BX, BY = 28, 123, 42
 cell = lambda c: wclick("mines", BX + c[0] * CS + CS // 2, TITLE_H + BY + c[1] * CS + CS // 2)
+right = lambda c: [wmouse(k, "mines", BX + c[0] * CS + CS // 2, TITLE_H + BY + c[1] * CS + CS // 2) for k in "DU"]
 FLAG_BUTTON = wclick("mines", 75 + 37, TITLE_H + 6 + 13)
 BEGINNER = wclick("mines", 9 + 80, TITLE_H + 300 + 12)
 FIRST = (4, 4)
@@ -85,6 +87,7 @@ opened = flood(FIRST, mines, set(), 9, 9)
 closed = sorted(c for c in [(x, y) for y in range(9) for x in range(9)] if c not in opened)
 m1, m2 = sorted(mines)[0], sorted(mines)[-1]            # the one flagged, the one that loses
 other = next(c for c in closed if c != m1 and c not in mines)
+third = next(c for c in closed if c not in (m1, other))           # flagged by the right button
 def moves(a, b):
     """The arrow keys from cell a to cell b."""
     dx, dy = b[0] - a[0], b[1] - a[1]
@@ -119,12 +122,13 @@ steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *FLAG_BUTTON, wait_for("mines: flag mode on"), *cell(m1), wait_for("mines: flagged"),
          *FLAG_BUTTON, wait_for("mines: flag mode off"),
          *moves(m1, other), b"f", wait_for("mines: flagged", 2), b"F", wait_for("mines: unflagged"),
-         pause(0.3), snap("mines-flag"),
+         *right(third), wait_for("mines: flagged", 3), pause(0.3), snap("mines-right"),
+         *right(third), wait_for("mines: unflagged", 2), pause(0.3), snap("mines-flag"),
          # 3. a mine
          *cell(m2), wait_for("mines: lost at"), pause(0.3), snap("mines-lost"),
          # 4. the same board again, won
          b"n", wait_for("mines: new game", 2), *cell(FIRST), wait_for("mines: mines placed", 2),
-         *moves(FIRST, beside), b"f", wait_for("mines: flagged", 3),
+         *moves(FIRST, beside), b"f", wait_for("mines: flagged", 4),
          *cell(one), wait_for(f"mines: chord at {one[0]},{one[1]} opened {chorded} cell"),
          *moves(one, by_key), b" ", wait_for(f"mines: opened {by_key_opens} "),
          *[x for c in clicks for x in cell(c)], wait_for("mines: won beginner"),
@@ -136,7 +140,7 @@ steps = [*click(*DOCK["Terminal"]), wait_for("terminal: opened"),
          *wclick("Terminal", 230, 60), *line("run mines"), wait_for("mines: best times", 2),
          wait_for("mines: opened a window", 2), b"2"]
 print("test: board " + " ".join(f"{x},{y}" for x, y in sorted(mines)) +
-      f" first-open {len(opened)} m1 {m1[0]},{m1[1]} m2 {m2[0]},{m2[1]} other {other[0]},{other[1]}"
+      f" first-open {len(opened)} m1 {m1[0]},{m1[1]} m2 {m2[0]},{m2[1]} other {other[0]},{other[1]} third {third[0]},{third[1]}"
       f" chord {one[0]},{one[1]} opened {chorded} by-key {by_key[0]},{by_key[1]} clicks {len(clicks)}", flush=True)
 sys.exit(boot(150, steps=steps, until="mines: new game, intermediate", settle=0.5))
 PY
@@ -158,7 +162,7 @@ from board import board, flood
 T = sys.argv[1]
 log = open(os.path.join(T, "serial.txt")).read().splitlines()
 info = next(l for l in log if l.startswith("test: board "))
-m1, m2, other = (tuple(map(int, re.search(k + r" (\d+),(\d+)", info).groups())) for k in ("m1", "m2", "other"))
+m1, m2, other, third = (tuple(map(int, re.search(k + r" (\d+),(\d+)", info).groups())) for k in ("m1", "m2", "other", "third"))
 seed = int(re.search(r"mines: seed (\d+)", "\n".join(log)).group(1))
 mines = board(seed, 9, 9, 10, 4, 4)
 first = flood((4, 4), mines, set(), 9, 9)
@@ -168,6 +172,10 @@ assert f"mines: mines placed after the first click at 4,4 (seed {seed}, from see
 assert f"mines: opened {len(first)} cells at 4,4" in log, ("the first click opened", len(first))
 assert f"mines: flagged {m1[0]},{m1[1]} (9 left)" in log
 assert f"mines: flagged {other[0]},{other[1]} (8 left)" in log and f"mines: unflagged {other[0]},{other[1]} (9 left)" in log
+# the right button: flagged, then not; nothing else flagged or opened in between
+ml = [l for l in log if l.startswith("mines: ")]
+i = ml.index(f"mines: unflagged {other[0]},{other[1]} (9 left)")
+assert ml[i + 1:i + 3] == [f"mines: flagged {third[0]},{third[1]} (8 left)", f"mines: unflagged {third[0]},{third[1]} (9 left)"], ml[i + 1:i + 4]
 assert any(l.startswith(f"mines: lost at {m2[0]},{m2[1]} after ") for l in log)
 won = next(l for l in log if l.startswith("mines: won beginner in "))
 secs = int(re.match(r"mines: won beginner in (\d+) s \(\d+ ms\), a new best$", won).group(1))
@@ -201,9 +209,14 @@ bg, mid, flagged = board_px("mines-first", CS, BX, BY)
 for c in cells:
     assert bg(c) == (FLAT if c in first else RAISED), ("after the first click", c, bg(c))
 
+bg, mid, flagged = board_px("mines-right", CS, BX, BY)
+assert bg(third) == RAISED and flagged(third), ("the right button's flag", third)
+assert bg(m1) == RAISED and flagged(m1) and not flagged(other), ("the flags", m1, other)
+
 bg, mid, flagged = board_px("mines-flag", CS, BX, BY)
 assert bg(m1) == RAISED and flagged(m1), ("the flag", m1)
 assert bg(other) == RAISED and not flagged(other), ("unflagged", other)
+assert bg(third) == RAISED and not flagged(third), ("unflagged by the right button", third)
 
 bg, mid, flagged = board_px("mines-lost", CS, BX, BY)
 assert bg(m2) == BOOM and mid(m2) == MINE, ("the mine that went off", bg(m2), mid(m2))
@@ -247,7 +260,7 @@ def lookup(path):
     return n
 best = content(lookup("apps/mines/best.txt")).decode()
 assert best == f"beginner {secs}\n", ("best.txt says", best)
-print(f"ok: the first click opened {len(first)} cells, as the board says; a flag; the loss showed all 10 mines; "
+print(f"ok: the first click opened {len(first)} cells, as the board says; flags, by the right button too; the loss showed all 10 mines; "
       f"the win in {secs} s flagged them; Expert drew 30 x 16; best.txt on the card: {best.strip()!r}")
 PY
-echo "ok: mines places its mines after the first click, flags, loses, wins, and keeps the best time"
+echo "ok: mines places its mines after the first click, flags (by a right click too), loses, wins, and keeps the best time"

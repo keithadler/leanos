@@ -5,8 +5,12 @@
    A tool bar at the top, the picture in the middle, the colors and a status line at the
    bottom. Drag to draw (the display gives a window that asks for it, app_open_drag, every
    move of a drag and its release). A click on a color makes it the first color, the one
-   the tools draw with; X, or a click on the two squares beside the colors, swaps it with
-   the second, which starts white.
+   the tools draw with; a right click makes it the second, which starts white; X, or a click
+   on the two squares beside the colors, swaps them. Drag with the right button (the same
+   window hears it: EV_RDOWN, the moves, EV_RUP) and every tool works with the second color
+   instead: the pencil, the brush, lines and shapes draw in it, the fill fills with it, the
+   eraser paints it (the left button's eraser paints white), and the picker takes the color
+   under the pointer as the second color.
 
    The tools, with their keys:
      P  pencil             one pixel
@@ -16,7 +20,8 @@
      R  rectangle          Shift+R filled
      O  ellipse            in the box from the press to the release; Shift+O filled
      F  fill               the area of one color the click is in, 4-connected
-     I  color picker       takes the color under the pointer, as the first color
+     I  color picker       takes the color under the pointer, as the first color (the
+                           right button: as the second)
      1 2 3                 the size of the brush and the eraser, and of lines and outlines
      X                     swaps the two colors
      Delete or Backspace   clears the picture to white
@@ -859,7 +864,7 @@ static void pen(struct paint *p) {
     p->pen_square = t == T_ERASER;
     p->pen_r = t == T_PENCIL ? 0 : t == T_BRUSH ? brush_r[p->size] : t == T_ERASER ? eraser_r[p->size]
              : (thick[p->size] - 1) / 2;
-    p->ink = t == T_ERASER ? PAPER : p->color[p->which];
+    p->ink = t == T_ERASER && !p->which ? PAPER : p->color[p->which];
 }
 
 /* The drag, now at (x, y) on the canvas. */
@@ -889,10 +894,11 @@ static void release(struct paint *p, struct line *l) {
     finish(p, l);
 }
 
-static void press(struct paint *p, struct line *l, int x, int y) {
+/* A press at (x, y), with the left button (which 0) or the right (1): what it draws with. */
+static void press(struct paint *p, struct line *l, int x, int y, int which) {
     if (p->down) release(p, l);         /* a release the display never sent (the window went) */
     if (y < CY) {
-        int k = button_at(x, y);
+        int k = which ? -1 : button_at(x, y);         /* the tool bar: the left button only */
         if (k < 0) return;
         if (k < NTOOL) set_tool(p, l, k);
         else if (k < B_UNDO) p->size = k - B_SIZE;
@@ -903,7 +909,7 @@ static void press(struct paint *p, struct line *l, int x, int y) {
     if (y >= FY) {
         int px = x - 50, py = y - FY - 6;
         if (px >= 0 && px < 8 * 18 && py >= 0 && py < 2 * 18 && px % 18 < 16 && py % 18 < 16)
-            set_color(p, l, 0, palette[py / 18 * 8 + px / 18]);
+            set_color(p, l, which, palette[py / 18 * 8 + px / 18]);
         else if (x >= 7 && x < 41 && y >= FY + 6 && y < FY + 38) {
             unsigned c = p->color[0];   /* the two squares: swapped */
             p->color[0] = p->color[1];
@@ -914,7 +920,7 @@ static void press(struct paint *p, struct line *l, int x, int y) {
     y -= CY;
     if (x >= p->w || y >= p->h) return;
     p->down = 1;
-    p->which = 0;
+    p->which = which;
     p->ax = p->lx = x;
     p->ay = p->ly = y;
     pen(p);
@@ -1033,15 +1039,15 @@ __attribute__((section(".text.start"))) void _start(void) {
                 sleep_ms(20);
                 continue;
             }
-        } else if (kind == EV_DOWN) {
-            press(p, &l, x, y);
+        } else if (kind == EV_DOWN || kind == EV_RDOWN) {
+            press(p, &l, x, y, kind == EV_RDOWN);
         } else if (kind == EV_MOVE) {
             if (!p->down) continue;
             drag(p, x, y - CY);
             if (p->op == T_PICK) draw_foot(p);
             dirty = 1;
             continue;
-        } else if (kind == EV_UP) {
+        } else if (kind == EV_UP || kind == EV_RUP) {
             if (!p->down) continue;
             drag(p, x, y - CY);
             release(p, &l);

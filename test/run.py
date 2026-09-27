@@ -74,8 +74,8 @@ class Qmp:
 
 
 def mouse(kind, x, y):
-    """A mouse report for the input driver: kind is 'd' (down), 'u' (up) or 'v' (moved).
-    Three digits each: x and y up to 999."""
+    """A mouse report for the input driver: kind is 'd' (the left button down), 'u' (up),
+    'D' (the right button down), 'U' (up) or 'v' (moved). Three digits each: x and y up to 999."""
     return f"\x1bm{kind}{x:03d}{y:03d}".encode()
 
 
@@ -89,13 +89,21 @@ def usb_key(qcode, shift=False, ctrl=False):
     return [down(True), down(False)]
 
 
-def usb_mouse(dx=0, dy=0, button=None):
-    """A step that moves the USB mouse by (dx, dy), or presses (True) or releases (False) its left button."""
+def usb_mouse(dx=0, dy=0, button=None, which="left"):
+    """A step that moves the USB mouse by (dx, dy), or presses (True) or releases (False) its
+    left button (which="right": its right one)."""
     if button is not None:
         return ("qmp", "input-send-event", {"events":
-                [{"type": "btn", "data": {"down": button, "button": "left"}}]})
+                [{"type": "btn", "data": {"down": button, "button": which}}]})
     return ("qmp", "input-send-event", {"events":
             [{"type": "rel", "data": {"axis": "x", "value": dx}}, {"type": "rel", "data": {"axis": "y", "value": dy}}]})
+
+
+def usb_wmove(name, dx, dy, win=0):
+    """A step that puts the USB mouse's pointer at (dx, dy) from the top-left corner of
+    `name`'s window `win`, where the display's log last put it when the step runs (as
+    wmouse): a move far up and left pins it at the screen's corner, then one moves it there."""
+    return ("usbwin", name, win, dx, dy)
 
 
 def usb_touch(x, y, down=None):
@@ -314,8 +322,11 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                         if isinstance(chunk, tuple) and chunk[0] == "sleep":
                             time.sleep(chunk[1])
                             continue
-                        if isinstance(chunk, tuple) and chunk[0] == "win":
-                            _, kind, name, win, dx, dy = chunk
+                        if isinstance(chunk, tuple) and chunk[0] in ("win", "usbwin"):
+                            if chunk[0] == "usbwin":
+                                _, name, win, dx, dy = chunk
+                            else:
+                                _, kind, name, win, dx, dy = chunk
                             with cond:
                                 cond.wait_for(lambda: window_pos(seen, name, win) is not None,
                                               timeout=max(0, deadline[0] - time.monotonic()))
@@ -324,6 +335,13 @@ def boot(timeout=30, on_line=print, on_screen=None, steps=(), until=None, snaps=
                                 print(f"run.py: no window of {name} (its window {win}) in the log", flush=True)
                                 return
                             x, y = pos[0] + dx, pos[1] + dy
+                            if chunk[0] == "usbwin":
+                                for mx, my in ((-2000, -2000), (x, y)):
+                                    qmp.cmd("input-send-event", events=[
+                                        {"type": "rel", "data": {"axis": "x", "value": mx}},
+                                        {"type": "rel", "data": {"axis": "y", "value": my}}])
+                                    time.sleep(0.3)     # the mouse reports it 127 at a time
+                                continue
                             if not (0 <= x <= 999 and 0 <= y <= 999):
                                 print(f"run.py: ({x}, {y}) in {name}'s window is past what a mouse report can say", flush=True)
                                 return

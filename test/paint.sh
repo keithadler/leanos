@@ -4,7 +4,10 @@
 # rectangle's outline, a filled orange ellipse and a green ellipse's outline; a click with
 # the fill tool fills the black rectangle's inside yellow; a purple brush stroke is undone
 # (Ctrl+Z), redone (Ctrl+Y) and undone again; a line that leaves the window on its left
-# still draws up to the edge (the display gives the window the whole drag); Ctrl+S saves.
+# still draws up to the edge (the display gives the window the whole drag); a right click
+# on green makes it the second color, a drag with the right button (ESC m D, then U) draws a
+# green line with it, and the picker with the right button takes red as the second color;
+# Ctrl+S saves.
 # The BMP is then read off the card image in Python: its header fields, its size, and the
 # pixels where each thing was drawn (and white where the undone stroke was). A second boot
 # opens the saved picture again and shows it.
@@ -65,8 +68,8 @@ at = lambda kind, x, y: wmouse(kind, "paint", x, CY + y)
 def drag(x0, y0, x1, y1):
     mid = ((x0 + x1) // 2, (y0 + y1) // 2)
     return [at("d", x0, y0), at("v", *mid), at("v", x1, y1), at("u", x1, y1)]
-def color(i):                            # a swatch of the palette, under the canvas
-    return wclick("paint", 50 + 18 * (i % 8) + 8, TITLE_H + 244 + 6 + 18 * (i // 8) + 8)
+def color(i, button="du"):               # a swatch of the palette, under the canvas ("DU": the right button)
+    return [wmouse(k, "paint", 50 + 18 * (i % 8) + 8, TITLE_H + 244 + 6 + 18 * (i // 8) + 8) for k in button]
 RED, BLUE, BLACK, ORANGE, GREEN, YELLOW, PURPLE = 4, 12, 0, 6, 8, 7, 13
 NOISE_LINES = [16 * r + 8 for r in range(13)] + [16 * r + 4 for r in range(3)]   # each in one row of tiles
 start = [*click(*DOCK["Terminal"]), wait_for("terminal: opened")]
@@ -82,6 +85,9 @@ steps = start + [*keys("run paint\r"), wait_for("paint: opened a window"),
          b"\x1a", wait_for("paint: undid the brush", 2),
          *keys("l"), *color(BLACK), at("d", 60, 200), wmouse("v", "paint", -40, CY + 200),
          wmouse("u", "paint", -40, CY + 200), wait_for("paint: line,", 2),
+         *color(GREEN, "DU"), wait_for("paint: second color"),
+         at("D", 150, 175), at("v", 225, 175), at("v", 300, 175), at("U", 300, 175), wait_for("paint: line,", 3),
+         *keys("i"), at("D", 110, 20), at("U", 110, 20), wait_for("paint: second color", 2),
          snap("paint-drawn"), b"\x13", wait_for("paint: saved")]
 boot(120, steps=steps, until="paint: saved", sd=card)
 print("-- again")
@@ -117,6 +123,11 @@ for what in "line" "filled rectangle" "rectangle" "filled ellipse" "ellipse" "fi
   echo "$out" | grep -q "^paint: $what, [0-9]* tiles\? changed" || fail "no $what was drawn"
 done
 echo "$out" | grep -q "^paint: redid the brush; 7 steps to undo, 0 to redo" || fail "the brush stroke was not redone"
+echo "$out" | grep -qx "paint: second color 22b14c" || fail "a right click on green did not make it the second color"
+echo "$out" | grep -q "^paint: line, [0-9]* tiles\? changed; 8 steps" || fail "the right button drew no line"
+echo "$out" | grep -qx "paint: second color ed1c24" || fail "the picker with the right button did not take red as the second color"
+# the left button's clicks on colors: 8 on the first boot, one on each of the last two
+[ "$(echo "$out" | grep -c "^paint: first color")" = 10 ] || fail "the right button changed the first color"
 echo "$out" | grep -q "^paint: undid the brush; 6 steps to undo, 1 to redo" || fail "the brush stroke was not undone"
 echo "$out" | grep -qx "paint: saved apps/paint/untitled.bmp (416x208, 259638 bytes) in [0-9]* ms -> ok" || fail "paint did not save"
 echo "$out" | grep -qx "paint: opened apps/paint/untitled.bmp (416x208, from the card)" || fail "paint did not open its picture again"
@@ -200,6 +211,8 @@ checks = [
     ((365, 170), WHITE, "the undone brush stroke"), ((330, 150), WHITE, "the undone stroke's start"),
     ((0, 200), BLACK, "the line that left the window, at the edge"), ((30, 200), BLACK, "that line"),
     ((62, 200), WHITE, "past its start"), ((10, 100), WHITE, "the paper"),
+    ((150, 175), GREEN, "the right button's line, in the second color: its start"), ((225, 174), GREEN, "that line"),
+    ((300, 176), GREEN, "its end"), ((225, 178), WHITE, "below it"), ((146, 175), WHITE, "before its start"),
 ]
 bad = [f"{what} at {xy}: {px(*xy):06x}, not {c:06x}" for xy, c, what in checks if px(*xy) != c]
 assert not bad, bad
@@ -221,4 +234,4 @@ assert not diff, diff[:10]
 assert "apps/paint/save.part~" not in f, "save.part~ left behind"
 print("noise.bmp: the 16 lines, the rest as it was, after the clear was undone")
 PY
-echo "ok: paint draws lines, shapes, fills and strokes, undoes and redoes, and saves a standard 24-bit BMP that opens again"
+echo "ok: paint draws lines, shapes, fills and strokes (with the right button, in the second color), undoes and redoes, and saves a standard 24-bit BMP that opens again"

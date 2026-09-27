@@ -4,8 +4,8 @@
    display, and acknowledges the interrupt.
 
    What arrives on the serial line: ordinary bytes are keys. A mouse report is ESC 'm',
-   then 'd' (button down), 'u' (up) or 'v' (moved), then x and y as three decimal digits
-   each: "\x1bmd320240". The arrow keys come as a terminal sends them, ESC [ A (up), B
+   then 'd' (the left button down), 'u' (up), 'D' (the right button down), 'U' (up) or 'v'
+   (moved), then x and y as three decimal digits each: "\x1bmd320240". The arrow keys come as a terminal sends them, ESC [ A (up), B
    (down), C (right), D (left), and become keys 128 to 131. So do the keys above them (their
    codes are in user/app.h), in each way terminals send them: Home as ESC [ H, ESC O H,
    ESC [ 1 ~ or ESC [ 7 ~; End as ESC [ F, ESC O F, ESC [ 4 ~ or ESC [ 8 ~; Delete (forward)
@@ -20,7 +20,7 @@
 #define UART_IRQ 6
 #define UART_PAGE 3000
 
-enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4 };
+enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_RDOWN = 9, EV_RUP = 10 };   /* user/app.h */
 enum { KEY_UP = 128, KEY_HOME = 132, KEY_END = 133, KEY_DELETE = 134, KEY_PGUP = 135, KEY_PGDN = 136 };  /* user/app.h */
 
 static volatile unsigned *uart;
@@ -80,7 +80,7 @@ __attribute__((section(".text.start"))) void _start(void) {
                 if (key) event(EV_KEY, key, 0);
                 state = next;
             } else if (state == 2) {
-                kind = c == 'd' ? EV_DOWN : c == 'u' ? EV_UP : EV_MOVE;
+                kind = c == 'd' ? EV_DOWN : c == 'u' ? EV_UP : c == 'D' ? EV_RDOWN : c == 'U' ? EV_RUP : EV_MOVE;
                 x = y = 0;
                 state = 3;
             } else {

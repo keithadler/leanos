@@ -409,7 +409,11 @@ static void keyboard(struct usb *u, const unsigned char *r, int n) {
     for (int i = 0; i < 8; i++) u->prev[i] = r[i];
 }
 
+/* A mouse in the boot protocol: byte 0 its buttons (bit 0 the left, bit 1 the right), then
+   how far it moved. `buttons` keeps both bits; each one that changes is a press or a
+   release, where the pointer is (EV_RDOWN and EV_RUP for the right: user/app.h). */
 static void mouse(struct usb *u, const unsigned char *r, int n) {
+    enum { EV_RDOWN = 9, EV_RUP = 10 };
     if (n < 3) return;
     int dx = (signed char)r[1], dy = (signed char)r[2];
     if (dx || dy) {
@@ -421,11 +425,10 @@ static void mouse(struct usb *u, const unsigned char *r, int n) {
         if (u->my > 599) u->my = 599;
         event(EV_MOVE, (u64)u->mx, (u64)u->my);
     }
-    int left = r[0] & 1;
-    if (left != u->buttons) {
-        u->buttons = left;
-        event(left ? EV_DOWN : EV_UP, (u64)u->mx, (u64)u->my);
-    }
+    int now = r[0] & 3, was = u->buttons;
+    u->buttons = now;
+    if ((now ^ was) & 1) event(now & 1 ? EV_DOWN : EV_UP, (u64)u->mx, (u64)u->my);
+    if ((now ^ was) & 2) event(now & 2 ? EV_RDOWN : EV_RUP, (u64)u->mx, (u64)u->my);
 }
 
 /* A touchscreen or tablet: where it says, scaled to the screen; touching (or its button)

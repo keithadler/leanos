@@ -193,8 +193,8 @@ Things to try once it is up:
   day selected, kept in `apps/calendar/events.txt`, one line each.
 - `run view` shows the pictures in its folder, apps/view (Left and Right go through them, 1
   shows one at its own size, + and - zoom); `run view FILE` shows a BMP, PPM or PGM of yours.
-- `run paint` in Terminal: draw with the mouse (lines, rectangles and ellipses show as you
-  drag, F fills, Ctrl+Z undoes). The picture saves itself as `apps/paint/untitled.bmp`, a
+- `run paint` in Terminal: draw with the mouse, the right button in the second color (lines,
+  rectangles and ellipses show as you drag, F fills, Ctrl+Z undoes). The picture saves itself as `apps/paint/untitled.bmp`, a
   standard 24-bit BMP; `run paint picture.bmp` edits another.
 - Type in Notes, press Ctrl+C, click Terminal and press Ctrl+V: the text is on its command
   line, and nothing runs until you press Return.

@@ -16,7 +16,13 @@
    alone. One opened with app_open_drag hears a drag as well: from a press in it until the
    button comes up, every move (EV_MOVE) and the release (EV_UP) are its, wherever the
    pointer goes (off its left or top edge: negative, so take a and b as int). Moves it has
-   not taken yet are merged, so a slow program hears where the pointer is now. */
+   not taken yet are merged, so a slow program hears where the pointer is now. It hears the
+   right button too, and only it does: a right press in it is EV_RDOWN, then the moves and
+   the release (EV_RUP), in the same way. Whichever button pressed first holds the pointer
+   until it comes up; the other's press and release, meanwhile, are not heard (but a left
+   press ends a hold whose release was lost, and so does a right press a right hold). A
+   right press anywhere else (another window, a title bar, the dock, the menu bar, the
+   desktop) does nothing at all. */
 #pragma once
 #include "lib.h"
 #include "gfx.h"
@@ -25,7 +31,7 @@
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
        OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12 };   /* 11: no request (none reads the clipboard) */
 enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7,
-       EV_PASTE = 8 };
+       EV_PASTE = 8, EV_RDOWN = 9, EV_RUP = 10 };
 /* The arrow keys and the keys above them, as EV_KEY codes: the input driver turns what a
    terminal sends (ESC [ A..D, ESC [ H, ESC [ 3 ~ and so on, user/input.c) into these, and
    the USB driver a keyboard's keys. KEY_DELETE deletes forward; Backspace is 127. */
@@ -86,7 +92,8 @@ static inline u64 app_open_at(u64 offset, int w, int h, const char *title) {
 }
 static inline u64 app_open(int w, int h, const char *title) { return app_open_at(APP_WIN_OFFSET, w, h, title); }
 
-/* A window that hears drags (see the top), its pixels `offset` pages into the spare run. */
+/* A window that hears drags, and the right button (see the top), its pixels `offset` pages
+   into the spare run. */
 static inline u64 app_open_drag(u64 offset, int w, int h, const char *title) {
     u64 id;
     return app_open_as(offset, w, h, OPEN_DRAG, title, &id);

@@ -42,7 +42,14 @@
    A window opened with OPEN_DRAG (bit 32 of OPEN's size word) also hears a drag: from a
    press in it until the button comes up, it holds the pointer, and hears every move
    (EV_MOVE, the moves it has not taken yet merged into the last) and the release (EV_UP),
-   wherever the pointer goes. Other windows hear only the press, as before.
+   wherever the pointer goes. Such a window hears the right button too: a right press on its
+   content brings it to the front, as a left one does, and it hears EV_RDOWN, then the moves
+   and EV_RUP in the same way. The button that pressed holds the pointer until it comes up;
+   meanwhile the other's press and release are dropped, except a left press, which ends any
+   hold (its release was lost), and a right press ends a right hold the same way. Other
+   windows hear only the left press, as before; a right press anywhere but on the content of
+   an OPEN_DRAG window (another window, a title bar, the dock, the menu bar, the desktop)
+   does nothing at all.
 
    It holds a launch capability for each app (capabilities 6 to 10: Notes, Terminal,
    Settings, Security, Files). Clicking an app in the dock starts it if it is not running; the
@@ -123,7 +130,8 @@ __attribute__((noinline)) static void rounded(struct surface *s, int x, int y, i
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
        OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12 };
 /* 11 is no request: programs ask it to show that no request reads the clipboard (mallory, tour) */
-enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7, EV_PASTE = 8 };
+enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7, EV_PASTE = 8,
+       EV_RDOWN = 9, EV_RUP = 10 };
 enum { KEY_COPY = 3, KEY_PASTE = 22, KEY_NEXT = 15 };   /* Ctrl+C, Ctrl+V, Ctrl+O (the next window) */
 #define OPEN_DRAG (1UL << 32)  /* in OPEN's size word: the window hears drags (user/app.h) */
 #define CLIP_MAX 4096     /* as user/app.h */
@@ -231,6 +239,7 @@ struct state {
     int drag, grab_x, grab_y, drag_x0, drag_y0;
     int held;                   /* the window (+ 1, or 0) a press in it gave the pointer, until
                                    the button comes up (OPEN_DRAG) */
+    int held_up;                /* the release that ends the hold: EV_UP, or EV_RUP (the right) */
     int hover;                  /* dock icon under the pointer + 1, or 0 */
     unsigned dock_live;         /* which dock items run (running), a bit each: asked of the kernel
                                    once a rectangle, not once a band */
@@ -1542,14 +1551,16 @@ COLD __attribute__((noinline)) static void on_copy(struct state *st, struct line
     }
 }
 
-/* A window that asked for drags (OPEN_DRAG) holds the pointer from a press in it until the
+/* A window that asked for drags (OPEN_DRAG) holds the pointer from a press in it until that
    button comes up: it hears every move and the release, wherever the pointer is, in its own
    coordinates (above or left of it: negative, as 32-bit numbers), and nothing else hears
-   them: not the dock's hover, not a window under the pointer. */
+   them: not the dock's hover, not a window under the pointer. The other button's release,
+   and a right press while the left holds it, are dropped. */
 COLD static void held_input(struct state *st, u64 kind) {
     struct win *w = &st->win[st->held - 1];
+    if (kind != EV_MOVE && kind != (u64)st->held_up) return;
     deliver_event(st, st->held - 1, kind, (u64)(st->px - w->x), (u64)(st->py - w->y - TITLE_H));
-    if (kind == EV_UP) st->held = 0;
+    if (kind != EV_MOVE) st->held = 0;
 }
 
 COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
@@ -1577,13 +1588,14 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
     int ox = st->px, oy = st->py;
     st->px = a < W ? (int)a : W - 1;
     st->py = b < H ? (int)b : H - 1;
-    if (st->held && kind != EV_DOWN) {
+    if (st->held && kind != EV_DOWN && !(kind == EV_RDOWN && st->held_up == EV_RUP)) {
         held_input(st, kind);
         composite(st, ox, oy, 12, 19);
         composite(st, st->px, st->py, 12, 19);
         return;
     }
-    st->held = 0;                /* a press while held: the release was lost */
+    st->held = 0;                /* a press while held (a left one, or a right one while the right
+                                    holds it): the release was lost */
     if (kind == EV_DOWN && (st->menu || (st->py < BAR_H && (st->px < 100 || on_bar_menu(st, st->px))))) {
         /* a click with a menu open closes it (choosing what is under it); on the logo, on
            Edit or on Window, with none open, opens that one */
@@ -1643,7 +1655,10 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
             }
             if (st->py >= w->y + TITLE_H) {
                 deliver_event(st, k, EV_DOWN, (u64)(st->px - w->x), (u64)(st->py - w->y - TITLE_H));
-                if (w->drags) st->held = k + 1;
+                if (w->drags) {
+                    st->held = k + 1;
+                    st->held_up = EV_UP;
+                }
             }
             if (st->py < w->y + TITLE_H) {
                 st->drag = k + 1;
@@ -1652,6 +1667,17 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
                 st->drag_x0 = w->x;
                 st->drag_y0 = w->y;
             }
+        }
+    } else if (kind == EV_RDOWN && !st->drag && !st->menu) {
+        /* The right button: only on the content of a window that hears drags, which it
+           brings to the front and holds the pointer, as the left does. Anywhere else, nothing. */
+        int k = dock_at(st, st->px, st->py) || st->py < BAR_H ? -1 : window_at(st, st->px, st->py);
+        struct win *w = k >= 0 ? &st->win[k] : 0;
+        if (w && w->drags && st->py >= w->y + TITLE_H) {
+            bring_to_front(st, k);
+            deliver_event(st, k, EV_RDOWN, (u64)(st->px - w->x), (u64)(st->py - w->y - TITLE_H));
+            st->held = k + 1;
+            st->held_up = EV_RUP;
         }
     } else if (kind == EV_MOVE && st->drag) {
         /* Moves that arrive faster than frames are drawn: only the last is drawn (the main
@@ -2203,6 +2229,7 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
     st->full_reported = st->click_reported = 0;
     st->menu = 0;
     st->held = 0;
+    st->held_up = EV_UP;
     st->clip_len = st->copy_win = st->copy_len = 0;
     for (int i = 0; i < 32; i++) st->copy_refused[i] = 0;
     st->drag_frames = st->drag_us = 0;

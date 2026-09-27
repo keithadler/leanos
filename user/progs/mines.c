@@ -9,13 +9,13 @@
    cells, not a recursion: a program's stack is 16 KiB). A click on an open number whose
    flags are all placed (as many as it says) opens the rest of its neighbors: a chord.
 
-   Flags: the display server tells a program where a click was and nothing more (not which
-   button, nor whether Shift or Control was held: user/display.c, EV_DOWN), and the USB
-   driver passes on only a mouse's left button; so a click flags when the Flag button at
-   the top is lit (a click on it lights it, and another puts it out), which works the same
-   with any mouse or a touchscreen. At the top too: how many mines are left to flag (the
-   mines less the flags), the face (a click starts a new game), and the time since the
-   first click, in seconds (lib.h's millis: the CPU's counter).
+   Flags: a right click on a closed cell flags it, and another takes the flag back (the
+   window is opened with app_open_drag, the kind that hears the right button: EV_RDOWN;
+   the moves and releases that come with it are not needed, and are ignored). A touchscreen
+   has no right button, so a click flags too when the Flag button at the top is lit (a click
+   on it lights it, and another puts it out). At the top too: how many mines are left to
+   flag (the mines less the flags), the face (a click starts a new game), and the time since
+   the first click, in seconds (lib.h's millis: the CPU's counter).
 
    The keys: the arrows move a cursor over the cells, Space or Return opens the cell under
    it (or chords its number), F flags it or takes the flag back, N starts a new game, and 1,
@@ -530,6 +530,15 @@ static void key(struct mines *m, struct line *l, u64 k) {
     else if (k >= '1' && k <= '3') set_level(m, l, (int)(k - '1'));
 }
 
+/* A right click: on a cell, flags it or takes its flag back, as F does at the cursor. */
+static void right_click(struct mines *m, struct line *l, int x, int y) {
+    if (x < m->bx || y < m->by || x >= m->bx + m->cols * m->cs || y >= m->by + m->rows * m->cs) return;
+    m->cursor = 0;
+    m->cx = (x - m->bx) / m->cs;
+    m->cy = (y - m->by) / m->cs;
+    if (m->state == READY || m->state == PLAYING) toggle_flag(m, l, m->cx, m->cy);
+}
+
 static void click(struct mines *m, struct line *l, int x, int y) {
     if (x >= FACE_X && x < FACE_X + FACE && y >= FACE_Y && y < FACE_Y + FACE) new_game(m, l);
     else if (x >= FLAG_X && x < FLAG_X + FLAG_W && y >= LED_Y && y < LED_Y + LED_H) flag_mode(m, l);
@@ -601,7 +610,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     read_files(m, &l);
     set_level(m, &l, 0);
     draw(m);
-    u64 opened = app_open(MW, MH, "Mines");
+    u64 opened = app_open_drag(APP_WIN_OFFSET, MW, MH, "Mines");
     put_s(&l, "mines: opened a window");
     put_s(&l, outcome(opened));
     say(&l);
@@ -616,9 +625,12 @@ __attribute__((section(".text.start"))) void _start(void) {
             say(&l);
             exit_task();
         }
-        if (e.kind == EV_KEY || e.kind == EV_DOWN) {
+        /* the presses; the moves and releases a drag window hears (EV_MOVE, EV_UP, EV_RUP)
+           mean nothing here, and go on to the clock */
+        if (e.kind == EV_KEY || e.kind == EV_DOWN || e.kind == EV_RDOWN) {
             if (e.kind == EV_KEY) key(m, &l, e.a);
-            else click(m, &l, (int)e.a, (int)e.b);
+            else if (e.kind == EV_DOWN) click(m, &l, (int)e.a, (int)e.b);
+            else right_click(m, &l, (int)e.a, (int)e.b);
             draw(m);
             dirty = 1;
             continue;

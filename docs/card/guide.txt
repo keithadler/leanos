@@ -137,9 +137,9 @@ Programs on the card
   snake   the arrow keys steer; space plays again
   life    Conway's Game of Life; space pauses, a click adds a cell, r reseeds
   tiles   2048: the arrow keys slide the tiles
-  mines   Minesweeper: a click opens a cell (the first is never a mine), a click on the
-          lit Flag button makes clicks flag, a click on a number whose flags are all
-          placed opens the rest around it. The arrows move a cursor, Space opens, F flags,
+  mines   Minesweeper: a click opens a cell (the first is never a mine), a right click
+          flags it (or, on a touchscreen, a click on the lit Flag button makes clicks
+          flag), a click on a number whose flags are all placed opens the rest around it. The arrows move a cursor, Space opens, F flags,
           N starts again, 1 2 3 choose Beginner, Intermediate or Expert. Best times are
           kept in apps/mines/best.txt.
   clock   the time in your time zone (until a time server answers, how long the Pi has been
@@ -164,9 +164,11 @@ Programs on the card
           pictures in its folder, apps/view. Left and Right (or N and P) go through them, F
           fits one to the window, 1 shows it at its own size, + and - zoom, and the arrows
           (or a click) move across one larger than the window
-  paint   a paint program: drag to draw. P pencil, B brush, E eraser, L line, R rectangle
-          (Shift+R filled), O ellipse (Shift+O filled), F fill, I picks a color from the
-          picture; 1 2 3 set the size, X swaps the two colors, Delete clears. Ctrl+Z undoes,
+  paint   a paint program: drag to draw, with the right button in the second color. P
+          pencil, B brush, E eraser, L line, R rectangle (Shift+R filled), O ellipse
+          (Shift+O filled), F fill, I picks a color from the picture (the right button: the
+          second color); a click on a color sets the first, a right click the second; 1 2 3
+          set the size, X swaps the two colors, Delete clears. Ctrl+Z undoes,
           Ctrl+Y redoes. It saves by itself as apps/paint/untitled.bmp, a 24-bit BMP any
           image program opens; run paint FILE.bmp edits that picture instead.
 
