@@ -453,8 +453,8 @@ static void absolute(struct usb *u, struct hid *h, const unsigned char *r, int n
         event(EV_MOVE, (u64)x, (u64)y);
     }
     int down = a->has_btn && bits(r, n, a->btn) != 0;
-    if (down != u->buttons) {
-        u->buttons = down;
+    if (down != (u->buttons & 1)) {           /* bit 0: a mouse's right button is bit 1 */
+        u->buttons = (u->buttons & ~1) | down;
         event(down ? EV_DOWN : EV_UP, (u64)x, (u64)y);
     }
 }
