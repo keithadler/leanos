@@ -159,7 +159,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 38 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Notes and its notes, Clock's stopwatch and timer, Files as a file manager, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 39 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Files as a file manager, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -207,6 +207,10 @@ make pi-image                # build/leanos-pi4.img: a FAT boot partition and th
 tools/serial.py --summary    # watch it boot over the serial cable, and say where it got to
 ```
 
+```bash
+make pi-selftest             # or: the self-test card, which checks the board in one boot
+```
+
 Write `build/leanos-pi4.img` to a microSD card (Raspberry Pi Imager, "Use custom", or
 `dd`) and boot a Pi 4 with an HDMI screen. leanos draws at 1024×600, so a 7-inch
 1024×600 screen matches exactly.
@@ -225,7 +229,10 @@ What you need to know first:
   announced before it runs, on the serial console, on the screen and (a panic's) on the
   green LED, so whatever works shows where it stops; `make pi-bringup` builds a card whose
   kernel also blinks every step on the LED
-  ([docs/SETUP.md](docs/SETUP.md#first-boot-on-a-real-pi-4-what-to-expect)). `make test`
+  ([docs/SETUP.md](docs/SETUP.md#first-boot-on-a-real-pi-4-what-to-expect)), and `make
+  pi-selftest` a card that also checks the memory, the SD card, the clocks, the screen and
+  the input at boot, and reports each on serial and in a window
+  ([docs/SETUP.md](docs/SETUP.md#one-boot-that-tells-us-everything-the-self-test-card)). `make test`
   checks what can be checked without a Pi: the boot partition is a clean FAT file system,
   and leanos never writes to it.
 

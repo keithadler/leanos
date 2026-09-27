@@ -1,0 +1,5 @@
+# The self-test card (make pi-selftest): what leanos opens at startup, one per line, the
+# last in front. selftest checks the board and reports each result on the serial console
+# and in its window; Apps is behind it, to use the card as usual afterwards.
+apps
+selftest

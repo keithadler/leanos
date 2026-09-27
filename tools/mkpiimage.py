@@ -18,6 +18,8 @@ Usage: mkpiimage.py OUT.img [--kernel IMG] [--firmware DIR] NAME=FILE ...
   --firmware DIR  only to test the image with stand-in files
   --bringup       the first-boot card (make pi-bringup): its config.txt is CONFIG, marked as
                   the bring-up card, with the firmware's own log always on (bringup_config)
+  --selftest      the self-test card (make pi-selftest): the bring-up card's config.txt,
+                  marked as the self-test card
 """
 import os
 import struct
@@ -96,15 +98,20 @@ disable_splash=1
 
 
 
-def bringup_config():
+def bringup_config(selftest=False):
     """config.txt for the bring-up card (make pi-bringup): the same as CONFIG, whose kernel
     does the extra reporting, with the firmware's own log forced on even if CONFIG's is
-    turned off (tools/serial.py --summary reads where it put the kernel from it)."""
+    turned off (tools/serial.py --summary reads where it put the kernel from it). The
+    self-test card (make pi-selftest) has the same, and says so."""
     lines = CONFIG.split(b"\n")
     assert b"uart_2ndstage=1" in lines or b"uart_2ndstage=0" in lines, "CONFIG must set uart_2ndstage"
     lines = [b"uart_2ndstage=1" if l == b"uart_2ndstage=0" else l for l in lines]
-    head = (b"# The bring-up card (make pi-bringup): its kernel blinks each boot step on the green light,\n"
-            b"# times the steps and prints more of the board; docs/SETUP.md, \"If it does not start\".\n")
+    if selftest:
+        head = (b"# The self-test card (make pi-selftest): the bring-up card's kernel and settings, and\n"
+                b"# selftest, which checks the board at boot; docs/SETUP.md, \"One boot that tells us everything\".\n")
+    else:
+        head = (b"# The bring-up card (make pi-bringup): its kernel blinks each boot step on the green light,\n"
+                b"# times the steps and prints more of the board; docs/SETUP.md, \"If it does not start\".\n")
     return head + b"\n".join(lines)
 
 
@@ -181,8 +188,11 @@ def main():
         return value
     firmware = option("--firmware", os.path.join(ROOT, "build", "firmware"))
     kernel = option("--kernel", os.path.join(ROOT, "build", "pi", "kernel8.img"))
-    bringup = "--bringup" in args
-    if bringup:
+    selftest = "--selftest" in args
+    if selftest:
+        args.remove("--selftest")
+    bringup = "--bringup" in args or selftest
+    if "--bringup" in args:
         args.remove("--bringup")
     specs = args
     needed = ["start4.elf", "fixup4.dat"]
@@ -190,7 +200,7 @@ def main():
     if missing:
         sys.exit(f"missing {', '.join(missing)} in build/firmware/: run tools/fetch-firmware.sh first")
     boot_files = [(f, open(os.path.join(firmware, f), "rb").read()) for f in needed]
-    boot_files += [("config.txt", bringup_config() if bringup else CONFIG),
+    boot_files += [("config.txt", bringup_config(selftest) if bringup else CONFIG),
                    ("kernel8.img", open(kernel, "rb").read())]
     data_start = BOOT_START + BOOT_SECTORS
     total = CARD_SECTORS

@@ -20,7 +20,10 @@ starts with TEXT; exit status 124 if the timeout comes first), --timeout SECONDS
 
 The summary reads the kernel's boot steps ("leanos: [n/13] ...", printed before each step,
 so the last one is where it stopped; arch/bootcon.c), a panic and its exception registers,
-and what came before leanos (the firmware's own log on the bring-up card).
+and what came before leanos (the firmware's own log on the bring-up card). On the self-test
+card (make pi-selftest) it then gives the self-test's report: every result line
+("selftest: NAME: PASS|FAIL|INFO ...", user/progs/selftest.c), how many passed and failed,
+and, if it did not finish, the check it was in.
 """
 import argparse
 import datetime
@@ -42,6 +45,8 @@ PATTERNS = ["/dev/cu.usbserial*", "/dev/cu.usbmodem*", "/dev/cu.SLAB_USBtoUART*"
 STAGE = re.compile(r"^leanos: \[(\d+)/(\d+)\] (.*)$")
 LOADED = re.compile(r"kernel8\.img.*?\b(0x[0-9a-fA-F]+)")     # the firmware's log: where it put the kernel
 BOOT = "leanos \u00a9 "                 # the first line of every boot
+SELFTEST = re.compile(r"^selftest: (\S+): (PASS|FAIL|INFO)\b")    # a self-test result
+SELFTEST_DONE = re.compile(r"^selftest: done: (\d+) passed, (\d+) failed, (\d+) info")
 QUIT = 0x1d                              # Ctrl+]
 
 # What each boot step does, to say what probably went wrong when the boot stops in it (the
@@ -278,7 +283,31 @@ def summarize(lines, received=None):
     expected = [t for t in faults if re.match(r"^leanos: (mallory|carol) stopped: ", t)]
     if len(faults) > len(expected):
         out.append("tasks stopped by a fault: " + " | ".join(t for t in faults if t not in expected))
-    return out
+    return out + selftest_report(last)
+
+
+def selftest_report(texts):
+    """The self-test's report (user/progs/selftest.c), if it ran: a heading with the counts,
+    then every result line and its last line, as they came."""
+    if not any(t.startswith("selftest: ") for t in texts):
+        return []
+    results = [t for t in texts if SELFTEST.match(t)]
+    done = [t for t in texts if SELFTEST_DONE.match(t)]
+    counts = {k: sum(1 for t in results if SELFTEST.match(t).group(2) == k) for k in ("PASS", "FAIL", "INFO")}
+    head = f"self-test: {counts['PASS']} passed, {counts['FAIL']} failed, {counts['INFO']} info"
+    if done:
+        p, f, i = (int(v) for v in SELFTEST_DONE.match(done[-1]).groups())
+        if (p, f, i) != (counts["PASS"], counts["FAIL"], counts["INFO"]):
+            head += f" (its last line says {p} passed, {f} failed, {i} info: lines were lost)"
+    else:
+        started = [t[len("selftest: checking "):] for t in texts if t.startswith("selftest: checking ")]
+        answered = {SELFTEST.match(t).group(1) for t in results}
+        stuck = [c for c in started if c not in answered]
+        head += "; it did not finish" + (f": it was checking {stuck[-1]}" if stuck else "")
+    if counts["FAIL"]:
+        head += "; failed: " + ", ".join(SELFTEST.match(t).group(1) for t in results
+                                           if SELFTEST.match(t).group(2) == "FAIL")
+    return [head] + ["  " + t for t in results + done[-1:]]
 
 
 class Capture:
@@ -493,6 +522,21 @@ def self_test():
     check(any(r == "the firmware loaded kernel8.img at 0x80000" for r in s), f"firmware, right address: {s}")
     s = summarize(L("\ufffd\ufffd\x01\x02\ufffd" * 10))
     check(any("baud" in r for r in s), f"garbage: {s}")
+    s = summarize(L("leanos \u00a9 2026 Keith Adler", "leanos: [13/13] first task: x", "selftest: checking memory",
+                    "selftest: memory: PASS 228 pages", "selftest: checking sd", "selftest: sd: FAIL the write at byte 0",
+                    "selftest: checking cpu", "selftest: cpu: INFO 10M-step loop", "selftest: done: 1 passed, 1 failed, 1 info",
+                    "selftest: all of it took 9.0 ms"))
+    check("self-test: 1 passed, 1 failed, 1 info; failed: sd" in s
+          and s[s.index("self-test: 1 passed, 1 failed, 1 info; failed: sd") + 1:] ==
+          ["  selftest: memory: PASS 228 pages", "  selftest: sd: FAIL the write at byte 0",
+           "  selftest: cpu: INFO 10M-step loop", "  selftest: done: 1 passed, 1 failed, 1 info"],
+          f"self-test report: {s}")
+    s = summarize(L("leanos \u00a9 2026 Keith Adler", "leanos: [13/13] first task: x", "selftest: checking memory",
+                    "selftest: memory: PASS 228 pages", "selftest: checking sd"))
+    check(any(r == "self-test: 1 passed, 0 failed, 0 info; it did not finish: it was checking sd" for r in s),
+          f"self-test that stopped: {s}")
+    check(not any(r.startswith("self-test") for r in summarize(L("leanos \u00a9 2026 Keith Adler"))),
+          "a self-test report with no self-test")
 
     tmp = tempfile.mkdtemp(prefix="serial-test-")
     me = os.path.abspath(__file__)
@@ -577,7 +621,7 @@ def self_test():
         proc.communicate(timeout=10)
         check(proc.returncode == status, f"--until {until!r}: status {proc.returncode}, not {status}")
     print("serial.py: self-test ok: keys, arrows, Home, End, Delete, the page keys and the mouse translated; the summary finds the step, the panic, "
-          "firmware lines and bad wiring; a pseudo-terminal at 115200 8N1 is watched, logged, typed into and let go")
+          "firmware lines, bad wiring and the self-test's report; a pseudo-terminal at 115200 8N1 is watched, logged, typed into and let go")
     return 0
 
 

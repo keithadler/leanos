@@ -270,6 +270,56 @@ this terminal window stands for the Pi's screen: a click or a drag at a spot in 
 is a click or drag at the same spot on the Pi's screen (`--screen WxH` if it is not
 1024x600). **Ctrl+]** stops it.
 
+### One boot that tells us everything: the self-test card
+
+```bash
+make pi-selftest
+```
+
+This writes `build/leanos-pi4-selftest.img`: the bring-up card (below: the firmware's own
+log, the LED blinking each boot step, each step's time, and more of the board on the serial
+console), and one more program on it, `selftest`, which its `startup.txt` opens at boot, in
+front of Apps. It needs the firmware too (`tools/fetch-firmware.sh`, once). `make pi-image`
+stays the normal card.
+
+1. Write `build/leanos-pi4-selftest.img` to the card, as above.
+2. Plug a USB keyboard and a mouse into the Pi's USB-A ports, connect the serial cable (wired
+   as above) and the screen (HDMI 0).
+3. On the computer, start `tools/serial.py --summary`.
+4. Power the Pi on. The boot takes about 40 seconds longer than the normal card's, for the
+   LED's blinks. When the desktop is up, the Selftest window runs its checks, about 10
+   seconds, then asks for a click and a key: click inside the window, then press any key (it
+   waits 20 seconds, then goes on without them).
+5. When the window's heading says how many passed and failed, and the serial console shows
+   `selftest: done: N passed, M failed, K info`, wait a few more seconds for the last `usb:`
+   lines, then press Ctrl+C in `serial.py`. Its summary says where the boot got to, then
+   gives the self-test's report: every result line, and how many passed and failed.
+6. Send the whole log (`build/serial-DATE.log`, which ends with the summary) and a photo of
+   the screen with the Selftest window on it: the photo shows what the log cannot, whether
+   the colors, the text and the window's frames look right.
+
+Each check prints one line, `selftest: NAME: PASS`, `FAIL` or `INFO`, with what it measured:
+
+| Check | What it does | PASS when |
+|---|---|---|
+| memory | Writes a pattern to every page of its spare run (228 pages), reads it all back, then the complement, then single bytes read back as whole words; the pages holding its fonts are copied aside, tested and put back. The MiB/s it prints says whether its pages are cached as they should be | every word reads as written |
+| sd | Writes a 1 MiB file in its own folder on the card (`apps/selftest`), 12 KiB at a time, reads it back and compares every byte, then deletes it; the times and MiB/s both ways | every byte is right and the free space comes back |
+| sdfiles | 50 files of 1 KiB: written, read back and compared, deleted; each timed | all 50 are right and gone again |
+| clock | The kernel's clock (10 ms ticks) against the processor's counter over 3 seconds | they agree within 30 ms |
+| sleep | Ten sleeps of 100 ms, each measured by the counter: min, median, max | the median is 90 to 130 ms, and none is under 80 ms |
+| screen | 60 frames of the whole window, each drawn and handed to the display; the time to draw and to show | all 60 are shown within 10 seconds |
+| cpu | INFO: a counted loop, a yield, the counter's rate, the uptime, the tasks running | |
+| usb | INFO: a program cannot ask the USB driver; the `usb:` lines in the log say what it found | |
+| time | INFO: the time of day, if the network has set it (it usually has not yet) | |
+| input | Waits 20 seconds for a key and a click in its window | both came (else INFO: nobody may be at the keyboard) |
+
+Every check has a time limit and reports FAIL with what it saw instead of waiting for ever.
+Before each check it prints `selftest: checking NAME`, so if it never finishes, the summary
+names the check it was in. It uses no network, and on the card it touches only its own
+folder, which it leaves empty. `make test` runs it under QEMU on the same card, built with
+QEMU's kernel and stand-in firmware, where every check must pass or inform
+(`test/selftest.sh`).
+
 ### First boot on a real Pi 4: what to expect
 
 leanos has so far run only on QEMU, which is more forgiving than the chip: it has no caches

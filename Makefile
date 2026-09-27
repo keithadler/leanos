@@ -11,6 +11,8 @@
 #   make pi-image    build/leanos-pi4.img, the card a Raspberry Pi 4 boots
 #   make pi-bringup  build/leanos-pi4-bringup.img: the same, with the first-boot diagnostics
 #                    (LED blink codes for every boot step, step times, more of the board)
+#   make pi-selftest build/leanos-pi4-selftest.img: the bring-up card, and selftest, which
+#                    checks the board at boot and reports on serial and on the screen
 
 TOOLCHAIN := $(shell cat lean-toolchain | sed 's|/|--|; s|:|---|')
 LEAN_HOME := $(HOME)/.elan/toolchains/$(TOOLCHAIN)
@@ -42,7 +44,7 @@ USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
 ARCH_O := build/boot.o build/kmain.o build/bootcon.o build/sd.o build/sha256.o build/pcie.o build/xhci.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
 
-.PHONY: all run test mutants proofs clean pi-image pi-bringup stackcheck
+.PHONY: all run test mutants proofs clean pi-image pi-bringup pi-selftest stackcheck
 ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files launcher open)
 
 all: $(ASSET_BLOBS) build/kernel8.img build/sd-template.img build/sd-desktop.img build/codesize.txt proofs
@@ -190,10 +192,14 @@ build/progs/%.elf: user/progs/%.c user/lib.h user/gfx.h user/assets.h user/app.h
 	$(LD) -T user/user.ld --gc-sections -z max-page-size=16 -z common-page-size=16 build/progs/$*.o -o $@
 	$(LLVM)/llvm-strip $@
 
+# The self-test (user/progs/selftest.c): on the self-test card only (make pi-selftest), but
+# built and measured with the rest, so it is always known to build and to fit.
+SELFTEST_ELF := build/progs/selftest.elf
+
 # Each program's code against its 64 KiB code run (tools/codesize.py): printed whenever a
 # program changes, and an error if one is over (the linker checks it too, user/user.ld).
-build/codesize.txt: tools/codesize.py $(USER_BINS) $(DISK_ELFS)
-	@python3 tools/codesize.py $@ $(USER_BINS:.bin=.elf) $(DISK_ELFS)
+build/codesize.txt: tools/codesize.py $(USER_BINS) $(DISK_ELFS) $(SELFTEST_ELF)
+	@python3 tools/codesize.py $@ $(USER_BINS:.bin=.elf) $(DISK_ELFS) $(SELFTEST_ELF)
 
 # A card with welcome.txt and the programs, the way the tests boot (tools/mksd.py).
 DISK_DOCS := guide.txt
@@ -209,6 +215,7 @@ ICON_SRC_hello := waving_hand_3d_default
 ICON_SRC_fuzz := lady_beetle_3d
 ICON_SRC_edit := pencil_3d
 ICON_SRC_web := globe_with_meridians_3d
+ICON_SRC_selftest := lady_beetle_3d
 DISK_ICONS := $(patsubst %,build/icons/%.icon,$(DISK_PROGS))
 build/icons/%.icon: tools/mkicon.py tools/mkassets.py
 	@mkdir -p build/icons
@@ -261,6 +268,21 @@ pi-bringup: build/pi-bringup/kernel8.img $(DISK_ELFS) $(DISK_ICONS) tools/mkpiim
 	python3 tools/mkpiimage.py build/leanos-pi4-bringup.img --kernel build/pi-bringup/kernel8.img --bringup \
 	  $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) \
 	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup.txt
+
+# The self-test card: the bring-up card (its kernel and config.txt: the firmware's log, LED
+# codes, step times, more of the board), with selftest first on the data partition (Apps lists
+# the first 10 programs) and a startup.txt that opens Apps and then selftest, in front. The
+# variables are for test/selftest.sh, which builds the same card with QEMU's kernel and
+# stand-in firmware and boots it.
+SELFTEST_IMG ?= build/leanos-pi4-selftest.img
+SELFTEST_KERNEL ?= build/pi-bringup/kernel8.img
+SELFTEST_FIRMWARE ?= build/firmware
+pi-selftest: $(SELFTEST_KERNEL) $(SELFTEST_ELF) build/icons/selftest.icon $(DISK_ELFS) $(DISK_ICONS) \
+  docs/card/startup-selftest.txt tools/mkpiimage.py tools/mksd.py
+	python3 tools/mkpiimage.py $(SELFTEST_IMG) --kernel $(SELFTEST_KERNEL) --firmware $(SELFTEST_FIRMWARE) --selftest \
+	  selftest=$(SELFTEST_ELF) selftest.icon=build/icons/selftest.icon \
+	  $(foreach p,$(DISK_PROGS),$(p)=build/progs/$(p).elf) $(foreach p,$(DISK_PROGS),$(p).icon=build/icons/$(p).icon) \
+	  $(foreach d,$(DISK_DOCS),$(d)=docs/card/$(d)) startup.txt=docs/card/startup-selftest.txt
 
 build/user/%.bin: build/user/%.elf
 	$(OBJCOPY) -O binary $< $@
