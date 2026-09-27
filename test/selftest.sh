@@ -2,7 +2,7 @@
 # The self-test (user/progs/selftest.c) on the self-test card, before it goes to a Pi. The card
 # is `make pi-selftest`'s, built with QEMU's kernel and stand-in firmware in place of the Pi's:
 # its config.txt must be the bring-up card's, marked as the self-test card, with the
-# firmware's log on. Booted, Apps must find selftest (first of 11 programs; it lists 10) and
+# firmware's log on. Booted, Apps must find selftest (first of 12 programs; it lists 10) and
 # start it from startup.txt. When selftest waits for input, a key and a click go to its
 # window. Then it must finish, every check with a result line and none FAIL: memory, sd,
 # sdfiles, clock, sleep, screen and input PASS; cpu, usb and time INFO. The window shows each
