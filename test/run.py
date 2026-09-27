@@ -411,6 +411,14 @@ def click(x, y):
     return [mouse("d", x, y), mouse("u", x, y)]
 
 
+def disk_programs():
+    """The programs `make` puts on the card, in the card's order (DISK_PROGS in the Makefile)."""
+    for line in open(os.path.join(ROOT, "Makefile")):
+        if line.startswith("DISK_PROGS :="):
+            return line.split(":=", 1)[1].split()
+    return []
+
+
 APP_STEPS = [*keys("Hi"), *wclick("alice", *CLOSE), wait_for("alice: window closed"),
              *click(*DOCK["Notes"]), wait_for("alice: opened", 2), pause(0.5), snap("notes-again"),
              *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
@@ -431,7 +439,8 @@ APP_STEPS = [*keys("Hi"), *wclick("alice", *CLOSE), wait_for("alice: window clos
              *keys("abc"),
              *wclick("Terminal", 230, 280), b"run clock\r", wait_for("clock: ticked 3 times"),
              *click(*DOCK["Files"]), wait_for("files: opened"),
-             *[b"\x1b[B"] * 13, wait_for("files: showing hello.txt"),
+             # down Files' list, past welcome.txt, the programs, guide.txt and notes/
+             *[b"\x1b[B"] * (len(disk_programs()) + 3), wait_for("files: showing hello.txt"),
              *click(*DOCK["Security"]), wait_for("security: 13")]
 
 if __name__ == "__main__":

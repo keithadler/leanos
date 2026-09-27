@@ -24,6 +24,27 @@ static inline struct date date_of(u64 t) {
     return d;
 }
 
+/* The calendar the other way: leap years, how long each month is, and a date's day number
+   (days since 1970-01-01, negative before it), by Hinnant's days-from-civil, which date_of
+   runs backward. Any year, in the Gregorian calendar (before 1582 too, as ISO 8601 has it).
+   test/calendar.sh checks them against Python's calendar for every month of years 1 to 9999. */
+static inline int leap_year(long y) { return y % 4 == 0 && (y % 100 != 0 || y % 400 == 0); }
+
+static inline int month_days(long y, int m) {           /* m 1-12 */
+    return m == 2 ? 28 + leap_year(y) : m == 4 || m == 6 || m == 9 || m == 11 ? 30 : 31;
+}
+
+static inline long days_of(long y, int m, int d) {
+    y -= m <= 2;                                          /* the year from March, as date_of counts */
+    long era = (y >= 0 ? y : y - 399) / 400;
+    long yoe = y - era * 400;
+    long doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    return era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+}
+
+/* The weekday of a day number, 0 = Sunday, as date_of gives it. */
+static inline int weekday_of(long days) { return (int)(((days + 4) % 7 + 7) % 7); }
+
 static const char *const month_names[12] = {"January", "February", "March", "April", "May", "June", "July",
                                             "August", "September", "October", "November", "December"};
 static const char *const day_names[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
