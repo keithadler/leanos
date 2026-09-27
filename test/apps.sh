@@ -41,8 +41,8 @@ check_order terminal \
   "terminal: caps -> 14 capabilities" \
   "terminal: boot -> 8 verified" \
   "terminal: write hello.txt -> ok" \
-  "terminal: ls -> 14 files" \
-  "terminal: ls -a -> 24 files" \
+  "terminal: ls -> 15 files" \
+  "terminal: ls -a -> 26 files" \
   "terminal: window closed, exiting" \
   "terminal: opened a window -> ok" \
   "terminal: caps -> 14 capabilities" \
@@ -78,13 +78,13 @@ check_order settings \
   "settings: the firmware reports the CPU at 600 MHz" \
   "settings: activity light on -> ok"
 
-# Files: the list (the programs' ten icons left out; settings.txt, where Apps saved the
+# Files: the list (the programs' eleven icons left out; settings.txt, where Apps saved the
 # background Settings chose, included), then the down arrow through the files, past the 12
 # rows it shows at once, to hello.txt
-echo "$out" | grep -qx "files: listed 17 files" || fail "files did not list the card"
+echo "$out" | grep -qx "files: listed 18 files" || fail "files did not list the card"
 echo "$out" | grep -qx "apps: saved the time zone, UTC, and the background, Graphite, in settings.txt -> ok" \
   || fail "Apps did not save the background Settings chose"
-[ "$(echo "$out" | grep -c "^files: showing ")" = 14 ] || fail "the down arrow did not walk the list"
+[ "$(echo "$out" | grep -c "^files: showing ")" = 15 ] || fail "the down arrow did not walk the list"
 echo "$out" | grep -E "^files: showing " | tail -1 | grep -qx "files: showing hello.txt (19 bytes)" || fail "files did not reach hello.txt"
 
 check_order security \
@@ -164,7 +164,7 @@ PY
 again=$(python3 test/run.py 40 --keep-sd)
 [ $? -eq 0 ] || fail "the second boot did not reach idle"
 echo "$again" | grep -E "^(fs: |alice: |apps: time zone|display: background)" | sed 's/^/  | /'
-echo "$again" | grep -qx "fs: ready, 26 files on the SD card" || fail "the files did not survive a restart"
+echo "$again" | grep -qx "fs: ready, 28 files on the SD card" || fail "the files did not survive a restart"
 echo "$again" | grep -qx "apps: time zone UTC, background Graphite, from settings.txt -> ok" || fail "Apps did not read the background back"
 echo "$again" | grep -qx "display: background 1, saved on the card" || fail "the Graphite background did not survive a restart"
 echo "$again" | grep -qx "alice: 1 note; loaded notes/1.txt, 2 bytes" || fail "Notes did not get its note back after a restart"

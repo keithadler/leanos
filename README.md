@@ -55,7 +55,8 @@ This is the start. The next steps, in order:
   window, and hands the text only to the window in front when you press Ctrl+V. No program
   can read the clipboard, or put text on it, by asking.
 - **Programs from the SD card**: `web` (a text web browser), `edit` (a text editor),
-  `clock`, `calc`, `snake`, `life`, `tiles` (2048), `tour`, `fuzz` and `hello`. Up to six
+  `paint` (a paint program that saves standard BMP pictures), `clock`, `calc`, `snake`,
+  `life`, `tiles` (2048), `tour`, `fuzz` and `hello`. Up to six
   run at once, each confined to its own memory, a window, its own folder, the files you hand
   it, and the network only if you allow it.
 - **A real file system** on the SD card: folders, large files, and a write-ahead journal so
@@ -159,7 +160,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 39 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Files as a file manager, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 40 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Files as a file manager, paint and the BMP files it saves, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -186,6 +187,9 @@ Things to try once it is up:
   after it), long notes wrap and scroll, Tab goes to the list (Up and Down, then Return),
   and Ctrl+D twice deletes a note. Each note is a file: `cat notes/1.txt` in Terminal.
 - `run edit notes/1.txt` in Terminal edits that one file, and nothing else.
+- `run paint` in Terminal: draw with the mouse (lines, rectangles and ellipses show as you
+  drag, F fills, Ctrl+Z undoes). The picture saves itself as `apps/paint/untitled.bmp`, a
+  standard 24-bit BMP; `run paint picture.bmp` edits another.
 - Type in Notes, press Ctrl+C, click Terminal and press Ctrl+V: the text is on its command
   line, and nothing runs until you press Return.
 - `run web` (without `-net`) and watch the network refuse it.

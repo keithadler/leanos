@@ -39,6 +39,10 @@
    window's number), and the window goes from the screen at once, and from the table when
    its client hears it. The yellow button minimizes a window and the green one zooms it;
    Ctrl+O brings the next window to the front (see "minimize, zoom, and the next window").
+   A window opened with OPEN_DRAG (bit 32 of OPEN's size word) also hears a drag: from a
+   press in it until the button comes up, it holds the pointer, and hears every move
+   (EV_MOVE, the moves it has not taken yet merged into the last) and the release (EV_UP),
+   wherever the pointer goes. Other windows hear only the press, as before.
 
    It holds a launch capability for each app (capabilities 6 to 10: Notes, Terminal,
    Settings, Security, Files). Clicking an app in the dock starts it if it is not running; the
@@ -121,6 +125,7 @@ enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START 
 /* 11 is no request: programs ask it to show that no request reads the clipboard (mallory, tour) */
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7, EV_PASTE = 8 };
 enum { KEY_COPY = 3, KEY_PASTE = 22, KEY_NEXT = 15 };   /* Ctrl+C, Ctrl+V, Ctrl+O (the next window) */
+#define OPEN_DRAG (1UL << 32)  /* in OPEN's size word: the window hears drags (user/app.h) */
 #define CLIP_MAX 4096     /* as user/app.h */
 #define COPY_MS 2000
 enum { BADGE_USB = 17, BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
@@ -175,6 +180,7 @@ struct win {
     struct picture icon;        /* the icon a program from the card lent (OP_ICON), or none */
     char prog[16];              /* and the card file it came from, or "" */
     int pages;                  /* how many pages its pixels were lent in (for the log) */
+    int drags;                  /* it asked for drags (OPEN_DRAG): the moves and the release */
     int unsaid;                 /* its opening is not logged yet: a card program's name comes after */
     u64 hash;                   /* the first word of its slot's measured hash when it opened */
     unsigned queue[QUEUE][4];    /* events waiting for the client (kind, a, b, when), oldest at qhead */
@@ -223,6 +229,8 @@ struct state {
     int nz;
     int px, py;                 /* pointer */
     int drag, grab_x, grab_y, drag_x0, drag_y0;
+    int held;                   /* the window (+ 1, or 0) a press in it gave the pointer, until
+                                   the button comes up (OPEN_DRAG) */
     int hover;                  /* dock icon under the pointer + 1, or 0 */
     unsigned dock_live;         /* which dock items run (running), a bit each: asked of the kernel
                                    once a rectangle, not once a band */
@@ -1079,7 +1087,11 @@ COLD __attribute__((noinline)) static int next_event(struct state *st, u64 badge
 /* Give window k's client an event: now, if it is waiting, or when it next asks. */
 COLD static void deliver_event(struct state *st, int k, u64 kind, u64 a, u64 b) {
     struct win *w = &st->win[k];
-    if (w->qlen < QUEUE) {
+    unsigned *last = w->qlen ? w->queue[(w->qhead + w->qlen - 1) % QUEUE] : 0;
+    if (kind == EV_MOVE && last && last[0] == EV_MOVE) {
+        last[1] = (unsigned)a;              /* a move it has not taken yet: only where it is now counts */
+        last[2] = (unsigned)b;
+    } else if (w->qlen < QUEUE) {
         int at = (w->qhead + w->qlen++) % QUEUE;
         w->queue[at][0] = (unsigned)kind;   /* keys and screen positions fit in 32 bits */
         w->queue[at][1] = (unsigned)a;
@@ -1170,6 +1182,7 @@ COLD static void cap_drop(struct state *st, int i) {
 COLD static void hide(struct state *st, int k) {
     unstack(st, k);
     if (st->drag == k + 1) st->drag = 0;
+    if (st->held == k + 1) st->held = 0;
     if (st->hover == 101 + k) st->hover = 0;
     sys2(SYS_UNMAP, WIN_PAGE + WIN_MAX_PAGES * (u64)k, WIN_MAX_PAGES);
 }
@@ -1529,6 +1542,16 @@ COLD __attribute__((noinline)) static void on_copy(struct state *st, struct line
     }
 }
 
+/* A window that asked for drags (OPEN_DRAG) holds the pointer from a press in it until the
+   button comes up: it hears every move and the release, wherever the pointer is, in its own
+   coordinates (above or left of it: negative, as 32-bit numbers), and nothing else hears
+   them: not the dock's hover, not a window under the pointer. */
+COLD static void held_input(struct state *st, u64 kind) {
+    struct win *w = &st->win[st->held - 1];
+    deliver_event(st, st->held - 1, kind, (u64)(st->px - w->x), (u64)(st->py - w->y - TITLE_H));
+    if (kind == EV_UP) st->held = 0;
+}
+
 COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
     if (kind == EV_KEY && (a == KEY_COPY || a == KEY_PASTE || a == KEY_NEXT)) {
         if (a == KEY_COPY) copy_ask(st, l);
@@ -1554,6 +1577,13 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
     int ox = st->px, oy = st->py;
     st->px = a < W ? (int)a : W - 1;
     st->py = b < H ? (int)b : H - 1;
+    if (st->held && kind != EV_DOWN) {
+        held_input(st, kind);
+        composite(st, ox, oy, 12, 19);
+        composite(st, st->px, st->py, 12, 19);
+        return;
+    }
+    st->held = 0;                /* a press while held: the release was lost */
     if (kind == EV_DOWN && (st->menu || (st->py < BAR_H && (st->px < 100 || on_bar_menu(st, st->px))))) {
         /* a click with a menu open closes it (choosing what is under it); on the logo, on
            Edit or on Window, with none open, opens that one */
@@ -1611,8 +1641,10 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
                 put_ms(l, micros() - t0);
                 say(l);
             }
-            if (st->py >= w->y + TITLE_H)
+            if (st->py >= w->y + TITLE_H) {
                 deliver_event(st, k, EV_DOWN, (u64)(st->px - w->x), (u64)(st->py - w->y - TITLE_H));
+                if (w->drags) st->held = k + 1;
+            }
             if (st->py < w->y + TITLE_H) {
                 st->drag = k + 1;
                 st->grab_x = st->px - w->x;
@@ -1818,7 +1850,7 @@ COLD static void say_unsaid(struct state *st, struct line *l, u64 badge) {
 
 COLD static void on_open(struct state *st, struct line *l, struct res *r) {
     u64 badge = r->x[1], size = r->x[3], title = r->x[4], cap = r->x[5], slot = r->x[6];
-    u64 w = size >> 16, h = size & 0xffff;
+    u64 w = size >> 16 & 0xffff, h = size & 0xffff;
     int k = -1;
     for (int i = 0; i < MAX_WIN; i++) if (!st->win[i].used) { k = i; break; }
     struct res info = sys1(SYS_CAPINFO, cap - 1);
@@ -1858,6 +1890,7 @@ COLD static void on_open(struct state *st, struct line *l, struct res *r) {
     place(st, wn);
     wn->hash = sys1(SYS_BOOTINFO, (u64)slot_of(badge)).x[2];
     wn->closing = wn->minimized = wn->zoomed = 0;
+    wn->drags = (size & OPEN_DRAG) != 0;
     wn->icon.px = 0;
     wn->prog[0] = 0;
     st->cap_win[cap - 1] = k + 1;
@@ -2169,6 +2202,7 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
     st->theme = 0;
     st->full_reported = st->click_reported = 0;
     st->menu = 0;
+    st->held = 0;
     st->clip_len = st->copy_win = st->copy_len = 0;
     for (int i = 0; i < 32; i++) st->copy_refused[i] = 0;
     st->drag_frames = st->drag_us = 0;

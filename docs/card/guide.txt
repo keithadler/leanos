@@ -147,6 +147,11 @@ Programs on the card
   edit    a text editor: run edit FILE gives it that file; it saves by itself. Home, End,
           Delete, Page Up and Page Down work as in Notes (its lines are not wrapped)
   web     a text web browser: run -net web lets it use the network
+  paint   a paint program: drag to draw. P pencil, B brush, E eraser, L line, R rectangle
+          (Shift+R filled), O ellipse (Shift+O filled), F fill, I picks a color from the
+          picture; 1 2 3 set the size, X swaps the two colors, Delete clears. Ctrl+Z undoes,
+          Ctrl+Y redoes. It saves by itself as apps/paint/untitled.bmp, a 24-bit BMP any
+          image program opens; run paint FILE.bmp edits that picture instead.
 
 Every program from the card runs in an open slot: it gets its own memory and a window,
 and nothing else, whatever it was written to do. Up to six run at once.
