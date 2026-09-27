@@ -40,7 +40,7 @@ KERNEL_LEAN_C := .lake/build/ir/LeanOS/Kernel.c
 USER_PROGS := alice display mallory carol input terminal settings security fs files launcher usb
 USER_BINS := $(patsubst %,build/user/%.bin,$(USER_PROGS))
 
-ARCH_O := build/boot.o build/kmain.o build/bootcon.o build/sd.o build/sha256.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
+ARCH_O := build/boot.o build/kmain.o build/bootcon.o build/sd.o build/sha256.o build/pcie.o build/xhci.o build/runtime.o build/libc.o build/Kernel.o build/Manifest.o
 
 .PHONY: all run test mutants proofs clean pi-image pi-bringup stackcheck
 ASSET_BLOBS := $(patsubst %,build/assets/%.bin,alice display terminal settings security files launcher open)
@@ -92,7 +92,7 @@ build/Kernel.o: $(KERNEL_LEAN_C)
 	@mkdir -p build
 	$(CC) $(LEANC_FLAGS) -c $< -o $@
 
-build/%.o: arch/%.c arch/arch.h arch/bootcon.h build/user/font.h
+build/%.o: arch/%.c arch/arch.h arch/bootcon.h arch/xhci.h build/user/font.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -Ibuild/user -Wall -Werror -c $< -o $@
 
@@ -177,6 +177,9 @@ build/user/%.elf: user/%.c user/lib.h user/gfx.h user/assets.h user/app.h user/f
 	$(CC) $(UCFLAGS) -Ibuild/user -c $< -o build/user/$*.o
 	$(LD) -T user/user.ld --gc-sections build/user/$*.o -o $@
 
+# The USB driver includes its xHCI half (user/xhci.c).
+build/user/usb.elf: user/xhci.c
+
 # Programs that live on the SD card, not in the kernel image: stripped ELF files.
 DISK_PROGS := hello clock tour calc snake life tiles fuzz edit web
 DISK_ELFS := $(patsubst %,build/progs/%.elf,$(DISK_PROGS))
@@ -231,7 +234,7 @@ pi-image: build/pi/kernel8.img $(DISK_ELFS) $(DISK_ICONS) tools/mkpiimage.py too
 # emulator through semihosting (a Pi has no debugger to take that call), and the green LED
 # shows the boot (arch/bootcon.c: on while booting, a panic blinks its step).
 PI_C := kmain bootcon
-build/pi/%.o: arch/%.c arch/arch.h arch/bootcon.h build/user/font.h
+build/pi/%.o: arch/%.c arch/arch.h arch/bootcon.h arch/xhci.h build/user/font.h
 	@mkdir -p build/pi
 	$(CC) $(filter-out -DLEANOS_QEMU,$(CFLAGS)) -Ibuild/user -Wall -Werror -c $< -o $@
 
@@ -245,7 +248,7 @@ build/pi/kernel8.img: $(PI_ARCH_O) $(INIT_O) arch/kernel.ld
 # board and clock readings are printed. The blinks add about 40 s to the boot, so it is a
 # build of its own, never the normal image. Its config.txt is the normal card's (mkpiimage.py
 # --bringup), with the firmware's own log on the serial console always on.
-build/pi-bringup/%.o: arch/%.c arch/arch.h arch/bootcon.h build/user/font.h
+build/pi-bringup/%.o: arch/%.c arch/arch.h arch/bootcon.h arch/xhci.h build/user/font.h
 	@mkdir -p build/pi-bringup
 	$(CC) $(filter-out -DLEANOS_QEMU,$(CFLAGS)) -DLEANOS_BRINGUP -Ibuild/user -Wall -Werror -c $< -o $@
 
@@ -301,7 +304,7 @@ build/stack/Init_%.o: build/c/Init_%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(LEANC_FLAGS) -fstack-usage -c $< -o $@
 
-build/stack/%.o: arch/%.c arch/arch.h arch/bootcon.h build/user/font.h
+build/stack/%.o: arch/%.c arch/arch.h arch/bootcon.h arch/xhci.h build/user/font.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Ibuild/user -Wall -Werror -fstack-usage -c $< -o $@
 

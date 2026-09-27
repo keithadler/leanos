@@ -125,6 +125,7 @@ expected_boot=$(printf '%s\n' "leanos © 2026 Keith Adler" \
   "leanos: system counter: 62500000 Hz" \
   "leanos: RAM for the ARM: 0x0 to 0x3c000000" \
   "leanos: USB controller powered on" \
+  "leanos: no PCIe (QEMU): the USB-A ports are off" \
   "leanos: [3/13] Lean runtime: initializing the kernel's Lean code" \
   "leanos: [4/13] framebuffer: asking the firmware's mailbox for the screen" \
   "leanos: the firmware's framebuffer: 1024x600 (screen 1024x600), 32 bits, pitch 4096, BGR, alpha mode 2, 2457600 bytes at bus address 0x3c100000" \

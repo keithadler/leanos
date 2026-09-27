@@ -456,6 +456,8 @@ static void absolute(struct usb *u, struct hid *h, const unsigned char *r, int n
     }
 }
 
+#include "xhci.c"
+
 static void arm(struct hid *h) {
     start(h->ch, &h->d, h->ep, 1, INTERRUPT, h->mps, h->pid, h->buf, h->mps);
 }
@@ -478,6 +480,7 @@ static void poll_hid(struct usb *u) {
         }
         if (st & (XFERCOMPL | CHHLTD)) arm(h);
     }
+    xhci_poll(u);
 }
 
 /* ---- the network adapter ---- */
@@ -675,7 +678,7 @@ static void serve(struct usb *u) {
     for (int i = 0; i < u->nhid; i++) arm(&u->hid[i]);
     for (;;) {
         /* a request, or a few milliseconds (a second, with nothing plugged in) */
-        u64 wait = u->nhid || u->has_net ? 8 : 1000;
+        u64 wait = u->nhid || u->has_net || xhci_on(u) ? 8 : 1000;
         struct res r = sys(SYS_RECVT, NETEP, wait, 0, 0, 0);
         if (r.status == OK) {
             u64 badge = r.x[1], op = r.x[2], arg = r.x[3], grant = r.x[5], slot = r.x[6];
@@ -754,6 +757,7 @@ __attribute__((section(".text.start"))) void _start(void) {
                      ? "usb: refused, as proved: DMA into the display's memory, descriptor DMA, device mode"
                      : "usb: the kernel let a dangerous request through");
     say(u);
+    xhci_start(u);
 
     if (!(rd(HPRT0) & 1)) {
         sleep_ms(250);

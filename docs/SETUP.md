@@ -168,9 +168,12 @@ make mutants
   erased) and a card reader
 - An **HDMI screen** and a **micro-HDMI to HDMI** cable. leanos draws at 1024×600, so a
   7-inch 1024×600 screen matches exactly; others scale it.
-- A **3.3 V USB-to-serial cable** (for example Adafruit 954, or FTDI TTL-232R-3V3). Today
-  this is how you type into leanos on a Pi and how you see its boot log: the Pi 4's USB-A
-  ports need a driver leanos does not have yet. Never use a 5 V cable.
+- A **3.3 V USB-to-serial cable** (for example Adafruit 954, or FTDI TTL-232R-3V3). This is
+  how you see leanos's boot log, and how you type into it if a USB keyboard does not work
+  (leanos drives the USB-A ports, but that has not run on a Pi yet: see
+  [USB keyboards and mice on the USB-A ports](#usb-keyboards-and-mice-on-the-usb-a-ports)).
+  Never use a 5 V cable.
+- Optionally a **USB keyboard and mouse**, wired or with a receiver, for the USB-A ports.
 
 ### Build the card image
 
@@ -253,8 +256,8 @@ The card's `config.txt` is written by `tools/mkpiimage.py`, where each line is e
 
 ### Use the desktop over the cable
 
-The Pi 4's USB-A ports need a driver leanos does not have yet, so the serial cable is the
-keyboard and mouse:
+Until a USB keyboard works on the USB-A ports (see below), the serial cable is the keyboard
+and mouse:
 
 ```bash
 tools/serial.py --keys --mouse
@@ -294,14 +297,14 @@ the firmware prints its own log first, on the same pins: it names the files it r
 | Step | Serial line (`leanos: [n/13] ...`) | Then, when it goes well | If it stops here |
 |---|---|---|---|
 | 1 | serial console: PL011 on GPIO 14/15, 115200 8N1 | `Raspberry Pi 4, booting on EL1` | The kernel runs and its UART works. |
-| 2 | board: the firmware's mailbox; revisions, RAM, USB power | `board revision <0xc03111>, firmware <0x...>`, `serial console: PL011, 115200 baud from a 48000000 Hz clock (the firmware's)`, `system counter: 54000000 Hz`, `RAM for the ARM: 0x0 to <0x3b400000>`, `USB controller powered on` | Its waits are bounded; see the messages below. |
+| 2 | board: the firmware's mailbox; revisions, RAM, USB power | `board revision <0xc03111>, firmware <0x...>`, `serial console: PL011, 115200 baud from a 48000000 Hz clock (the firmware's)`, `system counter: 54000000 Hz`, `RAM for the ARM: 0x0 to <0x3b400000>`, `USB controller powered on`, then the USB-A ports: `PCIe: link up, 5.0 GT/s x1 (bridge revision <0x304>)`, `PCIe: the firmware loaded the VL805's firmware (tag 0x30058)`, `xHCI: VL805 rev <0x1> (0x1106:0x3483), xHCI 0x100, 5 ports, 32 slots, <N> scratchpad pages, 32-byte contexts`, `xHCI: registers: <4096> bytes; ...`, `xHCI: USB 2 port 1`, `xHCI: USB 3 ports 2 to 5` | Its waits are bounded (the PCIe link: at most 600 ms); see the messages below. |
 | 3 | Lean runtime: initializing the kernel's Lean code | | The heap after the image, or RAM. |
 | 4 | framebuffer: asking the firmware's mailbox for the screen | `the firmware's framebuffer: 1024x600 (screen 1024x600), 32 bits, pitch 4096, BGR, alpha mode 2, 2457600 bytes at bus address <0xfe...>`, `framebuffer 1024x600 at <0x3e...>` | The firmware's answer; the screen console starts here. |
 | 5 | MMU: kernel page tables, then the caches | `MMU on` | Turning on the MMU and caches failed. Report it. |
 | 6 | SD card: EMMC2, then EMMC; the partition table | `SD: EMMC2: SDHCI 3.0, base clock <100000> kHz (the firmware's)`, `SD: EMMC2: I/O lines at 3.3 V`, `SD: EMMC2: identification clock <400> kHz`, `SD: EMMC2: an SDHC or SDXC card, powered up after <N> ms`, `SD: EMMC2: ready, transfer clock 25000 kHz`, `SD card ready, data partition of 63 MiB` | The `SD:` lines say which command got no answer; see below. |
 | 7 | Lean kernel: the first state, from the boot manifest | `Lean kernel initialized, 18 tasks` | Lean code and its heap. |
 | 8 | memory: clearing the task frames; SHA-256 self-test | | RAM from 0x4000000. |
-| 9 | programs: loading each, checking it against the manifest | `alice verified, sha256 <0x...>...`, and so on for 7 programs | The last `verified` line names the program before the one it stopped in. |
+| 9 | programs: loading each, checking it against the manifest | `alice verified, sha256 <0x...>...`, and so on for 7 programs; before `usb verified`, `xHCI: its memory stored at 0x51c0000, the controller reset, bus mastering on` | The last `verified` line names the program before the one it stopped in. |
 | 10 | page tables: every task's address space | | |
 | 11 | interrupts: the GIC-400 and the 10 ms timer | | `enable_gic=1` must be in `config.txt`. |
 | 12 | cores 1-3: releasing them from the spin table | | Core 0 itself: a core that never starts does not stop it. |
@@ -329,10 +332,56 @@ the firmware prints its own log first, on the same pins: it names the files it r
 | `leanos: SD: read of block N failed, interrupt status 0x...` | A block failed after the card was set up. Report it, with the card's make and size. |
 | `serial: the UART takes no characters; serial output is dropped` (on the screen) | The UART never took a character, so the kernel stopped waiting for it and boots on; the screen and the LED still report. |
 | `PANIC: exception in the kernel: ...` | The kernel faulted: the line names the class (a data abort, say), the fault, ELR (the instruction), FAR (the address) and ESR; the line after it names the step. Report both. |
-| `usb: nothing plugged in` | Expected: a keyboard on the USB-A ports needs a driver for their controller (the VL805, over PCIe), which leanos does not have, and the USB-C port is the Pi's power input, which gives a device plugged into it no power. Use the serial cable. |
+| `usb: nothing plugged in` | Expected: that is the USB-C port, the Pi's power input, which gives a device plugged into it no power. The USB-A ports have lines of their own, `usb: xHCI: ...` (below). |
+| `PCIe: ...; the USB-A ports are off`, or `xHCI: refused: ...; the USB-A ports are off` | The kernel kept the USB-A ports off, and says why; everything else goes on. See [USB keyboards and mice on the USB-A ports](#usb-keyboards-and-mice-on-the-usb-a-ports). |
 
 When you report a first boot, include the whole serial log, from the firmware's first line:
 `serial.py` keeps it in `build/serial-DATE.log`.
+
+### USB keyboards and mice on the USB-A ports
+
+The Pi 4's four USB-A ports are a VL805 USB controller (xHCI) on the chip's PCIe bus; their
+USB 2 lines all go through a hub inside. leanos drives it: the kernel brings the PCIe bus
+and the controller up in step 2, and the USB driver finds keyboards and mice (the boot
+protocol, which every keyboard and mouse speaks; a receiver for a wireless keyboard and
+mouse works too), through the hub, and when they are plugged in or out later. It is tested
+against a model of the controller (`test/xhci.sh`), but has **not run on a Pi yet**, so the
+serial cable stays useful.
+
+Plug the keyboard (and mouse) into any USB-A port, black or blue, before powering on. When
+it works, the boot log shows, after the lines in the table above:
+
+```
+usb: xHCI: refused, as proved: a TRB aimed at the display's memory, DCBAAP, Run/Stop, a Link out of its ring
+usb: xHCI: running, 5 ports, 16 device slots, DMA checked by the kernel
+usb: xHCI: port 1: a high-speed device
+usb: xHCI: hub on port 1, 4 ports
+usb: xHCI: keyboard on port 1.3
+usb: xHCI: mouse on port 1.4
+usb: xHCI: ready, 1 keyboard, 1 mouse
+```
+
+`port 1.3` is the hub's port 3 behind the controller's port 1; which of the hub's ports is
+which socket is not known yet (please report it). Unplugging and plugging back prints
+`usb: xHCI: keyboard on port 1.3 unplugged` and then the device again.
+
+| If you see | It means, and what to try |
+|---|---|
+| No `PCIe:` or `xHCI:` lines in step 2 | An older kernel: build the card again. |
+| `PCIe: no link (status 0x...); the USB-A ports are off` | The bridge found no device on the bus. Power the Pi off fully (unplug it) and on again; report the status value. |
+| `PCIe: the firmware did not answer tag 0x30058` | The firmware did not load the VL805's firmware. On boards whose VL805 has its own EEPROM this is fine; if no keyboard is found after it, try another firmware release (`tools/fetch-firmware.sh TAG`). |
+| `PCIe: no device on bus 1` or `the device on bus 1 is not an xHCI controller` | The VL805 did not come up (its firmware, above), or the board is not a Pi 4 Model B. Report it. |
+| `xHCI: refused: <why>; the USB-A ports are off` | The controller's registers are not laid out the way the kernel's checks assume (5 ports, at most 12 scratchpad pages, the register windows apart); it stays off rather than risk a DMA the proofs do not cover. Report the line with the `xHCI:` lines before it. |
+| `xHCI: refused: the controller did not come out of its reset` | Report it with the step 2 lines. |
+| `usb: xHCI: no controller (the USB-A ports are off)` | The kernel kept it off: see its lines in step 2. |
+| `usb: xHCI: the kernel let a dangerous request through` | A request the proofs say is refused was not: stop using it and report it. |
+| `usb: xHCI: the controller is not halted and ready` or `did not start` | The reset in step 9 did not leave it ready. Report the USBSTS value. |
+| `usb: xHCI: ready, 0 keyboards, 0 mice` with no `port 1` line | The controller runs but sees nothing on its USB 2 port. Try another socket, and report it. |
+| `usb: xHCI: port 1.N: no address` or `no answer` | The device did not answer through the hub. Try it in another socket, or another keyboard; report the completion code. |
+| `usb: xHCI: port 1.N: not a keyboard, mouse or hub` | That device is not one leanos uses (a drive, say); it is left alone. |
+| `usb: xHCI: port N: a USB 3 device, not a keyboard or mouse; left alone` | A USB 3 device on a blue socket; leanos does not use them. |
+| `usb: xHCI: keyboard on port 1.N`, but typing does nothing | Report it with the whole log; meanwhile use the serial cable (`tools/serial.py --keys --mouse`). |
+| `usb: xHCI: the controller did not answer a command; the USB-A ports are off` | It stopped answering; the rest of leanos goes on. Report the lines before it. |
 
 ### The LED's codes
 

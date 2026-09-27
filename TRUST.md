@@ -271,24 +271,68 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   documented behavior, trusted, not proved; so is that nothing else in its register page
   can make it DMA once device mode, descriptor DMA and the descriptor-list registers are
   refused. On a Pi 4 the DWC2 is the USB-C port; the USB-A ports are the xHCI controller,
-  next.
-- The xHCI controller (the VL805, behind the PCIe bridge). The kernel's side is proved
-  (`xhci_dma_own_memory` and the rest, above); the machine layer's side is not written
-  yet, and until it is, every request the kernel approves fails with an I/O error. What it
-  must do with each request, and at boot, is in ROADMAP.md (stage 7, USB part 2), and is
-  trusted once written: that it brings up the PCIe bridge with an inbound window mapping
-  bus addresses to the same physical addresses (the kernel's addresses are physical), keeps
-  PCIe configuration space and MSI to itself, stores the xHCI memory's boot content
-  (`xhciBoot`) before the driver runs and bus mastering starts, places input context bytes
-  for the controller's context size, turns a register number into the right address
-  (CAPLENGTH, RTSOFF, DBOFF) and keeps the controller off unless those windows overlap
-  nothing else, writes each TRB in the three steps the guard needs, and keeps the cache
-  out of the way. Trusted about the controller, as the model in `LeanOS/Xhci.lean` says:
-  it touches memory only through the addresses in its DMA registers and in the structures
-  they lead to, as the xHCI specification (revision 1.2) lays them out; a TRB of a type not
-  allowed on its ring is a TRB Error and touches nothing; it reads a TRB's 16 bytes in one
-  access; it reads no more DCBAA entries than slots and no more scratchpad entries than 256;
-  it does no DMA while halted; and it writes nothing past a TRB's transfer length.
+  below.
+- The xHCI controller (the VL805, behind the PCIe bridge, the USB-A ports). The kernel's
+  side is proved (`xhci_dma_own_memory` and the rest, above). The machine layer's side is
+  written, and trusted, as ROADMAP.md (stage 7, USB part 2) lays it out:
+  - `arch/pcie.c`, once at boot: the bridge reset and its link, an outbound window for the
+    VL805's registers, an inbound window mapping bus addresses 0 to 4 GiB to the same
+    physical addresses (the kernel's addresses are physical, and the frame pool is in the
+    first GiB), and the firmware asked to load the VL805's own firmware (mailbox tag
+    0x00030058). PCIe configuration space stays in this layer, MSI and MSI-X are kept off
+    and so is the legacy interrupt: the driver polls. Bus mastering stays off.
+  - `arch/xhci.c`: the controller stays off (every request fails with an I/O error, and a
+    boot line says why) unless its registers are laid out as the kernel's checks assume: 4 KiB
+    pages, at least 5 ports, at most 12 scratchpad pages, and the windows the driver may
+    write (operational, runtime, doorbells) inside its registers, apart from each other, from
+    the capability registers and from every extended capability. Before the driver runs it
+    stores the xHCI memory's boot content (`xhciBoot`), placing the input contexts for the
+    controller's context size, cleans it to memory, resets the controller and only then turns
+    bus mastering on (and stops the controller before the driver's frames are ever cleared
+    again). For each request it turns a register number into its address (CAPLENGTH, RTSOFF,
+    DBOFF), writes CRCR and ERDP low word then high, writes each TRB in the three steps the
+    guard needs, places input context bytes for the context size, and keeps the cache out of
+    the way (op 6 cleans and invalidates the driver's range, the event ring and the device
+    contexts).
+  - `arch/kmain.c`: the VL805's registers are at 24 GiB, outside what the Lean kernel's page
+    tables map. This layer maps them in its own boot table only (`kl1`: a 1 GiB block of
+    device memory, kernel only, never run, not global, so its TLB entries belong to ASID 0,
+    which only `kl1` uses), and switches to that table around each xHCI request and back, so
+    every task's tables stay exactly the Lean kernel's (LeanOS/Tables.lean). QEMU has no PCIe
+    bridge: there all of this is skipped (`leanos: no PCIe (QEMU): the USB-A ports are off`),
+    though compiled and measured by `tools/stackcheck.py`.
+
+  Trusted about the controller, as the model in `LeanOS/Xhci.lean` says: it touches memory
+  only through the addresses in its DMA registers and in the structures they lead to, as the
+  xHCI specification (revision 1.2) lays them out; a TRB of a type not allowed on its ring is
+  a TRB Error and touches nothing; it reads a TRB's 16 bytes in one access; it reads no more
+  DCBAA entries than slots and no more scratchpad entries than 256; it does no DMA while
+  halted; and it writes nothing past a TRB's transfer length. One thing the model leaves out:
+  the VL805 reads ahead past the end of a ring segment (Linux's `XHCI_TRB_OVERFETCH`). That is
+  a read, never a write, and the driver keeps its rings away from the end of the transfer
+  area, so what it reads ahead is still the xHCI memory.
+
+  The driver's xHCI half (`user/xhci.c`, in the USB driver) is trusted to work, not to be
+  safe: whatever it asks, the kernel's checks bound what the controller can touch. It is
+  tested, not proved, and has not run on a Pi yet. `test/xhci.sh` compiles it and
+  `arch/xhci.c` for the host and runs them against a model of an xHCI controller written from
+  the specification (`test/xhci-sim/sim.c`: registers, the command, transfer and event rings
+  with their cycle bits, Link TRBs with Toggle Cycle, ERDP, device and input contexts of 32
+  and 64 bytes, endpoint states, port power, reset and changes), behind it a high-speed hub
+  with a transaction translator, keyboards and mice at low and full speed, a receiver with
+  both, and a USB 3 drive. The Lean kernel itself decides every system call the driver makes
+  (`test/xhci-sim/Oracle.lean` runs `sysXhci` on it), and its boot content is `xhciBoot`
+  itself. The model checks every address the controller follows against where that
+  structure may be, and every data buffer against the driver's own frames; the driver sees
+  memory the controller wrote only after the cache maintenance it asked for (a line it wrote
+  and did not have cleaned is written back over the controller's data). The test enumerates
+  through the hub, types, moves and clicks, plugs and unplugs devices (the same slots again)
+  until the command ring, the event ring and the transfer rings have gone round several
+  times, with both context sizes, and checks that every report arrives, in order, that no
+  request is refused but the four the driver tries on purpose, and that the machine layer
+  keeps off controllers it must refuse. What it does not cover: `arch/pcie.c`, real timing,
+  the VL805's behavior where it differs from the specification, a real cache's speculation,
+  errors on the wire other than a device gone, and USB 3 devices beyond their port.
 - The time of day: that the time server's answer is right is trusted, not proved (SNTP, one
   question, no authentication: anyone on the network path could send a wrong time). The
   proofs say only who can set it and that it then moves with the kernel's own clock.
@@ -628,7 +672,7 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   tail), `placeCaller` and `forgetCaller` a task's reply slots (9), `dropLine` the pending
   lines (3). Recursion not in the table, an indirect call it cannot resolve, a frame of
   variable size (alloca, a variable-length array) or a worst case over 32 KiB, half the
-  stack, fails the check. The worst case is 6,976 bytes: 3,488 for a system call (`start`
+  stack, fails the check. The worst case is 7,008 bytes: 3,504 for a system call (`start`
   taking back a slot's memory: `revokeAll` over the tasks, then `forgetCaller` over one
   task's reply slots, then an allocation that can fail into `kpanic`, whose message goes
   through `kputc` into the boot console's recording; the tool cannot see that the
@@ -640,8 +684,10 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
     relocations are the shipped object's, that every frame is static, and that each
     function's own stack adjustments add up to clang's number.
   - The call graph, read from `build/leanos.elf` with `llvm-objdump`. Every branch that
-    leaves a function must go to a function's start; every `br` must be a jump table, whose
-    entries the tool reads from the image and finds inside the function; every `blr` must be
+    leaves a function must go to a function's start; every `br` must be a jump table (its
+    address made by `adr`, or by `adrp` and `add` when the table is more than 1 MiB from the
+    code, as it is once the image grew past that), whose entries the tool reads from the
+    image and finds inside the function; every `blr` must be
     traced back, through the function's code, to the function addresses put in its register
     (in `trap`, the message-word conversion `arg` or `msg_word`), or be the runtime's
     one-time initialization of closed terms (`lean_obj_once_cold` and its kin), whose

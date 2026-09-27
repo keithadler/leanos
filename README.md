@@ -33,8 +33,9 @@ but a system you can boot, click around in and try to break.
 This is the start. The next steps, in order:
 
 1. **Real hardware.** Boot the image on a physical Raspberry Pi 4 and fix what the emulator
-   does not model: the SD controller, the screen, timing, the USB-A ports (an xHCI driver
-   over PCIe) and the Pi's own Ethernet.
+   does not model: the SD controller, the screen, timing, the USB-A ports (the xHCI driver
+   over PCIe is written and tested against a model, not yet on a Pi) and the Pi's own
+   Ethernet.
 2. **Newer Pis.** The Raspberry Pi 5, whose peripherals sit behind its RP1 chip, and later
    boards. The Lean kernel carries over unchanged; the machine layer and drivers are the work.
 3. **Wider.** `https`, more programs, and the proofs pushed further down into the machine
@@ -158,7 +159,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 37 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Notes and its notes, Clock's stopwatch and timer, Files as a file manager, Terminal's pipes, windows, USB, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 38 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Notes and its notes, Clock's stopwatch and timer, Files as a file manager, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -212,12 +213,13 @@ Write `build/leanos-pi4.img` to a microSD card (Raspberry Pi Imager, "Use custom
 
 What you need to know first:
 
-- **Input today is the serial console**: a 3.3 V USB-serial cable on header pins 6
-  (ground), 8 (TX) and 10 (RX), 115200 baud (`tools/serial.py --keys --mouse`). The USB
-  driver runs the Pi 4's DWC2 controller, which is the USB-C port; the four USB-A ports sit
-  behind a VL805 chip on PCIe and need an xHCI driver. The kernel's side of it is written
-  and proved; the PCIe bring-up and the driver's xHCI code are next
-  ([ROADMAP.md](ROADMAP.md), stage 7).
+- **Input on a Pi: the serial console, and the USB-A ports, untried.** A 3.3 V USB-serial
+  cable on header pins 6 (ground), 8 (TX) and 10 (RX), 115200 baud (`tools/serial.py --keys
+  --mouse`), always works. The USB driver runs the Pi 4's DWC2 controller (the USB-C port)
+  and the VL805 behind the PCIe bus (the four USB-A ports), for boot keyboards and mice,
+  through hubs, plugged in at any time. The xHCI side is proved on the kernel's part and
+  tested against a model of the controller (`test/xhci.sh`), but has not run on a Pi yet
+  ([ROADMAP.md](ROADMAP.md), stage 7; docs/SETUP.md, section 5, for what to look for).
 - **It has never booted on real hardware.** Likely trouble spots are the SD controller
   (EMMC2), the screen's color order, and timings QEMU does not model. Each boot step is
   announced before it runs, on the serial console, on the screen and (a panic's) on the

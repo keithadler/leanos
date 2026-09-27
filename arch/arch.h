@@ -21,6 +21,9 @@
 #define CODE_PAGES 16
 
 #define PERIPHERAL_BASE 0xFE000000UL
+/* The PCIe bridge's outbound window, as the ARM sees it (arch/pcie.c): the VL805's registers
+   start there. Kernel only, as device memory, through level-1 entry 24 (arch/kmain.c). */
+#define PCIE_CPU 0x600000000UL
 #define UART0 (PERIPHERAL_BASE + 0x201000) /* PL011 */
 #define GICD 0xFF841000UL                    /* GIC-400 distributor */
 #define GICC 0xFF842000UL                    /* GIC-400 CPU interface */

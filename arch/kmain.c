@@ -11,6 +11,7 @@
 #include <lean/lean.h>
 #include "arch.h"
 #include "bootcon.h"
+#include "xhci.h"
 
 /* ---- the Lean kernel (LeanOS/Kernel.lean) ---- */
 lean_object *initialize_leanos_LeanOS_Kernel(uint8_t builtin);
@@ -49,6 +50,8 @@ lean_object *leanos_reply_usb_b(lean_object *r);
 lean_object *leanos_reply_usb_c(lean_object *r);
 lean_object *leanos_reply_usb_d(lean_object *r);
 lean_object *leanos_reply_xhci_op(lean_object *r);
+lean_object *leanos_xhci_boot(lean_object *i);
+lean_object *leanos_xhci_base(lean_object *u);
 lean_object *leanos_usb_done(lean_object *s, lean_object *v);
 lean_object *leanos_enter(lean_object *s, lean_object *c, lean_object *b0, lean_object *b1, lean_object *b2);
 lean_object *leanos_schedule(lean_object *s);
@@ -468,6 +471,33 @@ static uint64_t fb_alloc(void) {
     return base;
 }
 
+/* ---- the USB-A ports: the PCIe bridge and the xHCI controller ----
+ * On a Pi 4 the four USB-A ports are a VL805 xHCI controller behind the BCM2711's PCIe bridge:
+ * arch/pcie.c brings the bridge up and finds the VL805, arch/xhci.c checks its registers are
+ * laid out as the Lean kernel's checks assume, and keeps it off, saying why, if not. QEMU's
+ * raspi4b has no PCIe bridge (nothing answers at its address, and touching it would stop the
+ * machine), so there this is skipped. The choice is read at run time, so the QEMU build still
+ * compiles and links the PCIe and xHCI code (and tools/stackcheck.py measures it). */
+#ifdef LEANOS_QEMU
+static volatile const int on_qemu = 1;
+#else
+static volatile const int on_qemu = 0;
+#endif
+int pcie_start(uint64_t *bar, uint32_t *id, uint32_t *rev);
+static int pcie_up;              /* the VL805's registers are mapped (level-1 entry 24) */
+
+static void usb_a_ports(void) {
+    uint64_t bar = 0;
+    uint32_t id = 0, rev = 0;
+    if (on_qemu) {
+        kputs("leanos: no PCIe (QEMU): the USB-A ports are off\n");
+        return;
+    }
+    if (pcie_start(&bar, &id, &rev)) pcie_up = xhci_probe(bar, id, rev);
+}
+
+uint64_t xhci_boot_word(uint64_t i) { return nat(leanos_xhci_boot(lean_box(i))); }
+
 /* ---- the board, checked at boot ----
  * What the rest of this layer relies on and QEMU would never show wrong, asked of the
  * firmware and printed, so a first boot on a real Pi says what it found: the board and
@@ -476,7 +506,7 @@ static uint64_t fb_alloc(void) {
  * fit in it), and the USB controller's power. The DWC2 is in a power domain the firmware
  * controls (Linux's bcm2711 device tree: power-domains = <&power RPI_POWER_DOMAIN_USB>),
  * so it is switched on here (tag 0x28001, device 3, "on" and "wait"), before the USB
- * driver touches its registers. */
+ * driver touches its registers. Last, the USB-A ports (`usb_a_ports`, above). */
 static void board_check(void) {
     uint32_t o[2] = {0, 0};
     if (mbox_tag(0x00010002, 0, 0, o, 1)) {
@@ -512,6 +542,7 @@ static void board_check(void) {
     const uint32_t usb_on[2] = {3, 3};
     if (mbox_tag(0x00028001, usb_on, 2, o, 2) && (o[1] & 3) == 1) kputs("leanos: USB controller powered on\n");
     else kputs("leanos: the firmware did not power the USB controller on; USB will not work\n");
+    usb_a_ports();
 }
 
 /* ---- the board's settings ----
@@ -677,9 +708,38 @@ static void mmu_enable_this_core(void) {
     ISB();
 }
 
+/* The VL805's registers (PCIE_CPU, 24 GiB up) are outside what the Lean kernel's tables map.
+   This layer maps them itself, in the boot table `kl1` only: a 1 GiB block of device memory at
+   its own address, for the kernel only (no user access, never run), not global (nG: its TLB
+   entries belong to ASID 0, which only `kl1` uses). Every task's tables stay exactly the Lean
+   kernel's (LeanOS/Tables.lean); to reach the registers during a system call this layer switches
+   to `kl1` and back (`pcie_open`, `pcie_close`), which map the kernel's own memory the same. */
+#define PCIE_L1 (PCIE_CPU >> 30)
+
 static void mmu_init(void) {
     for (uint64_t k = 0; k < 512; k++) kl1[k] = word(leanos_kernel_l1(lean_box(k)));
+    if (pcie_up) {
+        if (kl1[PCIE_L1]) kpanic("the kernel's level-1 table already uses the PCIe window's entry");
+        kl1[PCIE_L1] = PCIE_CPU | 1 /* valid block */ | 0 << 2 /* device */ | 1UL << 10 /* AF */ |
+                       1UL << 11 /* nG */ | 1UL << 53 /* PXN */ | 1UL << 54 /* UXN */;
+    }
     mmu_enable_this_core();
+}
+
+static uint64_t pcie_open(void) {
+    uint64_t was = SYSREG_READ(ttbr0_el1);
+    if (pcie_up) {
+        SYSREG_WRITE(ttbr0_el1, (uint64_t)kl1);
+        ISB();
+    }
+    return was;
+}
+
+static void pcie_close(uint64_t was) {
+    if (pcie_up) {
+        SYSREG_WRITE(ttbr0_el1, was);
+        ISB();
+    }
 }
 
 /* Task i's level-1 and level-2 tables never change. Set once at boot. */
@@ -889,6 +949,15 @@ static void load_image(uint64_t i, uint64_t va, uint64_t len) {
    run survives), the code, the assets, and registers that start at the program's entry. */
 static void load_program(uint64_t i) {
     uint64_t base = FRAME_BASE + FRAMES_PER_TASK * i * PAGE_SIZE; /* frame 256i, as `frameCaps` says */
+    /* The USB driver's frames hold the xHCI memory: the controller stops (and its DMA with it)
+       before they are cleared, and after, their boot content is stored, and it is reset. */
+    uint64_t xbase = nat(leanos_xhci_base(lean_box(0)));
+    int xhci = xhci_present() && xbase >= base && xbase < base + FRAMES_PER_TASK * PAGE_SIZE;
+    uint64_t was = 0;
+    if (xhci) {
+        was = pcie_open();
+        xhci_before_load();
+    }
     memset((void *)base, 0, FRAMES_PER_TASK * PAGE_SIZE);
     uint64_t len = user_prog_ends[i] - user_progs[i];
     code_len[i] = len;
@@ -906,6 +975,10 @@ static void load_program(uint64_t i) {
     saved[i].sp = USER_BASE + USER_PAGES * PAGE_SIZE;
     saved[i].spsr = 0; /* EL0, interrupts on */
     started[i] = 1;
+    if (xhci) {
+        xhci_after_load(xbase);
+        pcie_close(was);
+    }
 }
 
 static const char *const names[] = {"alice", "display", "mallory", "carol", "input",
@@ -1021,10 +1094,17 @@ static void do_syscall(uint64_t cur) {
     }
     /* The USB driver asked (only it can: `only_usb_driver_drives_usb`). */
     if (usb_op) usb_request(usb_op, usb_a, usb_b, usb_c, usb_d);
-    /* The xHCI controller behind the PCIe bridge (the USB-A ports) is not brought up yet:
-       what the kernel approved for it fails, as an I/O error. ROADMAP.md (stage 7, USB
-       part 2) says what this layer will do with each request. */
-    if (xhci_op) K = leanos_io_failed(K);
+    /* The xHCI controller behind the PCIe bridge (the USB-A ports; only the USB driver can:
+       `only_usb_driver_drives_xhci`): arch/xhci.c does what ROADMAP.md (stage 7, USB part 2)
+       says for each request. With the controller off (QEMU, or refused at boot), an I/O error. */
+    if (xhci_op) {
+        uint32_t v = 0;
+        uint64_t was = pcie_open();
+        int done = xhci_request(xhci_op, usb_a, usb_b, usb_c, usb_d, &v);
+        pcie_close(was);
+        if (!done) K = leanos_io_failed(K);
+        else if (xhci_op == 1) K = leanos_usb_done(K, lean_box(v));
+    }
     /* The display server asked (only it can: `only_display_powers`). Every file is already
        on the card: the file server writes each change through before it answers. */
     if (power == 1) {
@@ -1081,7 +1161,7 @@ static void load_result(uint64_t j) {
  * stack goes no longer depends on how many a task holds. What recursion is left walks short
  * lists: the 18 tasks, a task's reply slots (at most 8), the pending interrupt lines (at most
  * one of each). tools/stackcheck.py computes the worst case from the code (clang's frame
- * sizes, the calls in the linked image, and a bound for each of those recursions): 6,976
+ * sizes, the calls in the linked image, and a bound for each of those recursions): 7,008
  * bytes, with a kernel exception on top of the deepest system call, and `make test` fails if
  * it passes half the stack. The deepest measured is 2,160 bytes, at boot (the boot console);
  * a task holding all 8192 mappings needs no more (test/stack.sh). The computation trusts

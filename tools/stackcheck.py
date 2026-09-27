@@ -316,21 +316,28 @@ def elf_bytes(addr, n):
 
 def jump_table(f, i):
     """The targets of the `br` at index i, if it is clang's jump table: after a bounds check
-    (cmp xI, #K; b.hi), adr of the table, adr of an anchor, a byte or halfword entry, and
-    `add xN, anchor, entry, lsl #2`. None if it is not."""
+    (cmp xI, #K; b.hi), the table's address (adr, or adrp and add when the table is more than
+    1 MiB from the code, as it is once the image outgrows adr's reach), adr of an anchor, a byte
+    or halfword entry, and `add xN, anchor, entry, lsl #2`. None if it is not."""
     ins = f.insns
     if i < 4:
         return None
     reg = operands(ins[i][2])[0]
     (_, add, add_s), (_, ld, ld_s), (_, adr2, anc_s), (_, adr1, tab_s) = ins[i - 1], ins[i - 2], ins[i - 3], ins[i - 4]
     add_o, ld_o, anc_o, tab_o = operands(add_s), operands(ld_s), operands(anc_s), operands(tab_s)
+    first = i - 4
+    table = addr_of(tab_o[1]) if adr1 == "adr" and len(tab_o) > 1 else None
+    if adr1 == "add" and i >= 5 and len(tab_o) == 3 and tab_o[0] == tab_o[1] and tab_o[2].startswith("#"):
+        page_mn, page_o = ins[i - 5][1], operands(ins[i - 5][2])
+        if page_mn == "adrp" and page_o[0] == tab_o[0] and addr_of(page_o[1]) is not None:
+            table, first = addr_of(page_o[1]) + imm(tab_o[2]), i - 5
     if not (add == "add" and add_o[:2] == [reg, reg] and add_o[3:] == ["lsl #2"]
             and ld in ("ldrb", "ldrh") and add_o[2] == "x" + ld_o[0][1:]
-            and adr2 == "adr" and anc_o[0] == reg and adr1 == "adr" and ld_o[1].startswith("[" + tab_o[0] + ",")):
+            and adr2 == "adr" and anc_o[0] == reg and table is not None and ld_o[1].startswith("[" + tab_o[0] + ",")):
         return None
     index = ld_o[1].split(",")[1].strip().rstrip("]").split()[0]
     bound = None
-    for k in range(i - 5, max(0, i - 10) - 1, -1):
+    for k in range(first - 1, max(0, first - 6) - 1, -1):
         mn, o = ins[k][1], operands(ins[k][2])
         if mn == "cmp" and o[0] == index and o[1].startswith("#") and ins[k + 1][1] in ("b.hi", "b.hs"):
             bound = imm(o[1]) - (ins[k + 1][1] == "b.hs")
@@ -338,7 +345,7 @@ def jump_table(f, i):
     if bound is None:
         return None
     width = 1 if ld == "ldrb" else 2
-    anchor, table = addr_of(anc_o[1]), addr_of(tab_o[1])
+    anchor = addr_of(anc_o[1])
     raw = elf_bytes(table, (bound + 1) * width)
     return [anchor + 4 * int.from_bytes(raw[k * width:(k + 1) * width], "little") for k in range(bound + 1)]
 

@@ -111,9 +111,10 @@ what QEMU emulates), with hubs and boot-protocol keyboards and mice. It reaches 
 controller only through `usb`, and the kernel checks each DMA transfer against the
 driver's own frames: `usb_dma_own_memory` proves the controller never touches anyone
 else's memory, with no IOMMU. Part 2: the USB-A ports, which are a VL805 xHCI controller
-behind the BCM2711's PCIe bridge (no QEMU model: only testable on a Pi). The kernel's side
-of it is done and proved; the machine layer's PCIe and controller bring-up and the
-driver's xHCI code are next. The plan follows.
+behind the BCM2711's PCIe bridge (QEMU has no PCIe). Done on the kernel (proved), the
+machine layer and the driver, and tested on the host against a model of the controller
+with the Lean kernel deciding every call (`test/xhci.sh`); not yet run on a Pi. What it is,
+and what to look for on its first boot, follows.
 
 ### USB, part 2: the xHCI controller
 
@@ -209,25 +210,34 @@ the xHCI memory writable, the spare run still covering it, mallory given it, and
 content with an input context, a scratchpad entry or the command ring's Link missing. The
 proofs reject every one.
 
-**What the machine layer must do** (the next pass; until then every approved request
-fails with an I/O error, `arch/kmain.c`):
+**What the machine layer does** (`arch/pcie.c`, `arch/xhci.c`, `arch/kmain.c`; on QEMU,
+which has no PCIe bridge, step 1 is skipped with the line `no PCIe (QEMU): the USB-A ports
+are off`, and every approved request fails with an I/O error):
 
-1. At boot, bring up the PCIe bridge (Linux's `drivers/pci/controller/pcie-brcmstb.c`):
-   reset, link up, an outbound window for the VL805's registers (mapped as device memory,
-   kernel only), and an inbound window mapping bus address x to physical address x for at
-   least the first GiB, since the kernel's addresses are physical. No MSI: the driver
-   polls. PCIe configuration space stays in this layer; no task can reach it (an MSI
-   address is a DMA write too).
+1. At boot, in step 2 of 13, bring up the PCIe bridge (Linux's
+   `drivers/pci/controller/pcie-brcmstb.c`, as the Circle bare-metal library ports it for
+   the Pi 4): reset, link up, an outbound window of 64 MiB for the VL805's registers (bus
+   0xF8000000, the ARM's 0x6_0000_0000), and an inbound window mapping bus address x to
+   physical address x for the first 4 GiB (the size Linux and Circle give it), since the
+   kernel's addresses are physical. No MSI or MSI-X (kept off) and no legacy interrupt: the
+   driver polls. PCIe configuration space stays in this layer; no task can reach it (an MSI
+   address is a DMA write too). The registers are at 24 GiB, which the Lean kernel's page
+   tables do not map: the machine layer maps them (device memory, kernel only, not global)
+   in its own boot table `kl1` only, and switches to it around each xHCI request, so every
+   task's tables stay the Lean kernel's.
 2. On a Pi 4 whose VL805 has no EEPROM, ask the firmware to load its firmware after the
    PCIe reset: mailbox tag 0x00030058 ("notify xHCI reset") with the device's address
    (bus 1, device 0, function 0: 0x100000).
 3. Read CAPLENGTH, HCSPARAMS1 and 2, HCCPARAMS1, DBOFF, RTSOFF and PAGESIZE, and keep the
-   controller off (every request fails, as now) unless: 4 KiB pages are supported; there
-   are at least 5 ports and at most 12 scratchpads; and the windows the kernel allows lie
-   in the registers and overlap nothing else: capability registers [0, 0x1000),
-   operational [CAPLENGTH, CAPLENGTH + 0x400 + 16 × 5), runtime [RTSOFF, RTSOFF + 0x40),
-   doorbells [DBOFF, DBOFF + 4 × 17), none overlapping another or any extended capability
-   (walk the xECP list). Keep CSZ (HCCPARAMS1 bit 2): contexts of 64 bytes or 32.
+   controller off (every request fails) unless: 4 KiB pages are supported; there are at
+   least 5 ports and at most 12 scratchpads; and the windows the kernel allows lie in the
+   registers and overlap nothing else: the read window [0, 0x1000) inside the registers,
+   and operational [CAPLENGTH, CAPLENGTH + 0x400 + 16 × 5), runtime [RTSOFF, RTSOFF +
+   0x40), doorbells [DBOFF, DBOFF + 4 × 17), none overlapping another, the capability
+   registers [0, CAPLENGTH) or any extended capability (the xECP list, each with the size
+   the specification gives its kind). The read window may cover the others: the VL805's
+   registers are all in its 4 KiB, and reading has no side effects. Keep CSZ (HCCPARAMS1
+   bit 2): contexts of 64 bytes or 32.
 4. After `load_program` clears the driver's frames and before it runs: store the xHCI
    memory's boot content, word i (`leanos_xhci_boot(i)`, i < 64 × 512) at
    `leanos_xhci_base() + 8i`, except that in pages 32 to 47 a word at byte 64c + 16u + 8w
@@ -256,19 +266,71 @@ fails with an I/O error, `arch/kmain.c`):
      controller writes, then DSB, so the driver reads what the controller wrote.
    - Any of these with the controller off: `leanos_io_failed`.
 
-**What the driver must do** (with it; `user/usb.c`, whose network code another change is
-moving): map capability 9 read-only; keep the command ring from slot 0 with cycle 1 (`run`
-sets CRCR there), writing each command through op 3 and ringing doorbell 0; lay out its
-transfer rings in the 4096 transfer slots (for example 64 rings of 64 TRBs, each ending
-in a Link back to its start with Toggle Cycle; not the last slot, which is the area's);
-read events from its read-only view after op 5 (with no range), and move ERDP on through
-op 1; enumerate through Enable Slot, Address Device and Configure Endpoint with the input
-contexts; keep every buffer in its spare run, and call op 5 over a buffer before a
-transfer and after it, before reading what came in. The Pi 4's two USB 2 ports hang off a
-USB 2 hub on the VL805's first port, so hubs as with the DWC2.
+**What the driver does** (`user/xhci.c`, which `user/usb.c` includes: it starts after the
+DWC2, and its poll runs in `usb.c`'s loop, feeding the same boot keyboard and mouse
+handling). It first tries four requests the kernel must refuse (a TRB aimed at the
+display's memory, DCBAAP, Run/Stop, a Link out of its ring) and says so; then maps
+capability 9 read-only, sets MaxSlotsEn to 16, and runs the controller. The command ring
+starts at slot 0 with cycle 1 (`run` sets CRCR there); each command goes through op 3 and
+doorbell 0. The transfer rings are 48 rings of 64 TRBs (slot s: ring 3(s - 1) for endpoint
+0, the next two for its interrupt endpoints), each ending in a Link back to its start with
+Toggle Cycle, rewritten with the ring's cycle bit each time round; a ring keeps its place
+and cycle when its slot is reused, so an old TRB is never valid again. The rest of the
+area, its last slot and its end are never reached (the VL805 reads ahead of a ring's end).
+Events are read from its read-only view after op 5, and ERDP moved on through op 1. It
+powers the root ports and resets the USB 2 ones (USB 3 ports enable themselves; a USB 3
+device is left alone: no keyboard or mouse is one), and enumerates each device through
+Enable Slot, Address Device, Evaluate Context (a full-speed device's endpoint 0 packet
+size), Configure Endpoint and SET_CONFIGURATION. Hubs, at any depth to four: the hub's
+ports and think time told to the controller (Evaluate Context), a device behind a
+high-speed hub's transaction translator given its slot and port, the hub's status endpoint
+read for its ports' changes. Boot keyboards and mice, up to two in a device, each set to the
+boot protocol, their reports handed to `usb.c` (each keyboard with its own last report). A
+halted endpoint is reset and started again past what it did not finish; devices can be
+plugged and unplugged at any time (a root port's change comes as an event, and each port is
+looked at every second too). Every buffer is in its spare run (pages 144 to 147), with op 5
+over it before a transfer and after it, before reading what came in. Its lines name ports
+from the root: `usb: xHCI: keyboard on port 1.2` is root port 1, then the hub's port 2.
 
-**Trusted**: that the model says what the VL805 does (TRUST.md lists it), and the
-machine layer's part above.
+**Tested, without a Pi** (`test/xhci.sh`, in `make test`): `user/xhci.c` and
+`arch/xhci.c` compiled for the host and run against a model of an xHCI controller written
+from the specification (`test/xhci-sim/sim.c`), with the Lean kernel's own `sysXhci`
+deciding every system call the driver makes (`test/xhci-sim/Oracle.lean`) and its own
+`xhciBoot` as the boot content. Behind the model: a high-speed hub with a transaction
+translator and a status endpoint, a low-speed keyboard, a full-speed mouse whose endpoint 0
+takes 64 bytes, a keyboard that stalls SET_IDLE and has a media-key interface first, a
+receiver with a keyboard and a mouse, a USB 3 drive; each answers in the boot protocol only
+after SET_PROTOCOL. The model checks every address the controller follows against where
+that structure belongs in the xHCI memory and every buffer against the driver's frames,
+flags what the specification forbids software to do (a TRB done twice, a wrong transaction
+translator, a hub the controller was not told about, an event ring left full, DMA with bus
+mastering off), and shows the driver only what its cache maintenance made visible. The run
+enumerates through the hub, types, moves, plugs and unplugs (the same slots again) until
+the command ring, the event ring and the transfer rings have gone round several times, with
+32 and with 64-byte contexts; every report must arrive, in order, and no request may be
+refused but the four tried on purpose. Then the machine layer is given controllers it must
+keep off. Breaking the driver or the machine layer on purpose (no Evaluate Context for a
+hub or a packet size, a wrong translator port, no SET_PROTOCOL, no cache maintenance before
+reading a report, a Link without Toggle Cycle, ERDP never moved, a dequeue pointer set back,
+no endpoint reset after a stall, input contexts placed for the wrong size, a TRB left as its
+guard, bus mastering never on, and more) fails it each time. What it cannot show:
+`arch/pcie.c`, the VL805 where it departs from the specification, real timing and a real
+cache.
+
+**Not yet run on a Pi.** On the first boot with a USB keyboard in a USB-A port, look for
+these lines (docs/SETUP.md, section 5, says what to try if they do not come):
+
+- step 2: `PCIe: link up, 5.0 GT/s x1`, `PCIe: the firmware loaded the VL805's firmware`,
+  `xHCI: VL805 rev ..., xHCI 0x100, 5 ports, 32 slots, N scratchpad pages, 32-byte
+  contexts`, its register layout, `USB 2 port 1` and `USB 3 ports 2 to 5`; or a line
+  saying why the USB-A ports are off;
+- step 9: `xHCI: its memory stored at 0x51c0000, the controller reset, bus mastering on`;
+- from the USB driver: `usb: xHCI: running, 5 ports, 16 device slots`, `usb: xHCI: port 1:
+  a high-speed device`, `usb: xHCI: hub on port 1, 4 ports`, `usb: xHCI: keyboard on port
+  1.N`, `usb: xHCI: ready, 1 keyboard, 0 mice`.
+
+**Trusted**: that the model says what the VL805 does (TRUST.md lists it), the machine
+layer's part above, and the driver's C to work (not to be safe: the kernel bounds that).
 
 Drawing speed (the display server logs it on every boot, and `make test` checks a drag
 frame stays under 20 ms). Measured under QEMU on the development Mac, one window open:
