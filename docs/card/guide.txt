@@ -167,6 +167,15 @@ Programs on the card
           flag), a click on a number whose flags are all placed opens the rest around it. The arrows move a cursor, Space opens, F flags,
           N starts again, 1 2 3 choose Beginner, Intermediate or Expert. Best times are
           kept in apps/mines/best.txt.
+  solitaire Klondike: drag a card, or a run from a pile, onto another pile (down in
+          alternating colors, a king to an empty pile) or to a foundation (up by suit
+          from the ace). A click on the stock draws (the empty stock turns the waste
+          over, as often as you like); a double click or a right click sends a card to
+          its foundation. Keys: 1 to 7 or W pick a pile or the waste, then 1 to 7 moves
+          what fits there and F sends the top card home; Space draws, U or Ctrl+Z undoes,
+          A sends home all it can, D switches Draw 1 and Draw 3, N deals again. Once every
+          card is face up and the stock and waste are empty, it finishes by itself.
+          Games played, won and the best time are kept in apps/solitaire/stats.txt.
   clock   the time in your time zone (until a time server answers, how long the Pi has been
           up), a stopwatch and a timer: click a tab at the top, or press C, S or T.
           Stopwatch: space starts and stops it, L takes a lap, R resets it.

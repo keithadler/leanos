@@ -63,9 +63,9 @@ This is the start. The next steps, in order:
 - **Programs from the SD card**: `web` (a text web browser), `edit` (a text editor), `paint`
   (a paint program that saves standard BMP pictures), `view` (a picture viewer: BMP, PPM
   and PGM), `calendar` (a month at a time, with events kept on the card), `clock`, `calc`,
-  `snake`, `life`, `tiles` (2048), `mines` (Minesweeper), `tour`, `fuzz` and `hello`. Up to
-  six run at once, each confined to its own memory, a window, its own folder, the files you
-  hand it, and the network only if you allow it.
+  `snake`, `life`, `tiles` (2048), `mines` (Minesweeper), `solitaire` (Klondike), `tour`,
+  `fuzz` and `hello`. Up to six run at once, each confined to its own memory, a window, its
+  own folder, the files you hand it, and the network only if you allow it.
 - **A real file system** on the SD card: folders, large files, and a write-ahead journal so
   a power cut never leaves a change half done (proved for a model of the journal, and
   tested by cutting the power twelve times mid-write).
@@ -167,7 +167,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 46 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, the calendar and its events, Files as a file manager, opening a file from Files in its program, the picture viewer, paint and the BMP files it saves, Terminal's pipes and its text commands (sort, uniq, tr, cut, cal, calc and more), windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 47 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, Klondike played to a win, the calendar and its events, Files as a file manager, opening a file from Files in its program, the picture viewer, paint and the BMP files it saves, Terminal's pipes and its text commands (sort, uniq, tr, cut, cal, calc and more), windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -208,6 +208,9 @@ Things to try once it is up:
   day selected, kept in `apps/calendar/events.txt`, one line each.
 - `run view` shows the pictures in its folder, apps/view (Left and Right go through them, 1
   shows one at its own size, + and - zoom); `run view FILE` shows a BMP, PPM or PGM of yours.
+- `run solitaire`: Klondike. Drag cards and runs between the piles, click the stock to draw
+  (Draw 1 or Draw 3), double-click (or right-click) a card to send it home, Ctrl+Z undoes.
+  Games played, won and the best time are kept in `apps/solitaire/stats.txt`.
 - `run paint` in Terminal: draw with the mouse, the right button in the second color (lines,
   rectangles and ellipses show as you drag, F fills, Ctrl+Z undoes). The picture saves itself as `apps/paint/untitled.bmp`, a
   standard 24-bit BMP; `run paint picture.bmp` edits another.

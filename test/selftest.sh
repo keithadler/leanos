@@ -2,7 +2,7 @@
 # The self-test (user/progs/selftest.c) on the self-test card, before it goes to a Pi. The card
 # is `make pi-selftest`'s, built with QEMU's kernel and stand-in firmware in place of the Pi's:
 # its config.txt must be the bring-up card's, marked as the self-test card, with the
-# firmware's log on. Booted, Apps must list all 15 programs, selftest first, and
+# firmware's log on. Booted, Apps must list all 16 programs, selftest first, and
 # start it from startup.txt. When selftest waits for input, a key and a click go to its
 # window. Then it must finish, every check with a result line and none FAIL: memory, sd,
 # sdfiles, clock, sleep, screen and input PASS; cpu, usb and time INFO. The window shows each
@@ -44,7 +44,7 @@ echo "$out" | grep -E "^(selftest|apps): " | sed 's/^/  | /'
 [ $status -eq 0 ] || fail "the self-test did not finish (status $status)"
 echo "$out" | grep -qE "PANIC|exception in the kernel" && fail "the kernel stopped"
 echo "$out" | grep -E "^leanos: .* stopped: " | grep -vE "^leanos: (mallory|carol) stopped: " && fail "a task stopped"
-echo "$out" | grep -qx "apps: 15 programs, 15 with icons" || fail "Apps did not list the 15 programs"
+echo "$out" | grep -qx "apps: 16 programs, 16 with icons" || fail "Apps did not list the 16 programs"
 echo "$out" | grep -qE "^apps: selftest started in slot [0-9]+$" || fail "startup.txt did not start selftest"
 
 python3 - "$T" <<'PY' || fail "the self-test's report is wrong"
