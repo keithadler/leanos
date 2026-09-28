@@ -29,7 +29,7 @@
 #include "assets.h"
 
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
-       OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12 };   /* 11: no request (none reads the clipboard) */
+       OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12, OP_OPEN_WITH = 13 };   /* 11: no request (none reads the clipboard) */
 enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7,
        EV_PASTE = 8, EV_RDOWN = 9, EV_RUP = 10 };
 /* The arrow keys and the keys above them, as EV_KEY codes: the input driver turns what a
@@ -227,6 +227,23 @@ static inline int paste_text(struct event e, char out[16]) {
     }
     return n;
 }
+
+/* Opening a file from Files, by hand only. Files, and no other program, asks the display to
+   have a file opened in the program for it (OP_OPEN_WITH), or a program on the card started,
+   and only right after the user pressed Return or double-clicked in Files' window, with that
+   window in front (user/display.c says how it checks). What to open does not fit in a
+   message's two words (a path has up to FS_PATH_MAX bytes), so it comes in one page Files
+   lends the display read-only for the call, as a window's pixels are lent: the program's
+   name at OPEN_WITH_PROG (up to 15 bytes and a 0), the file's path at OPEN_WITH_PATH (up to
+   OPEN_WITH_PATH_MAX bytes and a 0; empty to start the program alone), printable ASCII. The
+   display copies both out and lets the page go before it answers: 0, passed to Apps; 1,
+   refused; 2, Apps is busy. Apps, which starts programs, hears it as EV_LAUNCH "@open",
+   and asks for the name with OP_PENDING (x1 = 1: a file comes with it), then for the path,
+   16 bytes a call, with OP_PENDING w1 = 1, 2, ... (only Apps gets an answer). */
+#define OPEN_WITH_PROG 0
+#define OPEN_WITH_PATH 16
+#define OPEN_WITH_PATH_MAX 200     /* FS_PATH_MAX (user/fs.h) */
+#define OPEN_WITH_MS 2000          /* how soon after the key or the click Files must ask */
 
 /* A slot's name, as the manifest orders them. */
 static inline const char *slot_name(u64 k) {

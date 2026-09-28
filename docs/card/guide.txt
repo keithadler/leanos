@@ -2,7 +2,8 @@ leanos: a short guide
 
 The dock
   Notes     notes, saved to the SD card as you type (more under Notes below)
-  Files     the files on the card; click one to read it (more under Files below)
+  Files     the files on the card; click one to read it, double-click it (or press
+            Return) to open it in its program (more under Files below)
   Terminal  commands; type help
   Settings  the background and the time zone (both kept on the card, in settings.txt),
             and the Raspberry Pi's speed and light
@@ -69,6 +70,11 @@ Notes
 Files
   Click a file to read it; click a folder again (or press Return) to open it; Left goes
   back up. Keys, in either case:
+  Return    open the selected file in its program (a double-click on it too): pictures
+            (.bmp .ppm .pgm) in view, text (.txt .md .log .csv .c .h .py .json, or no
+            extension) in edit; a program's own file, such as hello, starts it. The
+            program gets that file, as `run PROG FILE` gives it; if it is open already,
+            a second copy opens with the file.
   N         a new folder, "untitled folder" (the + Folder button too), named at once
   R         rename in place: type, then Return; Escape or a click elsewhere cancels.
             The name starts selected (a file's without its extension): typing replaces it.

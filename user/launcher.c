@@ -23,6 +23,18 @@
    and the launch capabilities for the open slots. What a program it starts may do is fixed
    by the open slot, not by the launcher.
 
+   It also opens what the user opens in Files (Return, or a double-click, on a file), which
+   cannot start programs itself: the display passes it on, only right after the user's key
+   or click in Files (user/app.h, OP_OPEN_WITH), as an event "@open", or as the name pending
+   if Apps is not running. Apps asks the display for the program's name and the file's path
+   (OP_PENDING), then starts the program as Terminal's `run PROG FILE` does: in a free open
+   slot, given its own folder and that file, read-write (edit saves to it; Terminal gives
+   files read-write too). Its window opens in front. A program that is open already gets a
+   second copy, in another slot, with the file: a program is given its files as it starts,
+   so the running copy cannot take one; two copies of edit on one file would each save their
+   own text over it. A program's own file (Files asks with no path) is started as a click on
+   it here starts it: brought forward if it is open.
+
    It also keeps the desktop's settings on the card for the display server, which cannot
    write the card: "@prefs" from the display (pending, or an event) saves the time zone and
    the background in settings.txt, and at boot ("@startup") it reads them back and gives
@@ -352,11 +364,19 @@ static void draw(struct launcher *st) {
                                         rgb(120, 120, 130));
 }
 
-/* Read the program (and its icon), make its image, and start it in a free open slot. */
-static void start(struct launcher *st, struct line *l, int i) {
+/* Read the program (and its icon), make its image, and start it in a free open slot, given
+   the file `file` too if it is not "" (then even if the program is open already). */
+static void start(struct launcher *st, struct line *l, int i, const char *file) {
     struct prog *p = &st->p[i];
     const char *why = 0;
-    if (app_raise(p->name)) {
+    if (file[0] && fs_stat(&st->fs, file, 0) != FS_FILE) {
+        put_s(l, "apps: ");
+        put_s(l, file);
+        put_s(l, " is not a file on the card\n");
+        flush(l);
+        return;
+    }
+    if (!file[0] && app_raise(p->name)) {
         put_s(l, "apps: ");
         put_s(l, p->name);
         put_s(l, " is already open\n");
@@ -379,6 +399,16 @@ static void start(struct launcher *st, struct line *l, int i) {
             for (int i = 0; p->name[i] && i < FS_NAME_MAX; i++) { folder[5 + i] = p->name[i]; folder[6 + i] = 0; }
             fs_unshare(&st->fs, OPEN_FIRST + (u64)k);
             fs_share(&st->fs, folder, OPEN_FIRST + (u64)k, FS_R | FS_W, 1);
+            /* the file opened in Files, read-write, as `run PROG FILE` gives it */
+            if (file[0]) {
+                u64 given = fs_share(&st->fs, file, OPEN_FIRST + (u64)k, FS_R | FS_W, 0);
+                put_s(l, "apps: gave ");
+                put_s(l, p->name);
+                put_s(l, " ");
+                put_s(l, file);
+                put_s(l, given == FS_OK ? " -> ok\n" : " -> refused\n");
+                flush(l);
+            }
             app_before_start();
             if (sys(SYS_EXEC, LAUNCH_OPEN + (u64)k, (u64)image, len, 0, 0).status != OK) continue;
             /* the network: only for the browser (what ran in this slot before loses it) */
@@ -397,18 +427,22 @@ static void start(struct launcher *st, struct line *l, int i) {
     } else {
         put_s(l, " started in slot ");
         put_dec(l, (u64)(p->slot - 1));
+        if (file[0]) {
+            put_s(l, " with ");
+            put_s(l, file);
+        }
     }
     put_s(l, "\n");
     flush(l);
 }
 
-/* Start the card program called `name`, if the card has it. */
-static void start_named(struct launcher *st, struct line *l, const char *name) {
+/* Start the card program called `name`, if the card has it, given `file` ("": none). */
+static void start_named(struct launcher *st, struct line *l, const char *name, const char *file) {
     for (int i = 0; i < st->n; i++) {
         int j = 0;
         while (j < 15 && name[j] && name[j] == st->p[i].name[j]) j++;
         if (name[j] == st->p[i].name[j]) {
-            start(st, l, i);
+            start(st, l, i, file);
             return;
         }
     }
@@ -416,6 +450,37 @@ static void start_named(struct launcher *st, struct line *l, const char *name) {
     put_s(l, name);
     put_s(l, " is not on the SD card\n");
     flush(l);
+}
+
+/* A name of up to 15 bytes, from two message words. */
+static void name_of_words(char out[17], u64 a, u64 b) {
+    for (int i = 0; i < 16; i++) out[i] = (char)((i < 8 ? a : b) >> (8 * (i % 8)));
+    out[15] = out[16] = 0;
+}
+
+/* The path of the file Files asked to open, from the display, 16 bytes a request (user/app.h,
+   OP_OPEN_WITH): into path, "" if it sends none. */
+static void take_path(char path[FS_PATH_MAX + 1]) {
+    int n = 0;
+    for (u64 part = 1; n < FS_PATH_MAX && part <= (FS_PATH_MAX + 16) / 16; part++) {
+        struct res r = sys(SYS_CALL, ENDPOINT, OP_PENDING, part, 0, 0);
+        if (r.status != OK) break;
+        int i = 0;
+        for (char c; i < 16 && (c = (char)((i < 8 ? r.x[2] : r.x[3]) >> (8 * (i % 8)))) && n < FS_PATH_MAX; i++)
+            path[n++] = c;
+        if (i < 16) break;
+    }
+    path[n] = 0;
+}
+
+/* The display has something Files asked to open (EV_LAUNCH "@open"): ask what, and open it. */
+static void open_asked(struct launcher *st, struct line *l) {
+    struct res pend = sys(SYS_CALL, ENDPOINT, OP_PENDING, 0, 0, 0);
+    char name[17], path[FS_PATH_MAX + 1];
+    name_of_words(name, pend.status == OK ? pend.x[2] : 0, pend.status == OK ? pend.x[3] : 0);
+    path[0] = 0;
+    if (pend.status == OK && pend.x[1] == 1) take_path(path);
+    if (name[0]) start_named(st, l, name, path);
 }
 
 /* The display's time zone and background, saved on the card as text (user/prefs.h). An
@@ -584,10 +649,12 @@ __attribute__((section(".text.start"))) void _start(void) {
        "apps" for this window (# starts a comment). Started to save those ("@prefs")? Then
        only that. */
     struct res pend = sys(SYS_CALL, ENDPOINT, OP_PENDING, 0, 0, 0);
-    char startup[512], asked[17];
+    char startup[512], asked[17], file[FS_PATH_MAX + 1];
     int nstartup = 0, show = 1;
     for (int i = 0; i < 16; i++) asked[i] = pend.status == OK ? (char)(pend.x[2 + i / 8] >> (8 * (i % 8))) : 0;
     asked[16] = 0;
+    file[0] = 0;
+    if (pend.status == OK && pend.x[1] == 1) take_path(file);   /* a file Files asked to open */
     if (asked[0] == '@' && asked[1] == 'p') {    /* "@prefs" */
         save_prefs(st, &l);
         exit_task();
@@ -597,7 +664,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     refilter(st);
     if (asked[0]) {
         if (asked[0] != '@') {
-            start_named(st, &l, asked);
+            start_named(st, &l, asked, file);
             exit_task();
         }
         long n = fs_read(&st->fs, "startup.txt");
@@ -631,7 +698,7 @@ __attribute__((section(".text.start"))) void _start(void) {
         while (i < nstartup && startup[i] > ' ' && k < FS_NAME_MAX) name[k++] = startup[i++];
         while (i < nstartup && startup[i] > ' ') i++;
         name[k] = 0;
-        if (k && !(k == 4 && name[0] == 'a' && name[1] == 'p' && name[2] == 'p' && name[3] == 's')) start_named(st, &l, name);
+        if (k && !(k == 4 && name[0] == 'a' && name[1] == 'p' && name[2] == 'p' && name[3] == 's')) start_named(st, &l, name, "");
     }
     if (opened != OK) exit_task();
     int dirty = 0;
@@ -646,7 +713,9 @@ __attribute__((section(".text.start"))) void _start(void) {
             if (name[0] == '@' && name[1] == 'p' && name[2] == 'r' && name[3] == 'e' && name[4] == 'f' &&
                 name[5] == 's' && !name[6])
                 save_prefs(st, &l);
-            else start_named(st, &l, name);
+            else if (name[0] == '@' && name[1] == 'o' && name[2] == 'p' && name[3] == 'e' && name[4] == 'n' && !name[5])
+                open_asked(st, &l);                /* from Files, through the display */
+            else start_named(st, &l, name, "");
             continue;
         }
         int nshown = st->nshown, nfind = st->nfind, page = st->page, sel = selected(st), c = NONE;
@@ -678,7 +747,7 @@ __attribute__((section(".text.start"))) void _start(void) {
             flush(&l);
             sys(SYS_CALL, ENDPOINT, OP_START, (u64)c, 0, 0);
         } else {
-            start(st, &l, st->shown[c - CARD]);
+            start(st, &l, st->shown[c - CARD], "");
         }
         st->pressed = NONE;
         draw(st);

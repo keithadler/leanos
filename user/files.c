@@ -3,6 +3,17 @@
    show it; click a folder, or press Enter or the right arrow on it, to open it; the left
    arrow goes back up; click anywhere else to look again. The keys (either case):
 
+     Return  (or a double-click: two presses on one file within DOUBLE_MS) opens the file in
+             the program for it: .bmp .ppm .pgm in view; .txt .md .log .csv .c .h .py .json,
+             and a file with no extension, in edit; a program's own file (an ELF file in the
+             top folder, such as hello) starts that program. Anything else: the status line
+             says no program opens that kind of file. Files cannot start programs: it asks
+             the display (OP_OPEN_WITH, user/app.h), which takes the request only from Files,
+             right after the user's key or click here, and passes it to Apps, which starts
+             the program in a free open slot and gives it the file, read-write, as
+             Terminal's `run PROG FILE` does. What to open goes in a page Files lends the
+             display for the call (open_file says why).
+
      N       a new folder, "untitled folder" (or "untitled folder 2", ...), named at once
              (the + Folder button too)
      R       rename the selected file or folder, in its row: type, Left and Right move the
@@ -42,6 +53,16 @@
 #define BTN_Y 11
 #define BTN_H 20
 enum { F_UI = 1, F_BOLD = 2, F_SMALL = 3, F_MONO = 4 };
+/* Opening a file: the page of the spare run lent to the display to say what (user/app.h),
+   between the window's pixels and the file server's buffer; and a double-click's two presses
+   on one row, this close. */
+#define OPEN_PAGE 220
+#define DOUBLE_MS 400
+#define OPEN_FIRST 10                /* the open slots, where programs from the card run */
+#define OPEN_SLOTS 6
+_Static_assert(APP_WIN_OFFSET + (FW * FH * 4 + 4095) / 4096 <= OPEN_PAGE && OPEN_PAGE < FS_BUF_OFFSET,
+               "the lent page: after the window's pixels, before the file server's buffer");
+_Static_assert(OPEN_WITH_PATH_MAX == FS_PATH_MAX, "a path to open is a path on the card");
 
 struct files {
     struct font ui, bold, small, mono;
@@ -69,6 +90,9 @@ struct files {
     struct fs_space space;
     int space_ok;
     unsigned free_said;             /* the free KiB last logged */
+    u64 lend;                       /* the lent page's capability + 1, once made */
+    int last_row;                   /* the entry the last press in the list was on, or -1 */
+    u64 last_at;                    /* and when (a second press on it soon after: a double-click) */
 };
 
 static int same(const char *a, const char *b) {
@@ -192,7 +216,9 @@ static void draw_status(struct files *st) {
         x = hint(st, x, "V", st->mark == 'x' ? "moves it here" : "puts a copy here");
         hint(st, x, st->mark == 'x' ? "X" : "C", "again forgets it");
     } else {
-        x = hint(st, x, "N", "new folder");
+        /* a file selected: how to open it, in the place of N (the + Folder button is there) */
+        if (st->selected >= 0 && st->list[st->selected].kind == FS_FILE) x = hint(st, x, "Return", "open");
+        else x = hint(st, x, "N", "new folder");
         x = hint(st, x, "R", "rename");
         x = hint(st, x, "C", "copy");
         x = hint(st, x, "X", "move");
@@ -658,6 +684,108 @@ COLD static void delete_key(struct files *st, struct line *l) {
     show(st, l, st->selected);
 }
 
+/* ---- opening a file in its program ---- */
+
+static char lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c; }
+
+/* Whether `ext` is one of `list` (n of them), in any case. */
+static int ext_in(const char *ext, const char *const *list, int n) {
+    for (int i = 0; i < n; i++) {
+        int k = 0;
+        while (list[i][k] && lower(ext[k]) == list[i][k]) k++;
+        if (!list[i][k] && !ext[k]) return 1;
+    }
+    return 0;
+}
+
+/* The program that opens entry i, a file, by its extension: pictures in view, text in edit.
+   A file with no extension is a program from the card if it is an ELF file (Apps starts it,
+   and *itself is set), else text. 0: no program opens that kind of file. */
+COLD static const char *program_for(struct files *st, int i, int *itself) {
+    static const char *const text[] = {"txt", "md", "log", "csv", "c", "h", "py", "json"};
+    static const char *const pictures[] = {"bmp", "ppm", "pgm"};
+    const char *name = st->list[i].name;
+    int at = ext_of(name, FS_FILE);
+    *itself = 0;
+    if (name[at]) {
+        const char *ext = name + at + 1;
+        return ext_in(ext, pictures, 3) ? "view" : ext_in(ext, text, 8) ? "edit" : 0;
+    }
+    const char *d = fs_data(&st->fs);
+    long n = fs_read(&st->fs, path_of(st, i));
+    *itself = n >= 4 && d[0] == 0x7f && d[1] == 'E' && d[2] == 'L' && d[3] == 'F';
+    return *itself ? name : "edit";
+}
+
+/* Return, or a double-click, on a file: ask the display to have it opened in the program for
+   it (or, a program's own file, to have the program started), as a desktop does. Files
+   cannot start programs: Apps can, and the display passes it what to open, only right after
+   the user's key or click here (user/app.h). What to open is a name and a path of up to
+   FS_PATH_MAX bytes, more than a message's two words hold: it goes in a page of Files' own,
+   lent to the display read-only for the call, as a window's pixels are lent, which the
+   display lets go before it answers. (Words over several calls would do too, but one call
+   is one request to check, and it never stops half way.) What is plain before asking is
+   said here; what only Apps can find out (no free slot after all, a program that will not
+   load) is in the log. */
+COLD static void open_file(struct files *st, struct line *l) {
+    int i = st->selected, itself;
+    if (i < 0 || st->list[i].kind != FS_FILE) return;
+    const char *name = st->list[i].name, *prog = program_for(st, i, &itself), *path = path_of(st, i);
+    if (!prog) {
+        say(l, "files: open ", path, " -> no program opens that kind of file", 0);
+        tell(st, 1, "No program opens that kind of file.", 0, 0);
+        return;
+    }
+    if (itself && st->dir[0]) {
+        say(l, "files: open ", path, " -> refused, programs start from the top folder", 0);
+        tell(st, 1, "Programs start from the card's top folder.", 0, 0);
+        return;
+    }
+    if (itself && slen(name) > 15) {
+        say(l, "files: open ", path, " -> refused, a program's name has 15 characters at most", 0);
+        tell(st, 1, "A program's name has 15 characters at most.", 0, 0);
+        return;
+    }
+    if (!itself) {
+        if (fs_stat(&st->fs, prog, 0) != FS_FILE) {
+            say(l, "files: open ", path, " -> refused, not on the card: ", prog);
+            tell(st, 1, prog, " is not on the card.", 0);
+            return;
+        }
+        int busy = 0;
+        for (u64 k = 0; k < OPEN_SLOTS; k++) busy += sys1(SYS_BOOTINFO, OPEN_FIRST + k).x[4] == 1;
+        if (busy == OPEN_SLOTS) {
+            say(l, "files: open ", path, " -> refused, all six program slots are taken", 0);
+            tell(st, 1, "All six program slots are taken: close a program first.", 0, 0);
+            return;
+        }
+    }
+    if (!st->lend) {
+        struct res d = sys(SYS_DERIVE, SPARE, R, OPEN_PAGE, 1, 0);
+        if (d.status == OK) st->lend = d.x[1] + 1;
+    }
+    char *pg = (char *)PAGE(SPARE_PAGE + OPEN_PAGE);
+    for (int k = 0; k < 4096; k++) pg[k] = 0;
+    for (int k = 0; prog[k] && k < 15; k++) pg[OPEN_WITH_PROG + k] = prog[k];
+    for (int k = 0; !itself && path[k] && k < OPEN_WITH_PATH_MAX; k++) pg[OPEN_WITH_PATH + k] = path[k];
+    struct res r = sys(SYS_CALL, ENDPOINT, OP_OPEN_WITH, 0, 0, st->lend);
+    u64 got = r.status == OK ? r.x[1] : 1;
+    put_s(l, "files: asked to open ");
+    put_s(l, path);
+    if (!itself) {
+        put_s(l, " in ");
+        put_s(l, prog);
+    }
+    say(l, got == 0 ? " -> ok" : got == 2 ? " -> Apps is busy" : " -> refused", 0, 0, 0);
+    char in[24] = " in ";
+    int n = 4;
+    for (int k = 0; !itself && prog[k] && n < 20; k++) in[n++] = prog[k];
+    in[itself ? 0 : n++] = '.';
+    in[n] = 0;
+    if (got == 0) tell(st, 0, itself ? "Starting " : "Opening ", name, in);
+    else tell(st, 1, got == 2 ? "Apps is busy: try again in a moment." : "The display did not open it.", 0, 0);
+}
+
 /* A key with no name being edited. */
 COLD static void key(struct files *st, struct line *l, u64 k) {
     if (k == 127 || k == 8 || k == KEY_DELETE) { delete_key(st, l); return; }
@@ -672,6 +800,8 @@ COLD static void key(struct files *st, struct line *l, u64 k) {
         if (!was && st->mark) { say(l, "files: forgot ", st->marked, 0, 0); st->mark = 0; }
     } else if ((k == '\r' || k == KEY_RIGHT) && st->selected >= 0 && st->list[st->selected].kind == FS_DIR) {
         open_folder(st, l, st->selected);
+    } else if (k == '\r' && st->selected >= 0) {
+        open_file(st, l);
     } else if (k == KEY_LEFT && st->dir[0]) {
         int n = 0;
         while (st->dir[n]) n++;
@@ -694,9 +824,19 @@ static void click(struct files *st, struct line *l, int x, int y) {
     refresh(st, l);
     if (x < LIST_W && y >= ROW_Y && row < MAX_SHOWN && st->top + row < st->count) {
         int i = st->top + row;
-        if (st->list[i].kind == FS_DIR && i == st->selected) open_folder(st, l, i);
+        /* the second press of a double-click on a file opens it (in its program) */
+        int twice = i == st->last_row && millis() - st->last_at <= DOUBLE_MS;
+        st->last_row = twice ? -1 : i;
+        st->last_at = millis();
+        if (st->list[i].kind == FS_DIR && i == st->selected) {
+            open_folder(st, l, i);
+            st->last_row = -1;                  /* the next press is in another list */
+        } else if (twice && i == st->selected) open_file(st, l);
         else show(st, l, i);
-    } else show(st, l, st->selected);
+    } else {
+        st->last_row = -1;
+        show(st, l, st->selected);
+    }
 }
 
 __attribute__((section(".text.start"))) void _start(void) {
@@ -712,6 +852,8 @@ __attribute__((section(".text.start"))) void _start(void) {
     st->selected = -1;
     st->top = 0;
     st->dir[0] = 0;
+    st->lend = 0;
+    st->last_row = -1;
     refresh(st, &l);
     show(st, &l, st->count > 0 ? 0 : -1);
     draw(st);

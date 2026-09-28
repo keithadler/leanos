@@ -15,7 +15,9 @@
    right (the loader's pages, its own name), and with it, from pages the loader did not write
    (no marker). The display must refuse every one, and afterwards nothing may be named clock.
    Last, the pages the loader wrote, as app_open lends them: its own name, which the display
-   must take. Every line starts "spoof: ".
+   must take. And one more claim, to be Files: a well-formed request to open welcome.txt in
+   edit (OP_OPEN_WITH, user/app.h), which only Files may make, right after the user's key or
+   click in it; the display must refuse it. Every line starts "spoof: ".
 
    Its stack moves into its data pages first, so the whole stack run is free to hold a
    forged icon (the display reads the name from a run's last 16 bytes: the stack's top). */
@@ -128,6 +130,18 @@ __attribute__((used, noreturn)) void spoof_main(u64 stack_top) {
     put_s(&l, named ? "; a window was named clock" : "; no window named clock");
     put_s(&l, "\n");
     flush(&l);
+
+    /* Files' request to open a file in a program, well formed, from its spare pages: only
+       Files may ask */
+    unsigned char *pg = (unsigned char *)PAGE(SPARE_PAGE + FORGE_OFF);
+    memset(pg, 0, 4096);
+    const char *prog = "edit", *file = "welcome.txt";
+    for (int i = 0; prog[i]; i++) pg[OPEN_WITH_PROG + i] = (unsigned char)prog[i];
+    for (int i = 0; file[i]; i++) pg[OPEN_WITH_PATH + i] = (unsigned char)file[i];
+    struct res d = sys(SYS_DERIVE, SPARE, R, FORGE_OFF, 1, 0);
+    r = sys(SYS_CALL, ENDPOINT, OP_OPEN_WITH, 0, 0, d.status == OK ? d.x[1] + 1 : 0);
+    if (d.status == OK) sys1(SYS_DROP, d.x[1]);
+    say("open welcome.txt in edit, as Files asks: ", r.status == OK && r.x[1] == 1 ? "refused" : "NOT refused", "");
 
     /* the pages the loader wrote, as app_open lends them: its own name */
     int own = lend("its own name from its code run, read and execute", 0, R | X, ICON_IMAGE_PAGE, 4);

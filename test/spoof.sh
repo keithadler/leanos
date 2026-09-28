@@ -11,6 +11,8 @@
 #      code run without the execute right, and with it from pages the loader did not write.
 #      Every claim must be refused, and nothing named clock. Then the pages the loader wrote,
 #      as app_open lends them: its own name, which the display must take.
+#      And it asks the display, as Files does, to open welcome.txt in edit: refused, only
+#      Files may ask (OP_OPEN_WITH, user/app.h).
 #   2. forge (user/progs/forge.c), whose code run carries a forged icon named clock at the
 #      start of a page: Terminal must refuse to run it.
 #   3. Clock in the dock must start the real Clock (through Apps), and `run clock` must then
@@ -68,6 +70,9 @@ has "spoof: clock from its stack (r--): refused"
 has "spoof: its own name from its code run, read-only (r--): refused"
 has "spoof: its code run from page 0, no marker (r-x): refused"
 has "spoof: claims refused: 7 of 7; no window named clock"
+# nor may it ask, as Files does, for a file to be opened in another program (OP_OPEN_WITH)
+has "spoof: open welcome.txt in edit, as Files asks: refused"
+has "display: a program from the SD card asked to open a file; refused: only Files may ask"
 # the pages the loader wrote, lent as app_open lends them, still name its window
 has "spoof: its own name from its code run, read and execute (r-x): taken"
 has "spoof: done: its own name taken, and found by name"
