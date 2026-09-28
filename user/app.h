@@ -29,7 +29,7 @@
 #include "assets.h"
 
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
-       OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12, OP_OPEN_WITH = 13 };   /* 11: no request (none reads the clipboard) */
+       OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12, OP_OPEN_WITH = 13, OP_PROGRAM = 14 };   /* 11: no request (none reads the clipboard) */
 enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7,
        EV_PASTE = 8, EV_RDOWN = 9, EV_RUP = 10 };
 /* The arrow keys and the keys above them, as EV_KEY codes: the input driver turns what a
@@ -244,6 +244,21 @@ static inline int paste_text(struct event e, char out[16]) {
 #define OPEN_WITH_PATH 16
 #define OPEN_WITH_PATH_MAX 200     /* FS_PATH_MAX (user/fs.h) */
 #define OPEN_WITH_MS 2000          /* how soon after the key or the click Files must ask */
+
+/* What the display knows of the program in open slot `slot` (10 to 15), for Apps' Running
+   view; only Apps gets an answer (user/display.c, PROGRAM). The card file its windows came
+   from into name ("" if none lent one, or it has no window), how many windows it has into
+   *windows, and how many milliseconds the oldest has been open into *age. OK, or not if the
+   display refused. */
+static inline u64 app_program(u64 slot, char name[16], u64 *windows, u64 *age) {
+    struct res n = sys(SYS_CALL, ENDPOINT, OP_PROGRAM, slot, 0, 0);
+    struct res w = sys(SYS_CALL, ENDPOINT, OP_PROGRAM, slot, 1, 0);
+    int ok = n.status == OK && n.x[1] == 0 && w.status == OK && w.x[1] == 0;
+    for (int i = 0; i < 16; i++) name[i] = ok && i < 15 ? (char)((i < 8 ? n.x[2] : n.x[3]) >> (8 * (i % 8))) : 0;
+    *windows = ok ? w.x[2] : 0;
+    *age = ok ? w.x[3] : 0;
+    return ok ? OK : BAD_ARG;
+}
 
 /* A slot's name, as the manifest orders them. */
 static inline const char *slot_name(u64 k) {

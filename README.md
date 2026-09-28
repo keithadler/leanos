@@ -47,7 +47,8 @@ This is the start. The next steps, in order:
 
 - **A desktop** at 1024×600: windows you can drag, minimize, zoom and go through with
   Ctrl+O, a menu bar with the date and time in the time zone chosen in Settings, and a dock. Built-in apps: Notes, Files, Terminal, Settings,
-  Security and Apps (every program on the card, ten to a page; type to find one); the dock also keeps Clock, Calculator, Tour and Web from the SD card. What
+  Security and Apps (every program on the card, ten to a page; type to find one; Running,
+  or Ctrl+Q, lists what runs, and quits a program that hangs); the dock also keeps Clock, Calculator, Tour and Web from the SD card. What
   opens at startup is a list on the SD card (`startup.txt`: Apps and the tour, to begin with).
 - **Copy and paste, by hand only**: Ctrl+C and Ctrl+V (or the Edit menu in the menu bar)
   between Notes, Terminal and `edit`. The display server keeps the clipboard. It asks the
@@ -167,7 +168,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 47 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, Klondike played to a win, the calendar and its events, Files as a file manager, opening a file from Files in its program, the picture viewer, paint and the BMP files it saves, Terminal's pipes and its text commands (sort, uniq, tr, cut, cal, calc and more), windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 48 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, Force Quit, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, Klondike played to a win, the calendar and its events, Files as a file manager, opening a file from Files in its program, the picture viewer, paint and the BMP files it saves, Terminal's pipes and its text commands (sort, uniq, tr, cut, cal, calc and more), windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -217,6 +218,10 @@ Things to try once it is up:
 - Type in Notes, press Ctrl+C, click Terminal and press Ctrl+V: the text is on its command
   line, and nothing runs until you press Return.
 - `run web` (without `-net`) and watch the network refuse it.
+- In **Apps**, click **Running** (or press Ctrl+Q): every program from the card that runs,
+  its slot, how long it has run and its windows, once a second, those Terminal started
+  too. Select one and press Quit (or Delete); it asks "Quit NAME?", and Return (or Quit
+  again) stops it, answering or not, as Terminal's `kill SLOT` does. Its window goes.
 - Click a window's yellow button: it leaves the screen, and its dock icon gets an amber dot;
   click the icon to bring it back. The green button moves a window to the middle and back,
   and Ctrl+O brings the next window to the front (all three are in the Window menu too).

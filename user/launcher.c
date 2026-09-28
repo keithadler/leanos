@@ -23,6 +23,27 @@
    and the launch capabilities for the open slots. What a program it starts may do is fixed
    by the open slot, not by the launcher.
 
+   Running (Force Quit): the button at the top right, or Ctrl+Q with Apps in front, shows
+   what runs in the open slots instead of the grid, one row each: the program's icon and
+   name, its slot, how long it has run, and under the name whether it has a window (or
+   several) and whether it was started elsewhere. It refreshes once a second while shown.
+   Select a row (a click, or Up and Down), then press Quit (or Delete, or Backspace): the
+   view asks "Quit NAME? Return to confirm, or click Quit again", and only then stops it,
+   with the same call as Terminal's `kill`, whether it answers or not; any other key, click
+   or selection lets it be. The display takes its window back, and the row goes. Escape
+   (with nothing to confirm), Ctrl+Q or the button go back to the grid.
+
+   The kernel lets Apps stop any open slot, whoever started it (`only_launchers_stop`:
+   Terminal and Apps hold the same six launch capabilities), so what Terminal's `run`
+   started is listed and can be quit too, marked "started elsewhere" (Terminal, or an
+   earlier Apps, such as one started for the dock). The kernel says only whether a slot
+   runs and the first words of its measured hash; the display names what Terminal started,
+   from the name the loader wrote in its image, if it has a window (app_program), and a
+   program Apps started before with the same hash is the same program. How long a program
+   Apps did not start has run is how long its oldest window has been open, or how long Apps
+   has seen it ("over"). Every program in an open slot has the same memory, 1 MiB of its
+   own (the footer says so): the kernel reports nothing more per program.
+
    It also opens what the user opens in Files (Return, or a double-click, on a file), which
    cannot start programs itself: the display passes it on, only right after the user's key
    or click in Files (user/app.h, OP_OPEN_WITH), as an event "@open", or as the name pending
@@ -44,6 +65,10 @@
 #include "elfload.h"
 #include "net.h"
 #include "prefs.h"
+
+/* The Running view's code runs once a key, a click or a second: compiled for size, as the
+   display server's requests are (user/display.c). */
+#define COLD __attribute__((cold, minsize))
 
 #define AW 480
 #define AH 336
@@ -67,6 +92,22 @@
 #define ICON_BYTES (8 + ICON * ICON * 4)
 #define ICON_SLOTS ((224 - ICONS_PAGE) * 4096 / ICON_BYTES)
 _Static_assert(ICON_SLOTS >= PER_PAGE, "a page's icons must fit");
+/* The button at the top right that shows the Running view, and back. */
+#define TOGGLE_W 96
+#define TOGGLE_H 22
+#define TOGGLE_X (AW - GRID_X - TOGGLE_W)
+#define TOGGLE_Y 6
+/* The Running view: a row per busy open slot, and at the bottom what the view says and the
+   Quit button. */
+#define ROWS_Y 58
+#define ROW_H 34
+#define ROW_ICON 28
+#define QUIT_W 84
+#define QUIT_H 26
+#define QUIT_X (AW - GRID_X - QUIT_W)
+#define QUIT_Y 276
+#define KEY_CTRL_Q 17
+#define MIB_EACH 1         /* an open slot's frames: 256 pages, the same for every program */
 /* On the card heading's line: the search field, and the pager's buttons with the page
    between them. */
 #define HEAD_Y (CARD_Y - 26)
@@ -78,9 +119,11 @@ _Static_assert(ICON_SLOTS >= PER_PAGE, "a page's icons must fit");
 #define NEXT_X 438
 #define BTN 22
 enum { F_UI = 1, F_TITLE = 2, F_SMALL = 3, F_LABEL = 4 };
-/* What a click (or a key) is on: 0-4 a built-in app, the pager's buttons, CARD + k the k-th
-   card program shown (counting from the first page), NONE nothing. */
-enum { PREV = 5, NEXT = 6, CARD = 10, NONE = -1 };
+/* What a click (or a key) is on: 0-4 a built-in app, the pager's buttons, the Running
+   button, CARD + k the k-th card program shown (counting from the first page); in the
+   Running view, the Quit button and ROW + i the i-th row; NONE nothing. */
+enum { PREV = 5, NEXT = 6, TOGGLE = 7, QUIT = 8, CARD = 10, ROW = 100, NONE = -1 };
+enum { GRID, RUNNING };
 
 #define NBUILTIN 5
 static const char *const builtin_names[NBUILTIN] = {"Notes", "Files", "Terminal", "Settings", "Security"};
@@ -90,6 +133,20 @@ struct prog {
     int has_icon;          /* NAME.icon is on the card (and was a good one, if loaded) */
     int icon;              /* icon slot + 1 while loaded, or 0 */
     int slot;              /* the open slot it was started in + 1, or 0 */
+    u64 hash;              /* the first word of that run's measured hash (bootinfo), and */
+    u64 started;           /* when it started (millis) */
+};
+
+/* An open slot, as the Running view shows it. */
+struct run {
+    int busy;              /* a program runs there */
+    u64 hash;              /* the first word of its measured hash: another run if it changes */
+    u64 since;             /* when it started, or when Apps first saw it running */
+    int exact;             /* since is when it started (Apps started it, or it has a window) */
+    int own;               /* this Apps started it */
+    int prog;              /* its program on the card (an index into p), or -1 */
+    u64 windows;
+    char name[16];         /* "" if nobody could say */
 };
 
 struct launcher {
@@ -108,6 +165,12 @@ struct launcher {
     int page;              /* the page shown, from 0 */
     int sel;               /* the one selected, an index into shown, or -1 */
     int pressed;           /* the cell drawn pressed, as hit() says, or NONE */
+    int view;              /* GRID or RUNNING */
+    struct run run[OPEN_SLOTS];
+    int rsel;              /* the open slot selected in the Running view (0-5), or -1 */
+    int confirm;           /* the slot whose Quit waits for Return (or Quit again) + 1, or 0 */
+    u64 refreshed;         /* when the Running view last looked (millis) */
+    char status[80];       /* what the Running view says at the bottom, "" for its hint */
 };
 
 static unsigned *icon_at(int i) { return (unsigned *)((char *)PAGE(SPARE_PAGE + ICONS_PAGE) + i * ICON_BYTES); }
@@ -198,22 +261,21 @@ static void scan(struct launcher *st, struct line *l) {
     flush(l);
 }
 
-/* Load the icons of the page shown that are not loaded yet, into the slots no program on
-   the page holds. A program whose NAME.icon is not a good icon is drawn with its initial. */
-static void load_icons(struct launcher *st) {
-    int first = st->page * PER_PAGE, last = first + PER_PAGE < st->nshown ? first + PER_PAGE : st->nshown;
+/* Load the icons of the n programs in `want` (indices into p; -1 is none) that are not
+   loaded yet, into the slots none of them holds: those of the page shown, or of the rows of
+   the Running view. A program whose NAME.icon is not a good icon is drawn with its initial. */
+static void load_icons(struct launcher *st, const int *want, int n) {
     int keep[ICON_SLOTS] = {0};
-    for (int k = first; k < last; k++) {
-        struct prog *p = &st->p[st->shown[k]];
-        if (p->icon) keep[p->icon - 1] = 1;
-    }
+    for (int k = 0; k < n; k++)
+        if (want[k] >= 0 && st->p[want[k]].icon) keep[st->p[want[k]].icon - 1] = 1;
     for (int s = 0; s < ICON_SLOTS; s++)
         if (!keep[s] && st->holder[s]) {
             st->p[st->holder[s] - 1].icon = 0;
             st->holder[s] = 0;
         }
-    for (int k = first; k < last; k++) {
-        struct prog *p = &st->p[st->shown[k]];
+    for (int k = 0; k < n; k++) {
+        if (want[k] < 0) continue;
+        struct prog *p = &st->p[want[k]];
         if (p->icon || !p->has_icon) continue;
         int s = 0;
         while (s < ICON_SLOTS && st->holder[s]) s++;
@@ -225,7 +287,7 @@ static void load_icons(struct launcher *st) {
         if (size > 8 && d[0] > 0 && d[1] > 0 && d[0] <= 64 && d[1] <= 64 && (long)(8 + d[0] * d[1] * 4) <= size) {
             shrink(icon_at(s), d);
             p->icon = s + 1;
-            st->holder[s] = st->shown[k] + 1;
+            st->holder[s] = want[k] + 1;
         } else {
             p->has_icon = 0;
         }
@@ -258,8 +320,32 @@ static void refilter(struct launcher *st) {
 
 static int pages(struct launcher *st) { return st->nshown ? (st->nshown + PER_PAGE - 1) / PER_PAGE : 1; }
 
+/* Whether the run Apps started of p still runs: its slot runs, with the same hash (Terminal
+   may have started something else there since). */
 static int running(struct prog *p) {
-    return p->slot && sys1(SYS_BOOTINFO, (u64)(p->slot - 1)).x[4] == 1;
+    if (!p->slot) return 0;
+    struct res r = sys1(SYS_BOOTINFO, (u64)(p->slot - 1));
+    return r.x[4] == 1 && r.x[2] == p->hash;
+}
+
+/* p's icon, if it is loaded (px 0 if not). */
+static struct picture pic_of(struct launcher *st, int i) {
+    struct picture pic = {0, 0, 0};
+    if (i >= 0 && st->p[i].icon) {
+        const unsigned *raw = icon_at(st->p[i].icon - 1);
+        pic.w = (int)raw[0];
+        pic.h = (int)raw[1];
+        pic.px = raw + 2;
+    }
+    return pic;
+}
+
+/* A name as a label: its first letter a capital. */
+static void label_of(char out[FS_NAME_MAX + 1], const char *name) {
+    int k = 0;
+    for (; name[k] && k < FS_NAME_MAX; k++) out[k] = name[k];
+    out[k] = 0;
+    if (out[0] >= 'a' && out[0] <= 'z') out[0] = (char)(out[0] - 32);
 }
 
 static void cell(struct launcher *st, int x, int y, const struct picture *pic, const char *name, int dot, int pressed,
@@ -281,10 +367,7 @@ static void cell(struct launcher *st, int x, int y, const struct picture *pic, c
                   rgb(255, 255, 255));
     }
     char label[FS_NAME_MAX + 1];
-    int k = 0;
-    for (; name[k] && k < FS_NAME_MAX; k++) label[k] = name[k];
-    label[k] = 0;
-    if (label[0] >= 'a' && label[0] <= 'z') label[0] = (char)(label[0] - 32);
+    label_of(label, name);
     int w = font_width(&st->ui, label);
     font_text(s, &st->ui, x + CELL_W / 2 - w / 2, y + ICON + 24, label, rgb(40, 40, 50));
     if (dot) round_rect(s, x + CELL_W / 2 - 3, y + ICON + 31, 6, 6, 3, rgb(58, 110, 230), 255);
@@ -298,6 +381,26 @@ static void pager_button(struct surface *s, int x, int dir, int can) {
     int cx = (x + BTN / 2) * 16 - dir * 16, cy = (HEAD_Y + BTN / 2) * 16;
     thick_line(s, cx - dir * 40, cy - 72, cx + dir * 40, cy, 2, c);
     thick_line(s, cx + dir * 40, cy, cx - dir * 40, cy + 72, 2, c);
+}
+
+/* The button at the top right: "Running" beside a running dot in the grid, "All apps"
+   after a chevron in the Running view. */
+COLD static void toggle_button(struct launcher *st) {
+    struct surface *s = &st->win;
+    int back = st->view == RUNNING;
+    const char *label = back ? "All apps" : "Running";
+    round_rect(s, TOGGLE_X, TOGGLE_Y, TOGGLE_W, TOGGLE_H, TOGGLE_H / 2,
+               st->pressed == TOGGLE ? rgb(214, 218, 232) : rgb(232, 233, 238), 255);
+    unsigned dark = rgb(60, 62, 74);
+    int w = font_width(&st->ui, label), x = TOGGLE_X + (TOGGLE_W - w + 12) / 2;
+    if (back) {
+        int cx = (x - 8) * 16, cy = (TOGGLE_Y + TOGGLE_H / 2) * 16;
+        thick_line(s, cx + 32, cy - 64, cx - 32, cy, 2, dark);
+        thick_line(s, cx - 32, cy, cx + 32, cy + 64, 2, dark);
+    } else {
+        round_rect(s, x - 12, TOGGLE_Y + TOGGLE_H / 2 - 3, 6, 6, 3, rgb(58, 110, 230), 255);
+    }
+    font_text(s, &st->ui, x, TOGGLE_Y + 16, label, dark);
 }
 
 /* The heading's line: the search field (a magnifier and what was typed, or what to do), and
@@ -333,29 +436,136 @@ static void draw_heading(struct launcher *st) {
     font_text(s, &st->ui, mid - font_width(&st->ui, t.b) / 2, ty, t.b, rgb(90, 92, 106));
 }
 
+/* How long, from milliseconds: "42 s", "3 min 05 s", "2 h 07 min". */
+COLD static void put_age(struct line *t, u64 ms) {
+    u64 sec = ms / 1000, a = sec < 3600 ? sec / 60 : sec / 3600, b = sec < 3600 ? sec % 60 : sec / 60 % 60;
+    if (sec < 60) {
+        put_dec(t, sec);
+        put_s(t, " s");
+        return;
+    }
+    put_dec(t, a);
+    put_s(t, sec < 3600 ? " min " : " h ");
+    if (b < 10) put_s(t, "0");
+    put_dec(t, b);
+    put_s(t, sec < 3600 ? " s" : " min");
+}
+
+/* What the Running view says under a program's name: its windows, and who started it. */
+COLD static void put_about(struct line *t, const struct run *r) {
+    if (!r->windows) put_s(t, "no window");
+    else {
+        put_dec(t, r->windows);
+        put_s(t, r->windows == 1 ? " window" : " windows");
+    }
+    if (!r->own) put_s(t, ", started elsewhere");
+}
+
+/* How long the program in slot k has run, as the view shows it ("over" when Apps only knows
+   how long it has seen it). */
+COLD static void put_ran(struct line *t, const struct run *r) {
+    if (!r->exact) put_s(t, "over ");
+    put_age(t, millis() - r->since);
+}
+
+COLD static void terminate(struct line *t) {
+    if (t->n >= sizeof t->b) t->n = sizeof t->b - 1;
+    t->b[t->n] = 0;
+}
+
+/* The Running view: a row per busy open slot, what the view says, the Quit button. */
+COLD static void draw_running(struct launcher *st) {
+    struct surface *s = &st->win;
+    unsigned gray = rgb(130, 130, 145), ink = rgb(40, 40, 50), blue = rgb(58, 110, 230), red = rgb(214, 64, 64);
+    int want[OPEN_SLOTS], n = 0;
+    for (int k = 0; k < OPEN_SLOTS; k++) want[k] = st->run[k].busy ? st->run[k].prog : -1;
+    load_icons(st, want, OPEN_SLOTS);
+    for (int k = 0; k < OPEN_SLOTS; k++) n += st->run[k].busy;
+    font_text(s, &st->label, GRID_X, 24, "RUNNING", rgb(140, 144, 158));
+    struct line t = {.n = 0};
+    put_dec(&t, (u64)n);
+    put_s(&t, " of 6 open slots in use");
+    terminate(&t);
+    font_text(s, &st->small, GRID_X + font_width(&st->label, "RUNNING") + 10, 24, t.b, gray);
+    font_text(s, &st->label, GRID_X + 8, ROWS_Y - 8, "PROGRAM", rgb(160, 164, 176));
+    font_text(s, &st->label, 258, ROWS_Y - 8, "SLOT", rgb(160, 164, 176));
+    font_text(s, &st->label, 318, ROWS_Y - 8, "RUNNING FOR", rgb(160, 164, 176));
+    for (int k = 0, i = 0; k < OPEN_SLOTS; k++) {
+        const struct run *r = &st->run[k];
+        if (!r->busy) continue;
+        int y = ROWS_Y + ROW_H * i++;
+        if (st->rsel == k) {
+            round_rect(s, GRID_X, y, AW - 2 * GRID_X, ROW_H - 2, 9, st->confirm == k + 1 ? red : blue, 255);
+            round_rect(s, GRID_X + 2, y + 2, AW - 2 * GRID_X - 4, ROW_H - 6, 7,
+                       st->confirm == k + 1 ? rgb(252, 236, 236) : rgb(236, 241, 252), 255);
+        } else {
+            fill(s, GRID_X + 8, y + ROW_H - 2, AW - 2 * GRID_X - 16, 1, rgb(234, 235, 240));
+        }
+        char label[FS_NAME_MAX + 1];
+        label_of(label, r->name[0] ? r->name : "unknown program");
+        struct picture pic = pic_of(st, r->prog);
+        int ix = GRID_X + 8, iy = y + (ROW_H - 2 - ROW_ICON) / 2;
+        if (pic.px) icon_scaled(s, ix, iy, ROW_ICON, &pic);
+        else {
+            static const unsigned tints[6] = {0x3a6ee6, 0x2eaa6e, 0xe0873a, 0x9b59d0, 0xd8465a, 0x2a9dc0};
+            round_rect(s, ix + 1, iy + 1, ROW_ICON - 2, ROW_ICON - 2, 7, r->name[0] ? tints[(unsigned char)r->name[0] % 6]
+                                                                                     : rgb(150, 152, 164), 255);
+            char ch[2] = {r->name[0] ? label[0] : '?', 0};
+            font_text(s, &st->ui, ix + ROW_ICON / 2 - font_width(&st->ui, ch) / 2, iy + 19, ch, rgb(255, 255, 255));
+        }
+        font_text(s, &st->ui, GRID_X + 46, y + 14, label, ink);
+        t.n = 0;
+        put_about(&t, r);
+        terminate(&t);
+        font_text(s, &st->small, GRID_X + 46, y + 27, t.b, gray);
+        t.n = 0;
+        put_dec(&t, (u64)(OPEN_FIRST + k));
+        terminate(&t);
+        font_text(s, &st->ui, 258, y + 20, t.b, ink);
+        t.n = 0;
+        put_ran(&t, r);
+        terminate(&t);
+        font_text(s, &st->ui, 318, y + 20, t.b, ink);
+    }
+    if (!n) font_text(s, &st->ui, GRID_X + 8, ROWS_Y + 26, "Nothing from the SD card is running.", gray);
+    fill(s, GRID_X, QUIT_Y - 10, AW - 2 * GRID_X, 1, rgb(226, 228, 236));
+    /* what the view says: the question, what was done, or how to quit */
+    const char *say = st->status[0] ? st->status : st->rsel >= 0 ? "Quit stops it at once, answering or not."
+                                                                 : "Select a program to quit it.";
+    font_text(s, &st->ui, GRID_X, QUIT_Y + 17, say, st->confirm ? red : st->status[0] ? ink : gray);
+    int can = st->rsel >= 0;
+    if (st->confirm) round_rect(s, QUIT_X, QUIT_Y, QUIT_W, QUIT_H, QUIT_H / 2, red, 255);
+    else round_rect(s, QUIT_X, QUIT_Y, QUIT_W, QUIT_H, QUIT_H / 2, rgb(232, 233, 238), 255);
+    font_text(s, &st->ui, QUIT_X + QUIT_W / 2 - font_width(&st->ui, "Quit") / 2, QUIT_Y + 18, "Quit",
+              st->confirm ? rgb(255, 255, 255) : can ? red : rgb(190, 192, 202));
+    t.n = 0;
+    put_s(&t, "Each has its own ");
+    put_dec(&t, MIB_EACH);
+    put_s(&t, " MiB of memory and its windows, and nothing else.");
+    terminate(&t);
+    font_text(s, &st->small, GRID_X, AH - 12, t.b, gray);
+}
+
 static void draw(struct launcher *st) {
     struct surface *s = &st->win;
     fill(s, 0, 0, AW, AH, rgb(247, 247, 250));
+    toggle_button(st);
+    if (st->view == RUNNING) {
+        draw_running(st);
+        return;
+    }
     font_text(s, &st->label, GRID_X, 24, "BUILT IN", rgb(140, 144, 158));
-    /* On the built-in heading's line: the card heading's has the search field. */
-    const char *hint = "card programs get their own memory and a window, nothing else";
-    font_text(s, &st->small, AW - GRID_X - font_width(&st->small, hint), 24, hint, rgb(130, 130, 145));
     for (int i = 0; i < NBUILTIN; i++)
         cell(st, GRID_X + i * CELL_W, BUILTIN_Y, &st->builtin[i], builtin_names[i], 0, st->pressed == i, 0);
     fill(s, GRID_X, CARD_Y - 34, AW - 2 * GRID_X, 1, rgb(226, 228, 236));
     font_text(s, &st->label, GRID_X, CARD_Y - 10, "ON THE SD CARD", rgb(140, 144, 158));
     draw_heading(st);
-    load_icons(st);
-    int first = st->page * PER_PAGE;
-    for (int k = first; k < first + PER_PAGE && k < st->nshown; k++) {
+    int first = st->page * PER_PAGE, n = st->nshown - first < PER_PAGE ? st->nshown - first : PER_PAGE;
+    if (n < 0) n = 0;
+    load_icons(st, st->shown + first, n);
+    for (int k = first; k < first + n; k++) {
         struct prog *p = &st->p[st->shown[k]];
-        struct picture pic = {0, 0, 0};
-        if (p->icon) {
-            const unsigned *raw = icon_at(p->icon - 1);
-            pic.w = (int)raw[0];
-            pic.h = (int)raw[1];
-            pic.px = raw + 2;
-        }
+        struct picture pic = pic_of(st, st->shown[k]);
         cell(st, GRID_X + (k - first) % COLS * CELL_W, CARD_Y + (k - first) / COLS * CELL_H, p->icon ? &pic : 0,
              p->name, running(p), st->pressed == CARD + k, st->sel == k);
     }
@@ -415,6 +625,8 @@ static void start(struct launcher *st, struct line *l, int i, const char *file) 
             int wants = p->name[0] == 'w' && p->name[1] == 'e' && p->name[2] == 'b' && !p->name[3];
             net_call(&st->net, NET_ALLOW, OPEN_FIRST + (u64)k | (u64)wants << 8, 0);
             p->slot = OPEN_FIRST + k + 1;
+            p->hash = sys1(SYS_BOOTINFO, OPEN_FIRST + (u64)k).x[2];   /* measured as it started */
+            p->started = millis();
             why = 0;
             break;
         }
@@ -529,8 +741,14 @@ static void restore_prefs(struct launcher *st, struct line *l) {
     flush(l);
 }
 
-/* What is at (x, y): a built-in app, a pager button, a card program shown, or NONE. */
+static int on_toggle(int x, int y) {
+    return x >= TOGGLE_X && x < TOGGLE_X + TOGGLE_W && y >= TOGGLE_Y - 2 && y < TOGGLE_Y + TOGGLE_H + 2;
+}
+
+/* What is at (x, y): a built-in app, a pager button, the Running button, a card program
+   shown, or NONE. */
 static int hit(struct launcher *st, int x, int y) {
+    if (on_toggle(x, y)) return TOGGLE;
     if (pages(st) > 1 && y >= HEAD_Y - 4 && y < HEAD_Y + BTN + 4) {
         if (x >= PREV_X - 4 && x < PREV_X + BTN + 4) return PREV;
         if (x >= NEXT_X - 4 && x < NEXT_X + BTN + 4) return NEXT;
@@ -544,6 +762,257 @@ static int hit(struct launcher *st, int x, int y) {
         return k < st->nshown ? CARD + k : NONE;
     }
     return NONE;
+}
+
+/* ---- the Running view (Force Quit) ---- */
+
+COLD static int same(const char *a, const char *b) {
+    int i = 0;
+    while (i < FS_NAME_MAX && a[i] && a[i] == b[i]) i++;
+    return i == FS_NAME_MAX || a[i] == b[i];
+}
+
+/* Look at the open slots again: what runs in each, who started it, its name and windows (the
+   display's, app_program), and since when. Whether anything the log lists changed: a run
+   began or ended, a name or a window came or went. A run that ends (or changes) is no
+   longer selected, nor waiting to be quit. */
+COLD static int refresh(struct launcher *st) {
+    u64 now = millis();
+    int changed = 0;
+    st->refreshed = now;
+    for (int k = 0; k < OPEN_SLOTS; k++) {
+        struct run *r = &st->run[k];
+        u64 slot = OPEN_FIRST + (u64)k;
+        struct res b = sys1(SYS_BOOTINFO, slot);
+        int busy = b.status == OK && b.x[4] == 1;
+        if (!busy || !r->busy || r->hash != b.x[2]) {          /* ended, began, or another run */
+            if (r->busy || busy) changed = 1;
+            if (st->rsel == k) st->rsel = -1;
+            if (st->confirm == k + 1) st->confirm = 0;
+            r->busy = busy;
+            r->hash = b.x[2];
+            r->since = now;
+            r->exact = r->own = 0;
+            r->prog = -1;
+            r->windows = 0;
+            r->name[0] = 0;
+            for (int i = 0; i < st->n && !busy; i++)
+                if (st->p[i].slot == (int)slot + 1) st->p[i].slot = 0;
+            if (!busy) continue;
+        }
+        for (int i = 0; i < st->n; i++)
+            if (st->p[i].slot == (int)slot + 1 && st->p[i].hash == r->hash) {
+                r->own = r->exact = 1;
+                r->prog = i;
+                r->since = st->p[i].started;
+            }
+        char name[16];
+        u64 windows, age;
+        app_program(slot, name, &windows, &age);
+        if (windows != r->windows) changed = 1;
+        r->windows = windows;
+        if (!r->own && windows) {
+            r->exact = 1;
+            if (now - age < r->since) r->since = now - age;
+        }
+        /* its name: its own, or what its window says, or a program Apps ran with its hash */
+        if (!r->own && r->prog < 0)
+            for (int i = 0; i < st->n; i++)
+                if (name[0] ? same(name, st->p[i].name) : st->p[i].hash == r->hash && st->p[i].started) r->prog = i;
+        const char *known = r->prog >= 0 ? st->p[r->prog].name : name;
+        if (!same(known, r->name)) changed = 1;
+        int j = 0;
+        for (; j < 15 && known[j]; j++) r->name[j] = known[j];
+        r->name[j] = 0;
+    }
+    return changed;
+}
+
+/* The name to say for slot k's program. */
+COLD static const char *run_name(struct launcher *st, int k) {
+    return st->run[k].name[0] ? st->run[k].name : "an unknown program";
+}
+
+/* The log: what the Running view lists, a line per program. */
+COLD static void say_runs(struct launcher *st, struct line *l) {
+    int n = 0;
+    for (int k = 0; k < OPEN_SLOTS; k++) n += st->run[k].busy;
+    put_s(l, "apps: running: ");
+    put_dec(l, (u64)n);
+    put_s(l, n == 1 ? " program\n" : " programs\n");
+    flush(l);
+    for (int k = 0; k < OPEN_SLOTS; k++) {
+        if (!st->run[k].busy) continue;
+        put_s(l, "apps: slot ");
+        put_dec(l, OPEN_FIRST + (u64)k);
+        put_s(l, ": ");
+        put_s(l, run_name(st, k));
+        put_s(l, ", ");
+        put_about(l, &st->run[k]);
+        put_s(l, ", for ");
+        put_ran(l, &st->run[k]);
+        put_s(l, "\n");
+        flush(l);
+    }
+}
+
+/* Show the Running view, or the grid again. */
+COLD static void show_view(struct launcher *st, struct line *l, int view) {
+    st->view = view;
+    st->confirm = 0;
+    st->status[0] = 0;
+    put_s(l, view == RUNNING ? "apps: showing what runs\n" : "apps: showing the programs\n");
+    flush(l);
+    if (view == RUNNING) {
+        st->rsel = -1;
+        refresh(st);
+        say_runs(st, l);
+    }
+}
+
+COLD static void set_status(struct launcher *st, struct line *t) {
+    terminate(t);
+    int i = 0;
+    for (; i < (int)sizeof st->status - 1 && t->b[i]; i++) st->status[i] = t->b[i];
+    st->status[i] = 0;
+}
+
+/* The first press of Quit (or Delete): ask before stopping anything. */
+COLD static void ask_quit(struct launcher *st, struct line *l) {
+    if (st->rsel < 0 || st->confirm) return;
+    int k = st->rsel;
+    st->confirm = k + 1;
+    char label[FS_NAME_MAX + 1];
+    label_of(label, st->run[k].name[0] ? st->run[k].name : "this program");
+    struct line t = {.n = 0};
+    put_s(&t, "Quit ");
+    put_s(&t, label);
+    put_s(&t, "? Return to confirm, or click Quit again.");
+    set_status(st, &t);
+    put_s(l, "apps: quit ");
+    put_s(l, run_name(st, k));
+    put_s(l, " in slot ");
+    put_dec(l, OPEN_FIRST + (u64)k);
+    put_s(l, "? Return to confirm, or click Quit again\n");
+    flush(l);
+}
+
+COLD static void cancel_quit(struct launcher *st, struct line *l) {
+    if (!st->confirm) return;
+    st->confirm = 0;
+    st->status[0] = 0;
+    put_s(l, "apps: quit cancelled\n");
+    flush(l);
+}
+
+/* Confirmed: stop the program, as Terminal's `kill` does (the kernel's stop, through the
+   slot's launch capability, answering or not), and take back what the file server gave its
+   slot. The display takes its window back before it answers anything next, which the
+   refresh here asks of it. If the program ended meanwhile, nothing is stopped. */
+COLD static void quit(struct launcher *st, struct line *l) {
+    int k = st->confirm - 1;
+    if (k < 0) return;
+    char name[16], label[FS_NAME_MAX + 1];
+    for (int i = 0; i < 16; i++) name[i] = run_name(st, k)[i < 15 ? i : 15];
+    name[15] = 0;
+    /* only the run asked about: not another the slot has started since (Terminal's) */
+    struct res now = sys1(SYS_BOOTINFO, OPEN_FIRST + (u64)k), r = {.x = {BAD_ARG}};
+    if (now.x[4] == 1 && now.x[2] == st->run[k].hash) {
+        r = sys1(SYS_STOP, LAUNCH_OPEN + (u64)k);
+        fs_unshare(&st->fs, OPEN_FIRST + (u64)k);
+    }
+    put_s(l, "apps: quit ");
+    put_s(l, name);
+    put_s(l, " in slot ");
+    put_dec(l, OPEN_FIRST + (u64)k);
+    put_s(l, r.status == OK ? " -> stopped\n" : " -> it had stopped already\n");
+    flush(l);
+    label_of(label, st->run[k].name[0] ? st->run[k].name : "the program");
+    struct line t = {.n = 0};
+    put_s(&t, label);
+    put_s(&t, r.status == OK ? " was quit." : " had stopped already.");
+    set_status(st, &t);
+    st->confirm = 0;
+    st->rsel = -1;
+    refresh(st);
+    say_runs(st, l);
+}
+
+/* The busy slot i rows down in the view, or -1. */
+COLD static int row_slot(struct launcher *st, int i) {
+    for (int k = 0; k < OPEN_SLOTS; k++)
+        if (st->run[k].busy && i-- == 0) return k;
+    return -1;
+}
+
+COLD static void select_run(struct launcher *st, struct line *l, int k) {
+    if (k < 0 || k == st->rsel) return;
+    if (st->confirm) cancel_quit(st, l);
+    st->rsel = k;
+    st->status[0] = 0;
+    put_s(l, "apps: selected ");
+    put_s(l, run_name(st, k));
+    put_s(l, " in slot ");
+    put_dec(l, OPEN_FIRST + (u64)k);
+    put_s(l, "\n");
+    flush(l);
+}
+
+/* A key or a click in the Running view. Whether to draw it again. */
+COLD static int running_event(struct launcher *st, struct line *l, struct event e) {
+    if (e.kind == EV_KEY) {
+        u64 k = e.a;
+        if (k == KEY_UP || k == KEY_DOWN) {
+            int next = -1;
+            if (k == KEY_DOWN)
+                for (int j = st->rsel + 1; j < OPEN_SLOTS && next < 0; j++) next = st->run[j].busy ? j : -1;
+            else
+                for (int j = (st->rsel < 0 ? OPEN_SLOTS : st->rsel) - 1; j >= 0 && next < 0; j--) next = st->run[j].busy ? j : -1;
+            select_run(st, l, next);
+        } else if (k == KEY_DELETE || k == 127 || k == 8) {
+            ask_quit(st, l);
+        } else if ((k == '\r' || k == '\n') && st->confirm) {
+            quit(st, l);
+        } else if (k == 27 && st->confirm) {
+            cancel_quit(st, l);
+        } else if (k == 27 || k == KEY_CTRL_Q) {
+            show_view(st, l, GRID);
+        } else {
+            cancel_quit(st, l);               /* a stray key stops nothing */
+        }
+        return 1;
+    }
+    if (e.kind != EV_DOWN) return 0;
+    int x = (int)e.a, y = (int)e.b;
+    if (on_toggle(x, y)) {
+        show_view(st, l, GRID);
+    } else if (x >= QUIT_X && x < QUIT_X + QUIT_W && y >= QUIT_Y && y < QUIT_Y + QUIT_H) {
+        if (st->confirm) quit(st, l);
+        else ask_quit(st, l);
+    } else if (x >= GRID_X && x < AW - GRID_X && y >= ROWS_Y && y < ROWS_Y + OPEN_SLOTS * ROW_H &&
+               row_slot(st, (y - ROWS_Y) / ROW_H) >= 0) {
+        select_run(st, l, row_slot(st, (y - ROWS_Y) / ROW_H));
+    } else {
+        cancel_quit(st, l);
+    }
+    return 1;
+}
+
+/* The next event while the Running view is shown, which is looked at again once a second
+   meanwhile (and the log told when what it lists changed). */
+COLD static struct event wait_running(struct launcher *st, struct line *l, int *dirty) {
+    for (;;) {
+        struct event e = app_poll(*dirty);
+        *dirty = 0;
+        if (e.kind != EV_NONE) return e;
+        if (millis() - st->refreshed >= 1000) {
+            if (refresh(st)) say_runs(st, l);
+            draw(st);
+            *dirty = 1;
+            continue;
+        }
+        sleep_ms(50);
+    }
 }
 
 /* The program selected (an index into p), or -1. */
@@ -640,6 +1109,10 @@ __attribute__((section(".text.start"))) void _start(void) {
     fs_init(&st->fs, SPARE_PAGE);
     net_init(&st->net, SPARE_PAGE);
     st->pressed = NONE;
+    st->view = GRID;
+    st->rsel = -1;
+    st->confirm = 0;
+    for (int k = 0; k < OPEN_SLOTS; k++) st->run[k].busy = 0;
     st->nfind = 0;
     st->find[0] = 0;
     for (int i = 0; i < ICON_SLOTS; i++) st->holder[i] = 0;
@@ -703,7 +1176,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     if (opened != OK) exit_task();
     int dirty = 0;
     for (;;) {
-        struct event e = app_wait(dirty);
+        struct event e = st->view == RUNNING ? wait_running(st, &l, &dirty) : app_wait(dirty);
         dirty = 0;
         if (e.kind == EV_CLOSE) exit_task();
         if (e.kind == EV_LAUNCH) {          /* from the dock: up to 8 bytes of a name */
@@ -718,13 +1191,28 @@ __attribute__((section(".text.start"))) void _start(void) {
             else start_named(st, &l, name, "");
             continue;
         }
+        if (st->view == RUNNING) {
+            if (running_event(st, &l, e)) {
+                draw(st);
+                dirty = 1;
+            }
+            continue;
+        }
         int nshown = st->nshown, nfind = st->nfind, page = st->page, sel = selected(st), c = NONE;
-        if (e.kind == EV_KEY) {
+        if (e.kind == EV_KEY && e.a == KEY_CTRL_Q) {
+            c = TOGGLE;
+        } else if (e.kind == EV_KEY) {
             int k = key(st, e.a);
             if (k >= 0) c = CARD + k;
             tell(st, &l, nshown, nfind, page, sel);
         } else if (e.kind == EV_DOWN) {
             c = hit(st, (int)e.a, (int)e.b);
+        }
+        if (c == TOGGLE) {
+            show_view(st, &l, RUNNING);
+            draw(st);
+            dirty = 1;
+            continue;
         }
         if (c == PREV || c == NEXT) {                /* as Page Up and Page Down */
             key(st, c == NEXT ? KEY_PGDN : KEY_PGUP);

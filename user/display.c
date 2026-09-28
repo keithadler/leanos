@@ -82,6 +82,13 @@
    it the file as Terminal's `run PROG FILE` would. So a program cannot make another start,
    or be handed a file, behind the user's back: Files names only what the user chose in it.
 
+   PROGRAM (14): Apps, and no one else, asks what the display knows of open slot w1 (10 to
+   15), for its Running view (Force Quit): with w2 = 0, the card file its windows came from
+   (up to 15 bytes in x2 x3, "" if it lent none, or has no window); with w2 = 1, how many
+   windows it has (x2) and how many milliseconds the oldest has been open (x3). Only Apps
+   holds the open slots' launch capabilities besides Terminal, and it started most of what
+   runs there; this names what Terminal started, which the kernel knows only by its hash.
+
    It keeps a copy of its own capability list's layout (which app granted each capability,
    and for which window), so it can drop a window's capability when the window goes, drop
    at once any grant it did not ask for, and know which capabilities the kernel takes back
@@ -139,7 +146,7 @@ __attribute__((noinline)) static void rounded(struct surface *s, int x, int y, i
 #define MENU_R 10       /* the menus' corners */
 
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
-       OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12, OP_OPEN_WITH = 13 };
+       OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12, OP_OPEN_WITH = 13, OP_PROGRAM = 14 };
 /* 11 is no request: programs ask it to show that no request reads the clipboard (mallory, tour) */
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7, EV_PASTE = 8,
        EV_RDOWN = 9, EV_RUP = 10 };
@@ -211,6 +218,7 @@ struct win {
     int drags;                  /* it asked for drags (OPEN_DRAG): the moves and the release */
     int unsaid;                 /* its opening is not logged yet: a card program's name comes after */
     u64 hash;                   /* the first word of its slot's measured hash when it opened */
+    u64 opened;                 /* when it opened (millis), for Apps' Running view */
     unsigned queue[QUEUE][4];    /* events waiting for the client (kind, a, b, when), oldest at qhead */
     int qhead, qlen;
     /* a paste on its way: what was copied when the user pasted here, handed out 16 bytes to
@@ -1976,6 +1984,7 @@ COLD static void on_open(struct state *st, struct line *l, struct res *r) {
     wn->title[8] = 0;
     place(st, wn);
     wn->hash = sys1(SYS_BOOTINFO, (u64)slot_of(badge)).x[2];
+    wn->opened = millis();
     wn->closing = wn->minimized = wn->zoomed = 0;
     wn->drags = (size & OPEN_DRAG) != 0;
     wn->icon.px = 0;
@@ -2245,6 +2254,26 @@ COLD static void on_raise(struct state *st, struct line *l, struct res *r) {
     sys(SYS_REPLY, r->x[6] - 1, found, 0, 0, 0);
 }
 
+/* PROGRAM: what Apps' Running view shows of open slot w1 (see the top). Asked once a second
+   while the view is shown, so it logs nothing. */
+COLD static void on_program(struct state *st, struct res *r) {
+    u64 badge = r->x[1], k = r->x[3], part = r->x[4], slot = r->x[6];
+    u64 name[2] = {0, 0}, windows = 0, oldest = 0;
+    if (badge != 16 || k < 10 || k > 15) {
+        sys(SYS_REPLY, slot - 1, 1, 0, 0, 0);
+        return;
+    }
+    for (int i = 0; i < MAX_WIN; i++) {
+        struct win *w = &st->win[i];
+        if (!w->used || w->closing || w->badge != k) continue;
+        windows++;
+        if (millis() - w->opened > oldest) oldest = millis() - w->opened;
+        if (name[0]) continue;                   /* its first window with a name names it */
+        for (int j = 0; j < 15 && w->prog[j]; j++) name[j / 8] |= (u64)(unsigned char)w->prog[j] << (8 * (j % 8));
+    }
+    sys(SYS_REPLY, slot - 1, 0, part ? windows : name[0], part ? oldest : name[1], 0);
+}
+
 COLD static void on_start(struct state *st, struct line *l, struct res *r) {
     u64 badge = r->x[1], which = r->x[3], slot = r->x[6];
     if (badge != 16 || which >= DOCK_N) {
@@ -2471,6 +2500,8 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
             on_copy(st, &l, &r);
         } else if (slot && op == OP_OPEN_WITH) {
             on_open_with(st, &l, &r);
+        } else if (slot && op == OP_PROGRAM) {
+            on_program(st, &r);
         } else {
             /* A request the display does not understand, from anyone: it answers no, and
                says so the first few times, so a program that floods it cannot flood the log. */

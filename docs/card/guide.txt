@@ -156,6 +156,16 @@ Terminal
   Tab           complete a command's name, or a file or folder name (a folder gets a /);
                 when several match, Tab completes what they share and a second Tab lists them
 
+Apps
+  Type      find a program by its name; Return starts the one selected
+  Arrows    move the selection; Page Up, Page Down turn the pages
+  Running   the button at the top right (or Ctrl+Q): what runs from the card, one row
+            each, with its slot, how long it has run and its windows; once a second
+  Quit      select a row, then Quit (or Delete, or Backspace): it asks first, and Return
+            or Quit again stops the program, answering or not (Terminal's kill); any
+            other key lets it be. Programs Terminal started are there too ("started
+            elsewhere"). Escape or Ctrl+Q goes back to the programs.
+
 Programs on the card
   tour    the guided tour: each page really tries an attack
   calc    a calculator: type 2+3*4 and press Enter
