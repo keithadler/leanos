@@ -318,19 +318,40 @@ def jump_table(f, i):
     """The targets of the `br` at index i, if it is clang's jump table: after a bounds check
     (cmp xI, #K; b.hi), the table's address (adr, or adrp and add when the table is more than
     1 MiB from the code, as it is once the image outgrows adr's reach), adr of an anchor, a byte
-    or halfword entry, and `add xN, anchor, entry, lsl #2`. None if it is not."""
+    or halfword entry, and `add xN, anchor, entry, lsl #2`. None if it is not.
+    Between the table's address and the anchor, clang may put instructions of its own (an
+    `adr` of an argument, the `nop` the linker leaves where it relaxed an adrp): they are
+    stepped over when they are no branch and write neither the table's register, the index
+    nor the anchor's, so what the load reads is still the table."""
     ins = f.insns
     if i < 4:
         return None
     reg = operands(ins[i][2])[0]
-    (_, add, add_s), (_, ld, ld_s), (_, adr2, anc_s), (_, adr1, tab_s) = ins[i - 1], ins[i - 2], ins[i - 3], ins[i - 4]
-    add_o, ld_o, anc_o, tab_o = operands(add_s), operands(ld_s), operands(anc_s), operands(tab_s)
-    first = i - 4
+    (_, add, add_s), (_, ld, ld_s), (_, adr2, anc_s) = ins[i - 1], ins[i - 2], ins[i - 3]
+    add_o, ld_o, anc_o = operands(add_s), operands(ld_s), operands(anc_s)
+    if ld not in ("ldrb", "ldrh") or len(ld_o) < 2 or "," not in ld_o[1]:
+        return None
+    base = ld_o[1].strip("[").split(",")[0].strip()
+    index_reg = ld_o[1].split(",")[1].strip().rstrip("]").split()[0]
+    t = i - 4
+    while t >= 0 and i - 4 - t < 4:
+        mn, o = ins[t][1], operands(ins[t][2])
+        if any(writes(mn, o, "x" + r[1:]) for r in (base, index_reg, reg)):
+            break
+        if mn in STOPS or mn in BRANCHES or mn.startswith(("b.", "cb", "tb")):
+            return None
+        t -= 1
+    if t < 0:
+        return None
+    adr1, tab_s = ins[t][1], ins[t][2]
+    tab_o = operands(tab_s)
+    i4 = t                                            # where the table's address is set
+    first = t
     table = addr_of(tab_o[1]) if adr1 == "adr" and len(tab_o) > 1 else None
-    if adr1 == "add" and i >= 5 and len(tab_o) == 3 and tab_o[0] == tab_o[1] and tab_o[2].startswith("#"):
-        page_mn, page_o = ins[i - 5][1], operands(ins[i - 5][2])
+    if adr1 == "add" and i4 >= 1 and len(tab_o) == 3 and tab_o[0] == tab_o[1] and tab_o[2].startswith("#"):
+        page_mn, page_o = ins[i4 - 1][1], operands(ins[i4 - 1][2])
         if page_mn == "adrp" and page_o[0] == tab_o[0] and addr_of(page_o[1]) is not None:
-            table, first = addr_of(page_o[1]) + imm(tab_o[2]), i - 5
+            table, first = addr_of(page_o[1]) + imm(tab_o[2]), i4 - 1
     if not (add == "add" and add_o[:2] == [reg, reg] and add_o[3:] == ["lsl #2"]
             and ld in ("ldrb", "ldrh") and add_o[2] == "x" + ld_o[0][1:]
             and adr2 == "adr" and anc_o[0] == reg and table is not None and ld_o[1].startswith("[" + tab_o[0] + ",")):
