@@ -84,6 +84,8 @@ Files
 
 Terminal
   ls, cat FILE, write FILE TEXT, rm FILE    files on the card (ls -a: icons too)
+  touch FILE, stat FILE                     an empty file if there is none; a file's size,
+                                            or how many names a folder holds
   mkdir FOLDER, cd FOLDER, cd .., pwd       folders
   mv FROM TO                                move or rename, in one step
   cp FROM TO                                copy a file (TO may be a folder)
@@ -93,7 +95,20 @@ Terminal
   find [FOLDER] [NAME]                      every file and folder under FOLDER, or those
                                             whose names hold NAME (16 folders down, 100
                                             names at most)
+  du [FOLDER], tree [FOLDER]                the bytes in the files under FOLDER; what is
+                                            under it, each folder's names further in
   df                                        the card's size, and what is used and free
+  sort [-r] [-n] [FILE]                     its lines in order (-r: backward, -n: by number)
+  uniq [-c] [FILE]                          each run of the same line once (-c: how many)
+  rev, nl [FILE]                            each line backward; each line numbered
+  tr SET1 SET2 [FILE]                       letters of SET1 as those of SET2 (tr a-z A-Z)
+  cut [-d C] -f N [FILE]                    the Nth field of each line, split at C (a space
+                                            if not said)
+  CMD | tee FILE                            what CMD prints into FILE, and on as well
+  seq [FIRST] LAST, calc EXPR               numbers, one a line; whole-number arithmetic
+                                            with + - * / % and ( )
+  cal [MONTH YEAR]                          a month, Monday first, today in [ ]
+  sleep N, time CMD                         wait N seconds; how long CMD took
   fill FILE KB CHAR, verify FILE            a big test file, and checking one
   ip, ping HOST, get http://URL [FILE]      the network (a USB network adapter)
   date, ntp [HOST]                          the time in your zone and UTC (set by ntp)
@@ -110,9 +125,10 @@ Terminal
                 makes a small file). The old FILE stays until the new one is whole: if
                 the command fails or prints more than 64 KiB, nothing is written
   CMD >> FILE   the same, added at the end of FILE
-  CMD | CMD2    what CMD prints becomes CMD2's input: grep, head, tail, wc and cat read
-                it when they are given no file (ls | grep txt, cat big | grep x | wc,
-                history | tail -n 5). As many | as fit on the line, and > at the end
+  CMD | CMD2    what CMD prints becomes CMD2's input: grep, head, tail, wc, cat, sort, uniq,
+                rev, tr, cut and nl read it when they are given no file (ls | grep txt,
+                cat big | grep x | wc, seq 10 | sort -n -r | head -n 3, history | tail
+                -n 5). As many | as fit on the line, and > at the end
   > and | work with spaces around them or not, and there are no quotes, so echo cannot
   print them. Errors, and notes such as "no match", still go to the screen. run, tour,
   kill, cd, exit and clear cannot be piped or redirected. Tab completes a command's name
@@ -125,6 +141,8 @@ Terminal
 
   Up, Down      the commands you ran before (the last 32; history lists them), and back to
                 the line you were typing
+  !!, !N        the last command again, and command N of history's list, anywhere on the
+                line (!! | wc)
   Left, Right   move along the command line; what you type goes in at the cursor
   Home, End     the start or end of the command line
   Delete        delete the letter under the cursor (Backspace: the one before it)

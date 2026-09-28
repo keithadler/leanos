@@ -11,7 +11,8 @@
    The command line edits as a shell's does: Left and Right move the cursor, Home and End
    to the line's start and end, and typing, Backspace, Delete (the letter under the cursor)
    and a paste work where it is. Up and Down step through the last HIST commands, which
-   history lists (the line being typed is kept, and Down past the newest comes back to it).
+   history lists (the line being typed is kept, and Down past the newest comes back to it);
+   !! on a line is the last of them, and !N the Nth history lists, as in a shell.
    Page Up and Page Down do nothing: Terminal keeps no more lines than it shows. Tab
    completes a command's name at the start of the line, and a file or folder name after it
    (a folder with a '/'), from the file server's listing; when several match, it completes
@@ -20,13 +21,18 @@
    CMD > FILE puts what CMD prints in FILE instead of on the screen (made in FILE.part~, then
    put in place by one rename, as cp and fill do: FILE is its old self or the new one), and
    CMD >> FILE adds it at FILE's end. CMD | CMD2 [| CMD3 ...] hands what CMD prints to CMD2,
-   and grep, head, tail, wc and cat read it when they are given no file. The output is
-   captured where it is printed (push), into the pipe buffer: 64 KiB in the spare run where
-   run makes a program's image, which no command that may be redirected uses. A filter
-   writes its output over its input in that buffer, never ahead of what it has read. More
+   and grep, head, tail, wc, cat, sort, uniq, rev, tr, cut, nl and tee read it when they are
+   given no file. The output is captured where it is printed (push), into the pipe buffer:
+   64 KiB in the spare run where run makes a program's image, which no command that may be
+   redirected uses. grep, head, tail, wc and cat write their output over their input in that
+   buffer, never ahead of what they have read; sort and the others that may print more than
+   they read (uniq -c, nl) take their input into the line buffer first (text_in). More
    than 64 KiB stops the line and writes nothing; so does a command that fails, whose error
    goes to the screen (as a note such as "no match" does). No quotes: '>' and '|' always
-   mean this, with spaces around them or not. */
+   mean this, with spaces around them or not.
+
+   Commands run to their end before Terminal reads another key, so none may run forever:
+   seq counts 100000 numbers at most, sleep 60 seconds, and there is no yes. */
 #include "app.h"
 #include "fs.h"
 #include "elfload.h"
@@ -425,6 +431,28 @@ COLD static const char *tmp_of(struct term *t, const char *path, char *tmp) {
     return fs_stat(&t->fs, tmp, 0) == FS_DIR ? "NAME.part~ is a folder: rename it first" : 0;
 }
 
+/* n bytes at `b` into the file at `path`: through `tmp` (PATH.part~) and one rename, or with
+   `append`, at its end. What > and tee write. */
+COLD static u64 save(struct term *t, const char *path, const char *tmp, const char *b, u64 n, int append) {
+    u64 at = 0, off = 0, st = FS_OK;
+    const char *dest = path;
+    if (append) fs_stat(&t->fs, path, &at);
+    else {
+        dest = tmp;
+        st = fs_write(&t->fs, tmp, "", 0);
+    }
+    int made = st == FS_OK;
+    while (st == FS_OK) {
+        u64 take = n - off < FS_CHUNK ? n - off : FS_CHUNK;
+        st = fs_write_at(&t->fs, dest, at + off, b + off, take);
+        off += take;
+        if (off >= n) break;
+    }
+    if (!append && st == FS_OK) st = fs_rename(&t->fs, tmp, path);
+    if (!append && st != FS_OK && made) fs_delete(&t->fs, tmp);
+    return st;
+}
+
 COLD static void cmd_mv(struct term *t, struct line *l, const char *args) {
     char a[FS_PATH_MAX + 1], b[FS_PATH_MAX + 1], pa[FS_PATH_MAX + 1], pb[FS_PATH_MAX + 1];
     word_of(word_of(args, a, FS_PATH_MAX), b, FS_PATH_MAX);
@@ -779,72 +807,102 @@ COLD static void cmd_grep(struct term *t, struct line *l, const char *args) {
     flush(l);
 }
 
-/* find [FOLDER] [NAME]: every file and folder under FOLDER (this one if not said), or those
-   whose names hold NAME, a folder with a '/'; one word that is not a folder is a NAME. No
-   recursion: each folder down keeps where it is in its listing. It goes FIND_DEPTH folders
-   down and stops after FIND_SHOWN names; what it looks at is at most every name on the card
-   (1024), each listed once, so no tree makes it run for long. Icons are left out, as by ls. */
-COLD static void cmd_find(struct term *t, struct line *l, const char *args) {
-    char dir[FS_PATH_MAX + 1], name[FS_NAME_MAX + 1], path[FS_PATH_MAX + 1];
-    word_of(word_of(args, dir, FS_PATH_MAX), name, FS_NAME_MAX);
-    int dn = (int)slen(dir);
-    while (dn > 1 && dir[dn - 1] == '/') dir[--dn] = 0;
-    resolve(t, dir, path);
-    int slash = 0;
-    for (int i = 0; dir[i]; i++) slash |= dir[i] == '/';
-    if (dir[0] && !name[0] && !slash && fs_stat(&t->fs, path, 0) != FS_DIR) {   /* one word: a name, here */
-        for (int i = 0; i <= FS_NAME_MAX; i++) name[i] = i < FS_NAME_MAX ? dir[i] : 0;
-        dir[0] = 0;
-        resolve(t, dir, path);
-    }
-    if (fs_stat(&t->fs, path, 0) != FS_DIR) { fail(t, "no such folder"); fs_log(l, "find", dir, "no such folder"); return; }
-    u64 next[FIND_DEPTH], found = 0;
-    int len[FIND_DEPTH], depth = 0, deep = 0, base = (int)slen(path);
+/* A walk through a folder's tree, as find, du and tree take it: every file and folder under
+   `path`, handed to visit() with its path (from `base`) in `path` and `depth` folders down
+   from the first, until visit() says stop. No recursion: each folder down keeps where it is
+   in its listing. It goes FIND_DEPTH folders down (`deep`: there were more); what it looks
+   at is at most every name on the card (1024), each listed once, so no tree makes it run
+   for long. Icons are left out, as by ls. visit() may not call the file server: the entry
+   is in its buffer. */
+struct walk {
+    char path[FS_PATH_MAX + 1], name[FS_NAME_MAX + 1];
+    const char *dir;
+    int base, depth, deep;
+    u64 found, files, bytes;
+};
+typedef int visit_fn(struct term *t, struct line *l, struct walk *w, const struct fs_entry *e);
+
+/* 1 if visit() stopped it before the end. */
+COLD static int walk(struct term *t, struct line *l, struct walk *w, visit_fn *visit) {
+    u64 next[FIND_DEPTH];
+    int len[FIND_DEPTH], stop = 0;
+    char *path = w->path;
+    w->base = (int)slen(path);
+    w->depth = w->deep = 0;
     next[0] = 0;
-    len[0] = base;
-    while (depth >= 0 && found < FIND_SHOWN) {
-        path[len[depth]] = 0;
+    len[0] = w->base;
+    while (w->depth >= 0 && !stop) {
+        int d = w->depth;
+        path[len[d]] = 0;
         u64 total = 0;
-        long got = fs_list_dir(&t->fs, path, next[depth], &total);
+        long got = fs_list_dir(&t->fs, path, next[d], &total);
         const struct fs_entry *e = fs_entries(&t->fs);
         int down = 0;
-        for (long i = 0; i < got && !down && found < FIND_SHOWN; i++) {
-            next[depth]++;
+        for (long i = 0; i < got && !down && !stop; i++) {
+            next[d]++;
             if (fs_is_icon(&e[i])) continue;
-            int at = len[depth], n = at, isdir = e[i].kind == FS_DIR;
+            int at = len[d], n = at, isdir = e[i].kind == FS_DIR;
             int fits = at + 1 + (int)slen(e[i].name) <= FS_PATH_MAX;    /* else it is cut short */
             if (n) path[n++] = '/';
             for (int j = 0; j < FS_NAME_MAX && e[i].name[j] && n < FS_PATH_MAX; j++) path[n++] = e[i].name[j];
             path[n] = 0;
-            if (!name[0] || contains(e[i].name, (long)slen(e[i].name), name, 0)) {
-                put_s(l, dir);
-                if (dir[0] && dir[dn - 1] != '/') put_s(l, "/");
-                put_s(l, path + base + (base > 0));
-                if (isdir) put_s(l, "/");
-                out(t, l);
-                found++;
-            }
-            if (isdir && fits && depth + 1 < FIND_DEPTH) {
-                depth++;
-                next[depth] = 0;
-                len[depth] = n;
+            stop = visit(t, l, w, &e[i]);
+            if (isdir && fits && d + 1 < FIND_DEPTH) {
+                w->depth = d + 1;
+                next[d + 1] = 0;
+                len[d + 1] = n;
                 down = 1;
-            } else deep |= isdir;
+            } else w->deep |= isdir;
         }
-        if (!down && (got <= 0 || next[depth] >= total)) depth--;
+        if (!down && (got <= 0 || next[d] >= total)) w->depth--;
     }
-    int cut = depth >= 0;
-    if (!found) note(t, "nothing found");
+    return w->depth >= 0;
+}
+
+/* find: a name that holds NAME (or any, with no NAME), as FOLDER/PATH; FIND_SHOWN at most. */
+COLD static int found_one(struct term *t, struct line *l, struct walk *w, const struct fs_entry *e) {
+    if (w->name[0] && !contains(e->name, (long)slen(e->name), w->name, 0)) return 0;
+    int dn = (int)slen(w->dir);
+    put_s(l, w->dir);
+    if (dn && w->dir[dn - 1] != '/') put_s(l, "/");
+    put_s(l, w->path + w->base + (w->base > 0));
+    if (e->kind == FS_DIR) put_s(l, "/");
+    out(t, l);
+    return ++w->found >= FIND_SHOWN;
+}
+
+/* find [FOLDER] [NAME]: every file and folder under FOLDER (this one if not said), or those
+   whose names hold NAME, a folder with a '/'; one word that is not a folder is a NAME. It
+   goes FIND_DEPTH folders down and stops after FIND_SHOWN names (walk). */
+COLD static void cmd_find(struct term *t, struct line *l, const char *args) {
+    char dir[FS_PATH_MAX + 1];
+    struct walk w;
+    word_of(word_of(args, dir, FS_PATH_MAX), w.name, FS_NAME_MAX);
+    int dn = (int)slen(dir);
+    while (dn > 1 && dir[dn - 1] == '/') dir[--dn] = 0;
+    resolve(t, dir, w.path);
+    int slash = 0;
+    for (int i = 0; dir[i]; i++) slash |= dir[i] == '/';
+    if (dir[0] && !w.name[0] && !slash && fs_stat(&t->fs, w.path, 0) != FS_DIR) {   /* one word: a name, here */
+        for (int i = 0; i <= FS_NAME_MAX; i++) w.name[i] = i < FS_NAME_MAX ? dir[i] : 0;
+        dir[0] = 0;
+        resolve(t, dir, w.path);
+    }
+    if (fs_stat(&t->fs, w.path, 0) != FS_DIR) { fail(t, "no such folder"); fs_log(l, "find", dir, "no such folder"); return; }
+    w.dir = dir;
+    w.found = 0;
+    int cut = walk(t, l, &w, found_one);
+    if (!w.found) note(t, "nothing found");
     if (cut) note(t, "(stopped: find shows 100 names at most)");
-    if (deep) note(t, "(folders more than 16 down were not searched)");
+    if (w.deep) note(t, "(folders more than 16 down were not searched)");
     put_s(l, "terminal: find");
     if (dir[0]) { put_s(l, " "); put_s(l, dir); }
-    if (name[0]) { put_s(l, " "); put_s(l, name); }
+    if (w.name[0]) { put_s(l, " "); put_s(l, w.name); }
     put_s(l, " -> ");
-    put_dec(l, found);
+    put_dec(l, w.found);
     put_s(l, " found");
     if (cut) put_s(l, ", stopped");
-    if (deep) put_s(l, ", not below 16 folders");
+    if (w.deep) put_s(l, ", not below 16 folders");
     put_s(l, "\n");
     flush(l);
 }
@@ -1067,6 +1125,482 @@ static void cmd_get(struct term *t, struct line *l, const char *args) {
     flush(l);
 }
 
+/* ---- text: sort, uniq, rev, tr, cut, nl, tee, seq; files: touch, stat, du, tree; cal,
+   sleep, time, calc ---- */
+
+#define TEXT_MAX (16 * 4096)   /* what a filter takes: the line buffer's 64 KiB */
+#define SORT_OFFSET 187        /* sort's index of lines: pages 187-191 of the spare run */
+#define SORT_LINES (5 * 4096 / 2)
+_Static_assert(APP_WIN_OFFSET + (TW * TH * 4 + 4095) / 4096 <= SORT_OFFSET, "sort's index is under the window's pixels");
+_Static_assert(SORT_OFFSET + 5 <= IMAGE_OFFSET, "sort's index is over the pipe buffer");
+
+/* "terminal: CMD -> N THING(s)", the log line most of these end with. */
+COLD static void log_count(struct line *l, const char *cmd, u64 n, const char *thing) {
+    put_s(l, "terminal: ");
+    put_s(l, cmd);
+    put_s(l, " -> ");
+    put_dec(l, n);
+    put_s(l, " ");
+    put_s(l, thing);
+    put_s(l, n == 1 ? "\n" : "s\n");
+    flush(l);
+}
+
+/* v, right-aligned in `width` columns. */
+COLD static void put_num(struct line *l, u64 v, int width) {
+    int d = 1;
+    for (u64 x = v; x >= 10; x /= 10) d++;
+    while (width-- > d) put_s(l, " ");
+    put_dec(l, v);
+}
+
+COLD static void usage(struct term *t, struct line *l, const char *cmd, const char *how) {
+    fail(t, how);
+    fs_log(l, cmd, 0, "not understood");
+}
+
+/* Leading options, such as -r -n or -rn, each a letter of `letters`: their bits (1 << where
+   in `letters`) into *set. The first word that is not one is left in `w`; returns the rest. */
+COLD static const char *options(const char *args, const char *letters, int *set, char *w) {
+    for (;;) {
+        const char *rest = word_of(args, w, FS_PATH_MAX);
+        int bits = 0;
+        for (int i = 1; w[0] == '-' && w[i]; i++) {
+            const char *p = letters;
+            while (*p && *p != w[i]) p++;
+            bits = *p ? bits | 1 << (p - letters) : -1;
+        }
+        if (w[0] != '-' || bits <= 0) return rest;
+        *set |= bits;
+        args = rest;
+    }
+}
+
+/* The text a filter works on: the file `name`, or with no name after a |, what it was
+   handed; all of it (TEXT_MAX at most) in the line buffer, each line ending in a 0 in place
+   of its '\n' (so a 0 byte in it ends a line early). Its length, 0s and all; -1 if there is
+   none (said, and logged). The output goes to the pipe buffer, never over it. */
+COLD static long text_in(struct term *t, struct line *l, const char *cmd, const char *name, const char *how) {
+    char path[FS_PATH_MAX + 1], *d = line_buf();
+    u64 n = 0, size = 0;
+    const char *why = 0;
+    if (!name[0]) {
+        if (!t->piped) { usage(t, l, cmd, how); return -1; }
+        for (const char *p = pipe_buf(); n < t->inn; n++) d[n] = p[n];
+    } else {
+        resolve(t, name, path);
+        for (;;) {
+            long k = fs_read_at(&t->fs, path, n, &size);
+            if (k < 0) { why = unreadable(t, path); break; }
+            if (n + (u64)k > TEXT_MAX) { why = "more than 64 KiB"; break; }
+            for (long i = 0; i < k; i++) d[n++] = fs_data(&t->fs)[i];
+            if (k == 0 || n >= size) break;
+        }
+    }
+    if (!why && n && d[n - 1] != '\n') {
+        if (n == TEXT_MAX) why = "more than 64 KiB";
+        else d[n++] = '\n';
+    }
+    if (why) { fail(t, why); fs_log(l, cmd, name, why); return -1; }
+    for (u64 i = 0; i < n; i++) if (d[i] == '\n') d[i] = 0;
+    return (long)n;
+}
+
+/* A number at the start of `s` (after spaces, a '-' first if negative), as sort -n reads it. */
+COLD static long leading(const char *s) {
+    while (*s == ' ') s++;
+    int neg = *s == '-';
+    long v = 0;
+    for (s += neg; *s >= '0' && *s <= '9' && v < 100000000000000L; s++) v = v * 10 + (*s - '0');
+    return neg ? -v : v;
+}
+
+/* sort's order: by the number each line starts with (-n) and then byte by byte. */
+COLD static int order(const char *a, const char *b, int opts) {
+    int c = 0;
+    if (opts & 2) {
+        long x = leading(a), y = leading(b);
+        if (x != y) c = x < y ? -1 : 1;
+    }
+    while (!c && *a && *a == *b) a++, b++;
+    if (!c) c = (unsigned char)*a - (unsigned char)*b;
+    return opts & 1 ? -c : c;
+}
+
+/* sort [-r] [-n] [FILE]: the lines in order (-r: backward; -n: by the number they start
+   with), sorted by a Shell sort of an index of where each begins (SORT_LINES at most). */
+COLD static void cmd_sort(struct term *t, struct line *l, const char *args) {
+    char w[FS_PATH_MAX + 1];
+    int opts = 0;
+    options(args, "rn", &opts, w);
+    long n = text_in(t, l, "sort", w, "sort [-r] [-n] FILE"), k = 0;
+    if (n < 0) return;
+    char *d = line_buf();
+    unsigned short *at = (unsigned short *)PAGE(SPARE_PAGE + SORT_OFFSET);
+    for (long i = 0; i < n; i += (long)slen(d + i) + 1) {
+        if (k == SORT_LINES) { fail(t, "more than 10240 lines"); fs_log(l, "sort", w, "more than 10240 lines"); return; }
+        at[k++] = (unsigned short)i;
+    }
+    for (long gap = k / 2; gap > 0; gap /= 2)
+        for (long i = gap; i < k; i++)
+            for (long j = i; j >= gap && order(d + at[j - gap], d + at[j], opts) > 0; j -= gap) {
+                unsigned short s = at[j];
+                at[j] = at[j - gap];
+                at[j - gap] = s;
+            }
+    for (long i = 0; i < k; i++) put_line(t, l, d + at[i], (long)slen(d + at[i]));
+    log_count(l, "sort", (u64)k, "line");
+}
+
+/* uniq [-c] [FILE]: each run of the same line once (-c: after how many times it came). */
+COLD static void cmd_uniq(struct term *t, struct line *l, const char *args) {
+    char w[FS_PATH_MAX + 1];
+    int count = 0;
+    options(args, "c", &count, w);
+    long n = text_in(t, l, "uniq", w, "uniq [-c] FILE");
+    if (n < 0) return;
+    const char *d = line_buf(), *prev = 0;
+    u64 times = 0, shown = 0;
+    for (long i = 0;; ) {
+        const char *s = i < n ? d + i : 0;
+        if (prev && (!s || !same(prev, s))) {
+            if (count) { put_num(l, times, 4); put_s(l, " "); }
+            put_line(t, l, prev, (long)slen(prev));
+            shown++;
+            times = 0;
+        }
+        if (!s) break;
+        prev = s;
+        times++;
+        i += (long)slen(s) + 1;
+    }
+    log_count(l, "uniq", shown, "line");
+}
+
+/* rev, tr, cut and nl: each line of the text changed where it is, or numbered, one at a time. */
+enum { REV, TR, CUT, NL };
+
+/* A set as tr takes it: letters, and ranges such as a-z; its length. */
+COLD static int set_of(const char *s, unsigned char *set) {
+    int n = 0;
+    for (; *s && n < 256; s++) {
+        unsigned char c = (unsigned char)*s, to = c;
+        if (s[1] == '-' && s[2] && (unsigned char)s[2] >= c) to = (unsigned char)s[2], s += 2;
+        for (unsigned v = c; v <= to && n < 256; v++) set[n++] = (unsigned char)v;
+    }
+    return n;
+}
+
+/* rev [FILE]: each line backward. tr A B [FILE]: each letter of set A as the one at its place
+   in B (B's last if B is shorter). cut [-d C] -f N [FILE]: the Nth field of each line, split
+   at C (a space if not said; no quotes, so -d cannot be a space), a line with no C whole.
+   nl [FILE]: each line after its number. */
+COLD static void cmd_lines(struct term *t, struct line *l, const char *args, int what) {
+    static const char *const names[] = {"rev", "tr", "cut", "nl"};
+    static const char *const hows[] = {"rev FILE", "tr SET1 SET2 FILE (sets such as a-z)", "cut [-d C] -f N FILE", "nl FILE"};
+    char w[FS_PATH_MAX + 1], a[64];
+    unsigned char map[256], from[256], to[256];
+    const char *cmd = names[what], *how = hows[what];
+    int bad = 0;
+    long field = 1;
+    char delim = ' ';
+    for (int i = 0; i < 256; i++) map[i] = (unsigned char)i;
+    if (what == TR) {
+        args = word_of(word_of(args, a, 63), w, 63);
+        int m = set_of(a, from), k = set_of(w, to);
+        bad = !m || !k;
+        for (int i = 0; i < m && !bad; i++) map[from[i]] = to[i < k ? i : k - 1];
+        map[0] = 0;
+    }
+    if (what == CUT) {
+        field = -1;
+        for (;;) {
+            const char *rest = word_of(args, w, FS_PATH_MAX);
+            int d = same(w, "-d") || (w[0] == '-' && w[1] == 'd' && w[2] && !w[3]);
+            if (!d && !(w[0] == '-' && w[1] == 'f')) break;
+            if (!w[2]) rest = word_of(rest, w + 2, 12);
+            if (d) delim = w[2];
+            else field = number(w + 2);
+            args = rest;
+        }
+        bad = field < 1 || !delim;
+    }
+    word_of(args, w, FS_PATH_MAX);
+    if (bad) { usage(t, l, cmd, how); return; }
+    long n = text_in(t, l, cmd, w, how);
+    if (n < 0) return;
+    char *d = line_buf();
+    u64 lines = 0;
+    for (long i = 0; i < n; lines++) {
+        char *s = d + i;
+        long k = (long)slen(s);
+        i += k + 1;
+        if (what == REV)
+            for (long j = 0; j < k / 2; j++) { char c = s[j]; s[j] = s[k - 1 - j]; s[k - 1 - j] = c; }
+        if (what == TR)
+            for (long j = 0; j < k; j++) s[j] = (char)map[(unsigned char)s[j]];
+        if (what == CUT) {
+            char *f = s, *e;
+            int any = 0;
+            for (char *p = s; *p; p++) any |= *p == delim;
+            for (long left = field; --left > 0 && *f; f += *f == delim)
+                while (*f && *f != delim) f++;
+            if (any) {                         /* a line with no C at all stays whole */
+                for (e = f; *e && *e != delim; e++) {}
+                *e = 0;
+                s = f;
+                k = (long)slen(s);
+            }
+        }
+        if (what == NL) { put_num(l, lines + 1, 4); put_s(l, "  "); }
+        put_line(t, l, s, k);
+    }
+    log_count(l, cmd, lines, "line");
+}
+
+/* CMD | tee FILE: what it is handed, into FILE (as > writes one) and on to the screen or the
+   next command. */
+COLD static void cmd_tee(struct term *t, struct line *l, const char *args) {
+    char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1], tmp[FS_PATH_MAX + 7];
+    word_of(args, name, FS_PATH_MAX);
+    if (!name[0] || !t->piped) { usage(t, l, "tee", "CMD | tee FILE"); return; }
+    resolve(t, name, path);
+    const char *why = fs_stat(&t->fs, path, 0) == FS_DIR ? "a folder, not a file" : tmp_of(t, path, tmp);
+    if (!why) {
+        u64 st = save(t, path, tmp, pipe_buf(), t->inn, 0);
+        why = st == FS_OK ? 0 : fs_error(st);
+    }
+    if (why) { fail(t, why); fs_log(l, "tee", name, why); return; }
+    put_lines(t, pipe_buf(), (long)t->inn);
+    put_s(l, "terminal: tee ");
+    put_s(l, name);
+    put_s(l, " -> ");
+    put_dec(l, t->inn);
+    put_s(l, t->inn == 1 ? " byte\n" : " bytes\n");
+    flush(l);
+}
+
+/* seq [FIRST] LAST: the numbers FIRST (1 if not said) to LAST, 100000 at most. */
+COLD static void cmd_seq(struct term *t, struct line *l, const char *args) {
+    char a[12], b[12];
+    word_of(word_of(args, a, 11), b, 11);
+    long from = 1, to = number(a);
+    if (b[0]) from = to, to = number(b);
+    if (from < 0 || to < 0 || to - from >= 100000) { usage(t, l, "seq", "seq [FIRST] LAST, 100000 numbers at most"); return; }
+    for (long i = from; i <= to && !t->over; i++) {
+        put_dec(l, (u64)i);
+        out(t, l);
+    }
+    log_count(l, "seq", (u64)(to >= from ? to - from + 1 : 0), "number");
+}
+
+/* touch FILE: an empty file, if there is none of that name. */
+COLD static void cmd_touch(struct term *t, struct line *l, const char *args) {
+    char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    word_of(args, name, FS_PATH_MAX);
+    resolve(t, name, path);
+    u64 st = !name[0] ? FS_BAD : fs_stat(&t->fs, path, 0) ? FS_EXISTS : fs_write(&t->fs, path, "", 0);
+    const char *what = st == FS_OK ? "made" : st == FS_EXISTS ? "already there" : fs_error(st);
+    if (st == FS_OK || st == FS_EXISTS) say(t, what);
+    else fail(t, what);
+    fs_log(l, "touch", name, st == FS_OK ? "ok" : what);
+}
+
+/* stat FILE: a file and its size, or a folder and how many names it holds. */
+COLD static void cmd_stat(struct term *t, struct line *l, const char *args) {
+    char name[FS_PATH_MAX + 1], path[FS_PATH_MAX + 1];
+    word_of(args, name, FS_PATH_MAX);
+    resolve(t, name, path);
+    u64 size = 0, kind = name[0] ? fs_stat(&t->fs, path, &size) : 0;
+    if (!kind) { fail(t, "no such file"); fs_log(l, "stat", name, "no such file"); return; }
+    if (kind == FS_DIR) fs_list_dir(&t->fs, path, 0, &size);
+    struct line m = {.n = 0};
+    put_s(&m, kind == FS_DIR ? "folder, " : "file, ");
+    put_dec(&m, size);
+    put_s(&m, kind == FS_DIR ? (size == 1 ? " name" : " names") : (size == 1 ? " byte" : " bytes"));
+    m.b[m.n] = 0;
+    put_s(l, name);
+    put_s(l, ": ");
+    put_s(l, m.b);
+    out(t, l);
+    fs_log(l, "stat", name, m.b);
+}
+
+COLD static int du_one(struct term *t, struct line *l, struct walk *w, const struct fs_entry *e) {
+    if (e->kind == FS_DIR) w->found++;
+    else w->files++, w->bytes += e->size;
+    return 0;
+}
+
+COLD static int tree_one(struct term *t, struct line *l, struct walk *w, const struct fs_entry *e) {
+    for (int i = 0; i <= w->depth; i++) put_s(l, "  ");
+    put_s(l, e->name);
+    if (e->kind == FS_DIR) put_s(l, "/");
+    out(t, l);
+    return du_one(t, l, w, e);
+}
+
+/* du [FOLDER]: the bytes in the files under FOLDER (this one if not said), and how many
+   files and folders. tree [FOLDER]: FOLDER, then what is under it, each folder's names two
+   spaces further in. Both walk the tree as find does, FIND_DEPTH folders down. */
+COLD static void cmd_du(struct term *t, struct line *l, const char *args, int tree) {
+    char dir[FS_PATH_MAX + 1];
+    const char *cmd = tree ? "tree" : "du";
+    struct walk w = {.found = 0};
+    word_of(args, dir, FS_PATH_MAX);
+    resolve(t, dir, w.path);
+    if (fs_stat(&t->fs, w.path, 0) != FS_DIR) { fail(t, "no such folder"); fs_log(l, cmd, dir, "no such folder"); return; }
+    if (tree) { put_s(l, dir[0] ? dir : "."); out(t, l); }
+    walk(t, l, &w, tree ? tree_one : du_one);
+    struct line m = {.n = 0};
+    if (!tree) { put_dec(&m, w.bytes); put_s(&m, w.bytes == 1 ? " byte in " : " bytes in "); }
+    put_dec(&m, w.files);
+    put_s(&m, w.files == 1 ? " file, " : " files, ");
+    put_dec(&m, w.found);
+    put_s(&m, w.found == 1 ? " folder" : " folders");
+    m.b[m.n] = 0;
+    if (!tree) out(t, &m);
+    if (w.deep) note(t, "(folders more than 16 down were not counted)");
+    fs_log(l, cmd, dir[0] ? dir : 0, m.b);
+}
+
+/* cal [MONTH YEAR]: a month, Monday first, today in [ ] when the date is known (this month
+   if not said: it must be known). */
+COLD static void cmd_cal(struct term *t, struct line *l, const char *args) {
+    char a[12], b[12], r[24];
+    word_of(word_of(args, a, 11), b, 11);
+    u64 secs = sys0(SYS_TIME).x[6];
+    struct date now = date_of(local_of(secs, secs ? app_zone() : 0));
+    long m = a[0] ? number(a) : now.month, y = a[0] ? number(b) : now.year;
+    if ((!a[0] && !secs) || m < 1 || m > 12 || y < 1 || y > 9999) {
+        usage(t, l, "cal", secs ? "cal [MONTH YEAR]" : "cal MONTH YEAR (the date is not known: try ntp)");
+        return;
+    }
+    struct line title = {.n = 0};
+    put_s(&title, month_names[m - 1]);
+    put_s(&title, " ");
+    put_dec(&title, (u64)y);
+    title.b[title.n] = 0;
+    pad_to(l, (21 - title.n) / 2);
+    put_s(l, title.b);
+    out(t, l);
+    say(t, " Mo Tu We Th Fr Sa Su");
+    int first = (weekday_of(days_of(y, (int)m, 1)) + 6) % 7, days = month_days(y, (int)m);
+    int today = secs && now.year == y && now.month == m ? now.day : 0;
+    for (int week = 1 - first; week <= days; week += 7) {
+        int end = 0;
+        for (int i = 0; i < 23; i++) r[i] = ' ';
+        for (int i = 0; i < 7; i++) {
+            int day = week + i;
+            if (day < 1 || day > days) continue;
+            r[3 * i + 1] = day < 10 ? ' ' : (char)('0' + day / 10);
+            r[3 * i + 2] = (char)('0' + day % 10);
+            end = 3 * i + 3;
+            if (day == today) r[3 * i] = '[', r[end++] = ']';
+        }
+        r[end] = 0;
+        say(t, r);
+    }
+    fs_log(l, "cal", 0, title.b);
+}
+
+/* sleep N: wait N seconds (60 at most); Terminal answers nothing meanwhile. */
+COLD static void cmd_sleep(struct term *t, struct line *l, const char *args) {
+    char a[12];
+    word_of(args, a, 11);
+    long s = number(a);
+    if (s < 0 || s > 60) { usage(t, l, "sleep", "sleep N, 0 to 60 seconds"); return; }
+    sleep_ms((u64)s * 1000);
+    log_count(l, "sleep", (u64)s, "second");
+}
+
+/* calc EXPR: whole numbers with + - * / % and ( ), as C has them (64 bits, wrapping). */
+struct expr { const char *p; const char *why; };
+
+COLD static long ex_sum(struct expr *e);
+
+COLD static char ex_peek(struct expr *e) {
+    while (*e->p == ' ') e->p++;
+    return *e->p;
+}
+
+COLD static long ex_atom(struct expr *e) {
+    char c = ex_peek(e);
+    u64 v = 0;
+    e->p++;
+    if (c == '-') return (long)(0 - (u64)ex_atom(e));
+    if (c == '+') return ex_atom(e);
+    if (c == '(') {
+        long r = ex_sum(e);
+        if (ex_peek(e) != ')') e->why = "a ( without its )";
+        else e->p++;
+        return r;
+    }
+    if (c < '0' || c > '9') { e->why = "not understood"; e->p--; return 0; }
+    for (e->p--; *e->p >= '0' && *e->p <= '9'; e->p++) v = v * 10 + (u64)(*e->p - '0');
+    return (long)v;
+}
+
+COLD static long ex_product(struct expr *e) {
+    long v = ex_atom(e);
+    for (char c; !e->why && ((c = ex_peek(e)) == '*' || c == '/' || c == '%');) {
+        e->p++;
+        long r = ex_atom(e);
+        if (c == '*') v = (long)((u64)v * (u64)r);
+        else if (!r) e->why = "division by zero";
+        else if (r == -1) v = c == '/' ? (long)(0 - (u64)v) : 0;
+        else v = c == '/' ? v / r : v % r;
+    }
+    return v;
+}
+
+COLD static long ex_sum(struct expr *e) {
+    long v = ex_product(e);
+    for (char c; !e->why && ((c = ex_peek(e)) == '+' || c == '-');) {
+        e->p++;
+        long r = ex_product(e);
+        v = (long)(c == '+' ? (u64)v + (u64)r : (u64)v - (u64)r);
+    }
+    return v;
+}
+
+COLD static void cmd_calc(struct term *t, struct line *l, const char *args) {
+    while (*args == ' ') args++;
+    struct expr e = {args, 0};
+    long v = ex_sum(&e);
+    if (!e.why && ex_peek(&e)) e.why = ex_peek(&e) == ')' ? "a ) without its (" : "not understood";
+    if (!*args) e.why = "calc EXPR, such as (2+3)*4";
+    if (e.why) { fail(t, e.why); fs_log(l, "calc", *args ? args : 0, e.why); return; }
+    if (v < 0) put_s(l, "-");
+    put_dec(l, v < 0 ? 0 - (u64)v : (u64)v);
+    struct line m = *l;
+    m.b[m.n] = 0;
+    out(t, l);
+    fs_log(l, "calc", args, m.b);
+}
+
+COLD static void exec(struct term *t, struct line *l, const char *c);
+
+/* time CMD: CMD, and how long it took, on the screen (not into a file or a pipe). */
+COLD static void cmd_time(struct term *t, struct line *l, const char *c) {
+    while (*c == ' ') c++;
+    if (!*c) { usage(t, l, "time", "time CMD"); return; }
+    u64 t0 = millis();
+    exec(t, l, c);
+    u64 ms = millis() - t0;
+    put_s(l, "took ");
+    put_dec(l, ms);
+    put_s(l, " ms");
+    to_screen(t, l->b, l->n, 0);
+    l->n = 0;
+    put_s(l, "terminal: time ");
+    put_s(l, c);
+    put_s(l, " -> ");
+    put_dec(l, ms);
+    put_s(l, " ms\n");
+    flush(l);
+}
+
 /* kill SLOT: stop the program from the card in open slot SLOT (10 to 15), answering or not.
    Terminal holds those slots' launch capabilities; the kernel lets nothing else stop them
    (`only_launchers_stop`). What the file server gave the slot is taken back too, whether a
@@ -1221,14 +1755,15 @@ COLD static void exec(struct term *t, struct line *l, const char *c) {
     if (!*c) return;
     if (starts(c, "help")) {
         say(t, "whoami caps boot ps uptime echo clear exit history");
-        say(t, "ls [-a] [FOLDER], cat FILE, write FILE TEXT, rm FILE");
-        say(t, "mkdir FOLDER, cd FOLDER, pwd, mv FROM TO, cp FROM TO");
-        say(t, "head [-n N] FILE, tail [-n N] FILE, wc FILE, df");
-        say(t, "grep [-i] TEXT FILE..., find [FOLDER] [NAME]");
-        say(t, "CMD > FILE (>> adds), CMD | grep, head, tail, wc");
-        say(t, "run [-net] PROGRAM [FILE...], kill SLOT");
-        say(t, "fill FILE KB CHAR, verify FILE, date, ntp [HOST]");
-        say(t, "ip, ping HOST, get http://URL [FILE]");
+        say(t, "ls [-a] [DIR], cat, write FILE TEXT, rm, touch, stat");
+        say(t, "mkdir, cd, pwd, mv FROM TO, cp FROM TO, du, tree, df");
+        say(t, "head, tail [-n N], wc, grep [-i] TEXT, calc EXPR");
+        say(t, "sort [-r] [-n], uniq [-c], rev, nl, tr A B, tee FILE");
+        say(t, "cut [-d C] -f N, seq [A] B, cal [M Y], sleep N");
+        say(t, "CMD > FILE (>> adds), CMD | CMD2: filters read a |");
+        say(t, "find [DIR] [NAME], time CMD, !! and !N: history");
+        say(t, "run [-net] PROGRAM [FILE...], kill SLOT, date, ntp");
+        say(t, "fill FILE KB CHAR, verify FILE, ip, ping, get URL");
         say(t, "tour: why leanos is harder to attack than Linux");
         say(t, "Up, Down: earlier commands; Tab completes names");
     } else if (starts(c, "whoami")) {
@@ -1295,6 +1830,38 @@ COLD static void exec(struct term *t, struct line *l, const char *c) {
         cmd_df(t, l);
     } else if (starts(c, "history")) {
         cmd_history(t, l);
+    } else if (starts(c, "sort")) {
+        cmd_sort(t, l, c + 4);
+    } else if (starts(c, "uniq")) {
+        cmd_uniq(t, l, c + 4);
+    } else if (starts(c, "rev")) {
+        cmd_lines(t, l, c + 3, REV);
+    } else if (starts(c, "tr")) {
+        cmd_lines(t, l, c + 2, TR);
+    } else if (starts(c, "cut")) {
+        cmd_lines(t, l, c + 3, CUT);
+    } else if (starts(c, "nl")) {
+        cmd_lines(t, l, c + 2, NL);
+    } else if (starts(c, "tee")) {
+        cmd_tee(t, l, c + 3);
+    } else if (starts(c, "seq")) {
+        cmd_seq(t, l, c + 3);
+    } else if (starts(c, "touch")) {
+        cmd_touch(t, l, c + 5);
+    } else if (starts(c, "stat")) {
+        cmd_stat(t, l, c + 4);
+    } else if (starts(c, "du")) {
+        cmd_du(t, l, c + 2, 0);
+    } else if (starts(c, "tree")) {
+        cmd_du(t, l, c + 4, 1);
+    } else if (starts(c, "cal")) {
+        cmd_cal(t, l, c + 3);
+    } else if (starts(c, "calc")) {
+        cmd_calc(t, l, c + 4);
+    } else if (starts(c, "sleep")) {
+        cmd_sleep(t, l, c + 5);
+    } else if (starts(c, "time")) {
+        cmd_time(t, l, c + 4);
     } else if (starts(c, "write")) {
         cmd_write(t, l, c + 5);
     } else if (starts(c, "rm")) {
@@ -1325,8 +1892,9 @@ COLD static void exec(struct term *t, struct line *l, const char *c) {
 }
 
 /* The commands Tab completes: every one help lists. */
-static const char COMMANDS[] = "boot caps cat cd clear cp date df echo exit fill find get grep head help "
-                               "history ip kill ls mkdir mv ntp ping ps pwd rm run tail tour uptime verify "
+static const char COMMANDS[] = "boot cal calc caps cat cd clear cp cut date df du echo exit fill find get "
+                               "grep head help history ip kill ls mkdir mv nl ntp ping ps pwd rev rm run "
+                               "seq sleep sort stat tail tee time touch tour tr tree uniq uptime verify "
                                "wc whoami write";
 /* What > and | refuse: commands that start or stop programs, or change Terminal itself. */
 static const char UNPIPED[] = "cd clear exit kill run tour";
@@ -1362,7 +1930,8 @@ COLD static void run(struct term *t, struct line *l) {
     if (to && (*word_of(target, file, FS_PATH_MAX) || !file[0]) && !why) why = "> needs one file name";
     for (int i = 0; i < ns && !why; i++) {
         for (int n = (int)slen(stage[i]); n > 0 && stage[i][n - 1] == ' ';) stage[i][--n] = 0;
-        word_of(stage[i], w, 15);
+        const char *rest = word_of(stage[i], w, 15);
+        while (same(w, "time")) rest = word_of(rest, w, 15);   /* time CMD: CMD is what is checked */
         if (!w[0]) why = ns > 1 ? "| needs a command on both sides" : "> needs a command before it";
         else if (!listed(COMMANDS, w)) scopy(bad + scopy(bad, "not a command: "), w), why = bad;
         else if (listed(UNPIPED, w)) scopy(bad + scopy(bad, w), " cannot be piped or redirected"), why = bad;
@@ -1402,23 +1971,7 @@ COLD static void run(struct term *t, struct line *l) {
     }
     if (!to) return;
     /* into the file: > through FILE.part~ and one rename, >> at its end */
-    const char *b = pipe_buf();
-    u64 n = t->capn, at = 0, off = 0, st = FS_OK;
-    const char *dest = path;
-    if (to == 2) fs_stat(&t->fs, path, &at);
-    else {
-        dest = tmp;
-        st = fs_write(&t->fs, tmp, "", 0);
-    }
-    int made = st == FS_OK;
-    while (st == FS_OK) {
-        u64 take = n - off < FS_CHUNK ? n - off : FS_CHUNK;
-        st = fs_write_at(&t->fs, dest, at + off, b + off, take);
-        off += take;
-        if (off >= n) break;
-    }
-    if (to == 1 && st == FS_OK) st = fs_rename(&t->fs, tmp, path);
-    if (to == 1 && st != FS_OK && made) fs_delete(&t->fs, tmp);
+    u64 n = t->capn, st = save(t, path, tmp, pipe_buf(), n, to == 2);
     if (st != FS_OK) {
         put_s(l, "not written: ");
         put_s(l, fs_error(st));
@@ -1429,6 +1982,53 @@ COLD static void run(struct term *t, struct line *l) {
     else { put_s(&m, "not written: "); put_s(&m, fs_error(st)); }
     m.b[m.n] = 0;
     fs_log(l, op, file, m.b);
+}
+
+/* !! and !N on the command line, as a shell has them: the last command, and command N of
+   the list history shows. The line, with them in its place, is what shows, runs and is kept
+   for Up. 0, or why it cannot be. */
+COLD static const char *bang(struct term *t, struct line *l) {
+    char s[CMD_MAX + 1];
+    int n = 0, any = 0;
+    for (const char *c = t->cmd; *c; c++) {
+        const char *h = 0;
+        if (c[0] == '!' && c[1] == '!') {
+            if (!t->hn) return "!!: no command before";
+            h = t->hist[t->hn - 1];
+            c++;
+        } else if (c[0] == '!' && c[1] >= '0' && c[1] <= '9') {
+            int k = 0;
+            while (c[1] >= '0' && c[1] <= '9')
+                if (*++c && k <= HIST) k = k * 10 + (*c - '0');
+            if (k < 1 || k > t->hn) return "!N: no command N in history";
+            h = t->hist[k - 1];
+        }
+        if (!h) h = (char[2]){*c, 0};
+        else any = 1;
+        while (*h) {
+            if (n == CMD_MAX) return "too long with !! or !N in it";
+            s[n++] = *h++;
+        }
+    }
+    if (!any) return 0;
+    s[n] = 0;
+    fs_log(l, t->cmd, 0, s);
+    t->len = t->cur = scopy(t->cmd, s);
+    return 0;
+}
+
+/* Return: the line into the scrollback and history, and run. */
+COLD static void enter(struct term *t, struct line *l) {
+    t->cmd[t->len] = 0;
+    const char *why = bang(t, l);
+    push(t, t->cmd, (u64)t->len, 1);
+    if (why) {
+        say(t, why);
+        fs_log(l, t->cmd, 0, why);
+        return;
+    }
+    remember(t);
+    run(t, l);
 }
 
 /* ---- Tab completion ---- */
@@ -1650,10 +2250,7 @@ __attribute__((section(".text.start"))) void _start(void) {
                 t->len--;
             }
         } else if (k == '\r' || k == '\n') {
-            t->cmd[t->len] = 0;
-            push(t, t->cmd, (u64)t->len, 1);
-            remember(t);
-            run(t, &l);
+            enter(t, &l);
             t->len = t->cur = 0;
         } else if (k >= 32 && k < 127) insert(t, (char)k);
         else continue;
