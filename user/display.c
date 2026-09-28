@@ -3,7 +3,8 @@
    "the band").
 
    Clients call it. RAISE (7): w1 w2 = a card file's name, bring its windows forward.
-   PENDING (8): Apps asks which pinned program the dock wants started. OPEN: w0 = 1, w1 = width << 16 | height, w2 = up to 8 bytes of title,
+   PENDING (8): Apps asks which pinned program the dock wants started (or Files, with a file
+   to hand it: OPEN_WITH, below). OPEN: w0 = 1, w1 = width << 16 | height, w2 = up to 8 bytes of title,
    with a read-only capability to the window's pixels; the reply is 0 on success, and the
    window's number as its program knows it: 0 for its first, then the lowest it is not
    using. WAIT: w0 = 2, w1 = the windows the client redrew, a bit per number (1: its first);
@@ -71,6 +72,16 @@
    Edit, Paste, hands what was copied to the window in front, and only to it, as a run of
    EV_PASTE events in its queue. No request reads the clipboard. Neither key reaches an app.
 
+   Opening a file from Files is by the user's hand too (user/app.h). OPEN_WITH (13), with one
+   page lent read-only: a program's name and a file's path, to open the file in the program
+   (or the program alone). The display takes it only from Files' badge, only while Files'
+   window is in front, and only if the last key or press the display handled went to that
+   window within OPEN_WITH_MS; one key or press opens at most one thing. Anything else is
+   refused, and the log says why. It passes what to open to Apps (EV_LAUNCH "@open", then
+   PENDING, as for a pinned program), which starts the program in a free open slot and hands
+   it the file as Terminal's `run PROG FILE` would. So a program cannot make another start,
+   or be handed a file, behind the user's back: Files names only what the user chose in it.
+
    It keeps a copy of its own capability list's layout (which app granted each capability,
    and for which window), so it can drop a window's capability when the window goes, drop
    at once any grant it did not ask for, and know which capabilities the kernel takes back
@@ -128,7 +139,7 @@ __attribute__((noinline)) static void rounded(struct surface *s, int x, int y, i
 #define MENU_R 10       /* the menus' corners */
 
 enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START = 6, OP_RAISE = 7, OP_PENDING = 8,
-       OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12 };
+       OP_ZONE = 9, OP_COPY = 10, OP_CLOSE = 12, OP_OPEN_WITH = 13 };
 /* 11 is no request: programs ask it to show that no request reads the clipboard (mallory, tour) */
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7, EV_PASTE = 8,
        EV_RDOWN = 9, EV_RUP = 10 };
@@ -136,6 +147,15 @@ enum { KEY_COPY = 3, KEY_PASTE = 22, KEY_NEXT = 15 };   /* Ctrl+C, Ctrl+V, Ctrl+
 #define OPEN_DRAG (1UL << 32)  /* in OPEN's size word: the window hears drags (user/app.h) */
 #define CLIP_MAX 4096     /* as user/app.h */
 #define COPY_MS 2000
+/* OPEN_WITH, as user/app.h: the lent page's layout, and how soon Files must ask. The page is
+   mapped here for the call only, after the icons. */
+#define OPEN_WITH_PROG 0
+#define OPEN_WITH_PATH 16
+#define OPEN_WITH_PATH_MAX 200
+#define OPEN_WITH_MS 2000
+#define OPEN_WITH_WAIT_MS 10000   /* what Apps has not taken by then is forgotten */
+#define OPEN_PAGE 4400
+_Static_assert(OPEN_PAGE >= ICON_PAGE + 4 * MAX_WIN && OPEN_PAGE < ASSET_PAGE, "OPEN_WITH's page: after the icons, before the assets");
 enum { BADGE_USB = 17, BADGE_ALICE = 1, BADGE_MALLORY = 2, BADGE_INPUT = 3, BADGE_TERMINAL = 5, BADGE_SETTINGS = 6,
        BADGE_SECURITY = 7, BADGE_FILES = 9 };
 enum { SET_BACKGROUND = 1, SET_ZONE = 2 };
@@ -216,6 +236,13 @@ struct state {
     struct font ui, ui_bold, small, huge, medium;
     struct picture icons[DOCK_ALL];
     char pending[16];           /* a pinned program to start when Apps next asks */
+    /* OPEN_WITH: the window the last key or press went to (+ 1, or 0: none since, or it was
+       used), and when; and a file to hand the program in `pending`: 1 while Apps has not
+       taken the name, 2 after (its path is Apps' to read), 0 none */
+    int touched, open_file;
+    u64 touched_at, open_at;
+    char open_path[OPEN_WITH_PATH_MAX + 1];
+    unsigned char open_refused[32];   /* refused OPEN_WITHs logged, per badge: a few, not a flood */
     char bar_time[24];          /* the menu bar's clock ("Wed Sep 23  14:05"), empty until known */
     u64 bar_minute;             /* the minute it shows */
     long zone;                  /* the time zone, minutes east of UTC (user/zone.h) */
@@ -1401,20 +1428,41 @@ COLD static void open_pinned(struct state *st, struct line *l, int p) {
     int n = 0;
     for (; n < 15 && pin_files[p][n]; n++) st->pending[n] = pin_files[p][n];
     st->pending[n] = 0;
+    st->open_file = 0;          /* in place of a file Files asked to open, if Apps has not taken it */
     launch(st, l, APPS_DOCK);
 }
 
 /* PENDING: Apps asks, as it starts, whether the dock sent it a program to start. Only Apps
-   gets an answer; the name goes in two message words. */
-COLD static void on_pending(struct state *st, struct res *r) {
-    u64 w[2] = {0, 0};
-    if (r->x[1] == 16) {
+   gets an answer; the name goes in two message words, and x1 is 1 if a file comes with it
+   (OPEN_WITH). Then Apps asks for the file's path with w1 = 1, 2, ...: its 16 bytes from
+   16 (w1 - 1), and 0s after its end. A name Files asked for that Apps has not taken within
+   OPEN_WITH_WAIT_MS is forgotten, not handed to a later start. */
+COLD static void on_pending(struct state *st, struct line *l, struct res *r) {
+    u64 w[2] = {0, 0}, more = 0, part = r->x[3];
+    if (r->x[1] == 16 && part) {
+        int ended = st->open_file != 2 || part > (OPEN_WITH_PATH_MAX + 16) / 16;
+        for (u64 i = 0; i < (u64)(part - 1) * 16 && !ended; i++) ended = !st->open_path[i];   /* past its end */
+        for (u64 i = 0; i < 16 && !ended; i++) {
+            u64 at = (part - 1) * 16 + i;
+            ended = at > OPEN_WITH_PATH_MAX || !st->open_path[at];
+            if (!ended) w[i / 8] |= (u64)(unsigned char)st->open_path[at] << (8 * (i % 8));
+        }
+    } else if (r->x[1] == 16) {
+        if (st->open_file == 1 && millis() - st->open_at > OPEN_WITH_WAIT_MS) {
+            put_s(l, "display: open: Apps did not take ");
+            put_s(l, st->pending);
+            put_s(l, " in time; forgotten");
+            say(l);
+            st->pending[0] = 0;
+        }
+        more = st->open_file == 1 && st->pending[0];
+        st->open_file = more ? 2 : 0;
         st->restore = same_name(st->pending, "@startup") ? 3 : 0;
         if (same_name(st->pending, "@prefs")) st->unsaved = 0;
         for (int i = 0; i < 15 && st->pending[i]; i++) w[i / 8] |= (u64)(unsigned char)st->pending[i] << (8 * (i % 8));
         st->pending[0] = 0;
     }
-    sys(SYS_REPLY, r->x[6] - 1, 0, w[0], w[1], 0);
+    sys(SYS_REPLY, r->x[6] - 1, more, w[0], w[1], 0);
 }
 
 /* x.y ms, from microseconds */
@@ -1563,7 +1611,17 @@ COLD static void held_input(struct state *st, u64 kind) {
     if (kind != EV_MOVE) st->held = 0;
 }
 
+/* A key or a press went to window k: its program may ask to open a file (OPEN_WITH), for a
+   moment. */
+COLD static void touch(struct state *st, int k) {
+    st->touched = k + 1;
+    st->touched_at = millis();
+}
+
 COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64 b) {
+    /* Every key and press ends what the last one allowed (OPEN_WITH): it is touch()ed again
+       below only if it reaches a window's program. */
+    if (kind == EV_KEY || kind == EV_DOWN || kind == EV_RDOWN) st->touched = 0;
     if (kind == EV_KEY && (a == KEY_COPY || a == KEY_PASTE || a == KEY_NEXT)) {
         if (a == KEY_COPY) copy_ask(st, l);
         else if (a == KEY_PASTE) paste_to(st, l);
@@ -1574,6 +1632,7 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
         int k = focused(st);
         if (k < 0) return;
         deliver_event(st, k, EV_KEY, a, 0);
+        touch(st, k);
         if (a == '\r' || a == '\n') put_s(l, "display: key return to ");
         else {
             put_s(l, "display: key '");
@@ -1655,6 +1714,7 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
             }
             if (st->py >= w->y + TITLE_H) {
                 deliver_event(st, k, EV_DOWN, (u64)(st->px - w->x), (u64)(st->py - w->y - TITLE_H));
+                touch(st, k);
                 if (w->drags) {
                     st->held = k + 1;
                     st->held_up = EV_UP;
@@ -1676,6 +1736,7 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
         if (w && w->drags && st->py >= w->y + TITLE_H) {
             bring_to_front(st, k);
             deliver_event(st, k, EV_RDOWN, (u64)(st->px - w->x), (u64)(st->py - w->y - TITLE_H));
+            touch(st, k);
             st->held = k + 1;
             st->held_up = EV_RUP;
         }
@@ -2082,6 +2143,78 @@ COLD static void on_icon(struct state *st, struct line *l, struct res *r) {
     sys(SYS_REPLY, slot - 1, ok, 0, 0, 0);
 }
 
+/* OPEN_WITH: Files asks for a file to be opened in a program (or a program started), in the
+   page it lends (user/app.h), right after the user pressed Return or double-clicked in it.
+   Taken only from Files' badge, only while Files' window is in front, and only if the last
+   key or press went to that window within OPEN_WITH_MS (touch); that key or press is used
+   up, so it opens one thing. The page must be one page, read-only (no write, no execute),
+   and hold a name of 1 to 15 printable bytes and a path of printable bytes (messages drop a
+   word's top bit, and Apps gets the path in words), each ended by a 0. The page is mapped
+   for the call only; the grant is dropped with the others that are not windows. Then Apps
+   gets it: as an event if its window is open, else by starting it with the name pending.
+   The answer: 0 passed to Apps, 1 refused, 2 Apps is busy (starting, or with another
+   program to start). */
+COLD static void on_open_with(struct state *st, struct line *l, struct res *r) {
+    u64 badge = r->x[1], cap = r->x[5], slot = r->x[6];
+    int k = focused(st), t = st->touched - 1, apps = -1, busy = 0;
+    const char *why = "the page lent is not one read-only page";
+    char prog[16], path[OPEN_WITH_PATH_MAX + 1];
+    prog[0] = path[0] = 0;
+    if (badge == BADGE_FILES) st->touched = 0;          /* one key or press, one request */
+    if (badge != BADGE_FILES) why = "only Files may ask";
+    else if (k < 0 || st->win[k].badge != BADGE_FILES) why = "Files' window is not in front";
+    else if (t < 0 || !st->win[t].used || st->win[t].badge != BADGE_FILES || millis() - st->touched_at > OPEN_WITH_MS)
+        why = "no key or click went to Files just before";
+    else if (cap) {
+        struct res info = sys1(SYS_CAPINFO, cap - 1);
+        if (info.status == OK && info.x[1] == R && info.x[2] == 0 && info.x[3] == 1 &&
+            sys2(SYS_MAP, cap - 1, OPEN_PAGE).status == OK) {
+            const char *pg = (const char *)PAGE(OPEN_PAGE);
+            int n = 0, m = 0;
+            while (n < 16 && pg[OPEN_WITH_PROG + n] >= 32 && pg[OPEN_WITH_PROG + n] < 127) n++;
+            while (m <= OPEN_WITH_PATH_MAX && pg[OPEN_WITH_PATH + m] >= 32 && pg[OPEN_WITH_PATH + m] < 127) m++;
+            why = "what to open is not a name and a path";
+            if (n && n < 16 && !pg[OPEN_WITH_PROG + n] && m <= OPEN_WITH_PATH_MAX && !pg[OPEN_WITH_PATH + m]) {
+                why = 0;
+                copy_bytes(prog, pg + OPEN_WITH_PROG, n + 1);
+                copy_bytes(path, pg + OPEN_WITH_PATH, m + 1);
+            }
+            sys2(SYS_UNMAP, OPEN_PAGE, 1);
+        }
+    }
+    for (int j = 0; !why && j < MAX_WIN; j++)
+        if (st->win[j].used && !st->win[j].closing && slot_of(st->win[j].badge) == 16) apps = j;
+    /* Apps started but with no window yet, or a name it has not taken (unless forgotten) */
+    if (!why && ((apps < 0 && run_state(16) == 1) ||
+                 (st->pending[0] && !(st->open_file == 1 && millis() - st->open_at > OPEN_WITH_WAIT_MS))))
+        why = "Apps is busy", busy = 1;
+    if (!why || st->open_refused[badge & 31] < 3) {
+        if (why) st->open_refused[badge & 31]++;
+        put_s(l, "display: ");
+        put_s(l, name_of(badge));
+        put_s(l, " asked to open ");
+        put_s(l, path[0] ? path : prog[0] ? prog : "a file");
+        if (path[0]) {
+            put_s(l, " in ");
+            put_s(l, prog);
+        }
+        put_s(l, why ? "; refused: " : "; passed to Apps");
+        if (why) put_s(l, why);
+        say(l);
+    }
+    if (why) {
+        sys(SYS_REPLY, slot - 1, busy ? 2 : 1, 0, 0, 0);
+        return;
+    }
+    copy_bytes(st->pending, prog, 16);
+    copy_bytes(st->open_path, path, OPEN_WITH_PATH_MAX + 1);
+    st->open_file = 1;
+    st->open_at = millis();
+    sys(SYS_REPLY, slot - 1, 0, 0, 0, 0);
+    if (apps >= 0) deliver_event(st, apps, EV_LAUNCH, 0x65706f40 /* "@ope" */, 0x6e /* "n" */);
+    else launch(st, l, APPS_DOCK);   /* Apps takes it from pending (on_pending) */
+}
+
 /* START: Apps asks for one of the built-in apps (w1 = its place in the dock), as if its
    dock icon were clicked. Only Apps may ask. */
 /* RAISE: bring forward the windows of the program from card file w1 w2 (up to 15 bytes),
@@ -2221,6 +2354,8 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
     st->medium = font_of(assets, F_MEDIUM);
     for (int i = 0; i < DOCK_ALL; i++) st->icons[i] = picture_of(assets, ASSET_ICON, 10 + i);
     st->pending[0] = 0;
+    st->touched = st->open_file = 0;
+    for (int i = 0; i < 32; i++) st->open_refused[i] = 0;
 
     st->fb = (unsigned *)PAGE(FB_PAGE);
     st->screen = surface_of((unsigned *)PAGE(BAND_PAGE), W, H);   /* composite_from points it at the band */
@@ -2327,13 +2462,15 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
         } else if (slot && op == OP_RAISE) {
             on_raise(st, &l, &r);
         } else if (slot && op == OP_PENDING) {
-            on_pending(st, &r);
+            on_pending(st, &l, &r);
         } else if (slot && op == OP_ZONE) {
             on_zone(st, &r);
         } else if (slot && op == OP_CLOSE) {
             on_close(st, &l, &r);
         } else if (op == OP_COPY && !grant) {
             on_copy(st, &l, &r);
+        } else if (slot && op == OP_OPEN_WITH) {
+            on_open_with(st, &l, &r);
         } else {
             /* A request the display does not understand, from anyone: it answers no, and
                says so the first few times, so a program that floods it cannot flood the log. */

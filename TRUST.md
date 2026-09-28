@@ -358,6 +358,19 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
   QEMU the host's serial bridge is too). The display sees every copy and paste, as it
   already sees every key and every window's pixels. The clipboard lives only in its memory
   and is gone when leanos restarts.
+- Opening a file from Files (Return or a double-click), and its rule that a program is
+  started, or handed a file, only by the user's hand, is the display server's C (`touch`,
+  `on_open_with` and `on_pending` in `user/display.c`) and Apps' (`start` in
+  `user/launcher.c`), trusted, not proved. What it guarantees: the display takes the
+  request (OP_OPEN_WITH) only from Files' badge, only while Files' window is in front, and
+  only if the last key or press it handled went to that window within 2 seconds, once per
+  key or press; the page Files lends to say what to open must be one page, read-only, and is
+  let go before the display answers; only Apps gets the name and the path back (PENDING),
+  and it gives the program only its own folder and that one file, as `run PROG FILE` does.
+  No capability changes hands but the file server's grant Apps (which may share already)
+  makes. What it does not guarantee: that Files names what the user meant (Files is
+  trusted to open the file selected), or that the keys came from a person (as for the
+  clipboard).
 - The display server's reply slots. It holds a waiting program's call (OP_WAIT) until it has
   an event for any of its windows, one call per program however many windows it has, and
   the kernel gives it 8 reply slots (`task_bounded`) for up to 12 windows. It holds at most

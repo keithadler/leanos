@@ -54,6 +54,12 @@ This is the start. The next steps, in order:
   window in front for its text only when you press Ctrl+C, takes the answer only from that
   window, and hands the text only to the window in front when you press Ctrl+V. No program
   can read the clipboard, or put text on it, by asking.
+- **Opening files, by hand only**: Return or a double-click on a file in Files opens it in
+  its program (pictures in `view`, text in `edit`; a program's own file starts it). Files
+  cannot start programs: the display server takes its request only right after your key or
+  click in Files' window, with that window in front, and passes it to Apps, which starts the
+  program and hands it that file. No other program can have a program started, or a file
+  handed to one, by asking.
 - **Programs from the SD card**: `web` (a text web browser), `edit` (a text editor), `paint`
   (a paint program that saves standard BMP pictures), `view` (a picture viewer: BMP, PPM
   and PGM), `calendar` (a month at a time, with events kept on the card), `clock`, `calc`,
@@ -161,7 +167,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 44 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, the calendar and its events, Files as a file manager, the picture viewer, paint and the BMP files it saves, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 45 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, the calendar and its events, Files as a file manager, opening a file from Files in its program, the picture viewer, paint and the BMP files it saves, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -177,6 +183,7 @@ Things to try once it is up:
 - In **Files**, press N for a new folder (type its name, Return), select a file and press X,
   open the folder and press V: the file moves there. R renames in place, C marks a copy, and
   Delete on a folder with things in it asks first. The status line says which keys do what.
+  Double-click a `.txt` file (or press Return on it) to edit it, a `.bmp` to view it.
 - `echo hello > hi.txt`, `ls >> hi.txt`, `cat guide.txt | grep -i tab | wc` and
   `history | tail -n 3`: `>` puts a command's output in a file, `>>` adds it at the end, and
   `|` hands it to grep, head, tail, wc or cat.
