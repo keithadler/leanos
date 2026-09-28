@@ -34,9 +34,23 @@ enum { EV_NONE = 0, EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 
        EV_PASTE = 8, EV_RDOWN = 9, EV_RUP = 10 };
 /* The arrow keys and the keys above them, as EV_KEY codes: the input driver turns what a
    terminal sends (ESC [ A..D, ESC [ H, ESC [ 3 ~ and so on, user/input.c) into these, and
-   the USB driver a keyboard's keys. KEY_DELETE deletes forward; Backspace is 127. */
+   the USB driver a keyboard's keys. KEY_DELETE deletes forward; Backspace is 127.
+
+   Held with Shift, the arrows, Home, End, Page Up and Page Down are keys of their own,
+   KEY_SHIFT_UP to KEY_SHIFT_PGDN, in the same order (a terminal sends ESC [ 1 ; 2 A and the
+   like): KEY_UNSHIFTED(k) is the key without Shift, for a program that only wants to know
+   which way. Shift with any other of these keys (Delete, a function key) is that key alone.
+   The function keys are KEY_F(1) to KEY_F(12). The display keeps F11 (it zooms the window in
+   front, as its green button does) and hands the others to the window in front, as any key.
+   Every code is below 256, so none is a letter when a program takes it as a char. */
 enum { KEY_UP = 128, KEY_DOWN = 129, KEY_RIGHT = 130, KEY_LEFT = 131,
-       KEY_HOME = 132, KEY_END = 133, KEY_DELETE = 134, KEY_PGUP = 135, KEY_PGDN = 136 };
+       KEY_HOME = 132, KEY_END = 133, KEY_DELETE = 134, KEY_PGUP = 135, KEY_PGDN = 136,
+       KEY_SHIFT_UP = 137, KEY_SHIFT_DOWN = 138, KEY_SHIFT_RIGHT = 139, KEY_SHIFT_LEFT = 140,
+       KEY_SHIFT_HOME = 141, KEY_SHIFT_END = 142, KEY_SHIFT_PGUP = 143, KEY_SHIFT_PGDN = 144,
+       KEY_F1 = 145, KEY_F12 = 156 };
+#define KEY_F(n) (KEY_F1 - 1 + (n))
+#define KEY_IS_SHIFTED(k) ((k) >= KEY_SHIFT_UP && (k) <= KEY_SHIFT_PGDN)
+#define KEY_UNSHIFTED(k) ((k) < KEY_SHIFT_UP || (k) > KEY_SHIFT_PGDN ? (k) : (k) <= KEY_SHIFT_END ? (k) - 9 : (k) - 8)
 enum { SET_BACKGROUND = 1, SET_ZONE = 2 };
 
 #define SPARE 3
@@ -187,6 +201,10 @@ static inline u64 app_background(void) {
    - EV_COPY: the user pressed Ctrl+C (or chose Edit, Copy) with this window (event.win) in front. Answer
      with app_copy() at once. The display takes a copy only from the window it asked, once,
      within COPY_MS of asking; OP_COPY at any other time is refused.
+   - EV_COPY with a = COPY_CUT: the user pressed Ctrl+X (or Edit, Cut). Answer as for a copy,
+     and then, if app_copy() said OK, delete what was sent (the selection) yourself: the
+     display never deletes anything. A program that does not look at `a` copies and deletes
+     nothing, which is always safe.
    - EV_PASTE: the user pressed Ctrl+V (or Edit, Paste) with this window in front. The text
      comes as a run of EV_PASTE events, up to 16 bytes each in a and b (paste_text() takes
      them out); one with fewer than 16 bytes is the last.
@@ -195,6 +213,7 @@ static inline u64 app_background(void) {
    pastes into its window. */
 #define CLIP_MAX 4096
 #define COPY_MS 2000
+#define COPY_CUT 1          /* EV_COPY's a: the user cut */
 
 /* Answer EV_COPY: send the display `n` bytes of text, 16 to a call (bytes 1 to 127 only; the
    display keeps printable ASCII and line breaks). A call with fewer than 16 bytes, or the

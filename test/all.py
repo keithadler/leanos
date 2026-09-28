@@ -33,7 +33,7 @@ TESTS = {"boot": 4, "apps": 31, "programs": 25, "power": 8, "piimage": 3, "tampe
          "dfuzz": 38, "spoof": 16, "windows": 9, "serial": 10, "winmgmt": 27, "responsive": 12,
          "files": 18, "term-pipes": 12, "clock": 20, "notes": 20, "mines": 14, "xhci": 8, "selftest": 12,
          "apps-pages": 8, "calendar": 20, "view": 18, "paint": 32, "term-more": 25, "open-with": 15, "solitaire": 35,
-         "force-quit": 12}
+         "force-quit": 12, "keys": 8}
 # Tests that must not overlap: each group runs as one chain, in this order.
 CHAINS = [("net", "web", "timezone", "calendar", "term-more")]
 

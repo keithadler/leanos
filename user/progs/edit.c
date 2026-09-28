@@ -12,24 +12,27 @@
    The mouse: a click puts the cursor there, a drag selects, a double-click selects a word.
    The window hears the whole drag (app_open_drag); a drag past the top or bottom scrolls.
 
-   The keyboard: Ctrl+A selects all. No keyboard can say Shift with an arrow here (the
-   serial line's input driver drops ESC [ 1 ; 2 A and the like, and the USB driver sends an
-   arrow the same with or without Shift), and Ctrl+Space never arrives (the USB driver sends
-   Ctrl only with a letter), so a selection is made as Emacs makes one: Ctrl+B sets a mark
-   at the cursor, and the keys that move the cursor then select from the mark to it; Ctrl+B
-   again, or Escape, drops it. Any other move drops a selection. Typing, a paste, Backspace
-   or Delete replaces or deletes what is selected.
+   The keyboard: Ctrl+A selects all, and Shift with an arrow, Home, End, Page Up or Page
+   Down moves the cursor and selects from where it was (or grows the selection there is,
+   from its other end). A serial terminal sends these as ESC [ 1 ; 2 C and the like, which
+   the input driver turns into keys of their own (user/app.h), and so does the USB driver.
+   A selection can also be made as Emacs makes one, for a terminal that sends no Shift:
+   Ctrl+B sets a mark at the cursor, and the keys that move the cursor then select from the
+   mark to it; Ctrl+B again, or Escape, drops it. Any other move drops a selection. Typing,
+   a paste, Backspace or Delete replaces or deletes what is selected.
 
      Ctrl+A  select all          Ctrl+B  mark (select by moving)
      Ctrl+Z  undo                Ctrl+Y  redo
-     Ctrl+F  find                Ctrl+G  go to a line
-     Ctrl+S  save now
+     Ctrl+F  find                F3      find the next
+     Ctrl+G  go to a line        Ctrl+S  save now
 
    Copy (Ctrl+C) takes the selection, or, with nothing selected, the whole text; either way
    its first 4 KiB (what the clipboard holds), tabs as spaces (the clipboard keeps no tabs).
-   A paste (Ctrl+V) goes in at the cursor, in place of the selection. There is no cut: the
-   display takes a copy only when it asks for one, after the user's Ctrl+C (user/display.c),
-   and no program can ask it to, so Ctrl+X only says to copy and then press Backspace.
+   Cut (Ctrl+X) copies the same way and then deletes the selection (one step, for undo), but
+   only if the display took the copy; with nothing selected it copies as Ctrl+C does and
+   deletes nothing; a selection larger than the clipboard (4 KiB) is copied in part, and not
+   deleted. The display asks for either only after the user's key (user/display.c); edit
+   never asks. A paste (Ctrl+V) goes in at the cursor, in place of the selection.
 
    Undo takes back a step at a time, as many as its memory holds (below): a run of typing
    is one step, until the cursor moves or a line ends; so is a run of Backspace or of
@@ -40,7 +43,8 @@
    forward from where the search began, round past the end, letters in either case, and
    selected; Return finds the next; Escape (or Ctrl+F again, or any move) closes the field,
    leaving the match selected. A serial line cannot send Escape by itself: Ctrl+F closes it
-   there. Ctrl+G opens "Go to line" the same way: digits, then Return.
+   there. F3 finds the next, the field open or not (with nothing looked for yet, it opens
+   the field). Ctrl+G opens "Go to line" the same way: digits, then Return.
 
    It saves by itself a moment after you stop typing (Ctrl+S saves at once), and when its
    window closes. A file holds up to 64 KiB. One up to 16 KiB is written in one request,
@@ -118,6 +122,7 @@ struct edit {
     long pasted;               /* bytes of the paste now arriving */
     int paste_short;           /* some of it did not fit */
     int prompt, flen;          /* the field in the status line (P_FIND, P_GOTO), and its text */
+    int last;                  /* the field opened last (its text is what F3 finds) */
     char field[FIELD_MAX + 1];
     long origin;               /* where the match found last begins (where finding began) */
     struct undo u;
@@ -485,10 +490,11 @@ static void erase(struct edit *e, int forward) {
     changed(e, "editing");
 }
 
-/* The cursor goes to `to`: selecting from the mark while marking, else dropping a selection. */
-static void move(struct edit *e, long to) {
+/* The cursor goes to `to`: selecting from the mark (from where the cursor was, if there is
+   none) with Shift held (`select`) or while marking, else dropping a selection. */
+static void move(struct edit *e, long to, int select) {
     u_close(e);
-    if (e->marking) {
+    if (select || e->marking) {
         if (e->mark < 0) e->mark = e->cur;
     } else e->mark = -1;
     e->cur = to;
@@ -563,7 +569,7 @@ static void go_to(struct edit *e, struct line *l) {
     e->prompt = P_NONE;
     set_status(e, "", 0);
     if (!e->flen) return;
-    move(e, nth_line(e, n > 0 ? n - 1 : 0));
+    move(e, nth_line(e, n > 0 ? n - 1 : 0), 0);
     put_s(l, "edit: went to line ");
     put_dec(l, (u64)line_of(e, e->cur) + 1);
     say(l);
@@ -572,7 +578,7 @@ static void go_to(struct edit *e, struct line *l) {
 static void open_prompt(struct edit *e, int which) {
     u_close(e);
     e->marking = 0;
-    e->prompt = which;
+    e->prompt = e->last = which;
     e->flen = 0;
     e->field[0] = 0;
     e->origin = has_sel(e) ? sel_lo(e) : e->cur;
@@ -593,7 +599,7 @@ static int prompt_key(struct edit *e, struct line *l, u64 k) {
     }
     if (k == 127 || k == 8) {
         if (e->flen) e->field[--e->flen] = 0;
-    } else if (k == '\r' || k == '\n') {
+    } else if (k == '\r' || k == '\n' || (k == KEY_F(3) && e->prompt == P_FIND)) {
         if (e->prompt == P_GOTO) go_to(e, l);
         else if (e->flen) find(e, l, e->origin + 1);
         return 1;
@@ -611,23 +617,37 @@ static int prompt_key(struct edit *e, struct line *l, u64 k) {
     return 1;
 }
 
+/* F3: the next match of what was looked for last, after the selection (a match found last)
+   or from the cursor; with nothing looked for yet, the find field. */
+static void find_next(struct edit *e, struct line *l) {
+    if (e->last != P_FIND || !e->flen) {
+        open_prompt(e, P_FIND);
+        return;
+    }
+    u_close(e);
+    e->marking = 0;
+    find(e, l, has_sel(e) ? sel_lo(e) + 1 : e->cur);
+}
+
 /* ---- keys ---- */
 
 static void key(struct edit *e, struct line *l, u64 k) {
     if (e->prompt && prompt_key(e, l, k)) return;
     long ls = line_start(e, e->cur), col = vcol(e, e->cur);
+    int shift = KEY_IS_SHIFTED(k);               /* Shift and a move: select as it moves */
+    k = KEY_UNSHIFTED(k);
     if (k == 127 || k == 8) erase(e, 0);
     else if (k == KEY_DELETE) erase(e, 1);
     else if (k == '\r' || k == '\n') type(e, '\n');
     else if (k == '\t' || (k >= 32 && k < 127)) type(e, (char)k);
-    else if (k == KEY_HOME) move(e, ls);
-    else if (k == KEY_END) move(e, line_end(e, e->cur));
-    else if (k == KEY_LEFT) move(e, e->cur > 0 ? e->cur - 1 : 0);
-    else if (k == KEY_RIGHT) move(e, e->cur < e->len ? e->cur + 1 : e->len);
-    else if (k == KEY_UP) move(e, ls > 0 ? at_col(e, line_start(e, ls - 1), col) : e->cur);
+    else if (k == KEY_HOME) move(e, ls, shift);
+    else if (k == KEY_END) move(e, line_end(e, e->cur), shift);
+    else if (k == KEY_LEFT) move(e, e->cur > 0 ? e->cur - 1 : 0, shift);
+    else if (k == KEY_RIGHT) move(e, e->cur < e->len ? e->cur + 1 : e->len, shift);
+    else if (k == KEY_UP) move(e, ls > 0 ? at_col(e, line_start(e, ls - 1), col) : e->cur, shift);
     else if (k == KEY_DOWN) {
         long le = line_end(e, e->cur);
-        move(e, le < e->len ? at_col(e, le + 1, col) : e->cur);
+        move(e, le < e->len ? at_col(e, le + 1, col) : e->cur, shift);
     } else if (k == KEY_PGUP || k == KEY_PGDN) {
         /* ROWS lines up or down (fewer at the first or last), at the same column if the line
            is that long, and the text scrolls as many, not past its last line */
@@ -643,7 +663,7 @@ static void key(struct edit *e, struct line *l, u64 k) {
             }
         }
         long most = line_of(e, e->len) + 1 - ROWS;
-        move(e, at_col(e, at, col));
+        move(e, at_col(e, at, col), shift);
         e->top += k == KEY_PGUP ? -ROWS : ROWS;
         if (e->top > most) e->top = most;
         if (e->top < 0) e->top = 0;
@@ -669,7 +689,7 @@ static void key(struct edit *e, struct line *l, u64 k) {
     } else if (k == 6) open_prompt(e, P_FIND);                /* Ctrl+F */
     else if (k == 7) open_prompt(e, P_GOTO);                  /* Ctrl+G */
     else if (k == 19) save(e, l);                             /* Ctrl+S */
-    else if (k == 24) set_status(e, "no cut: copy (Ctrl+C), then Backspace", 0);   /* Ctrl+X */
+    else if (k == KEY_F(3)) find_next(e, l);
     else if (k == 26 || k == 25) undo_key(e, l, k == 25);    /* Ctrl+Z, Ctrl+Y */
 }
 
@@ -744,10 +764,12 @@ static void release(struct edit *e, struct line *l, int x, int y) {
 
 /* ---- copy and paste ---- */
 
-static void copy(struct edit *e, struct line *l) {
+/* EV_COPY: the selection (or all the text) to the display. A cut (`cut`) then deletes the
+   selection, once the display has taken all of it; with nothing selected, nothing. */
+static void copy(struct edit *e, struct line *l, int cut) {
     int sel = has_sel(e);
-    long a = sel ? sel_lo(e) : 0, b = sel ? sel_hi(e) : e->len, n = 0, vc = vcol(e, a);
-    for (long k = a; k < b && n < CLIP_MAX; k++) {
+    long a = sel ? sel_lo(e) : 0, b = sel ? sel_hi(e) : e->len, n = 0, vc = vcol(e, a), k = a;
+    for (; k < b && n < CLIP_MAX; k++) {
         char c = e->text[k];
         if (c == '\t') {
             for (int w = width_at(e, k, vc); w > 0 && n < CLIP_MAX; w--, vc++) e->clip[n++] = ' ';
@@ -757,12 +779,21 @@ static void copy(struct edit *e, struct line *l) {
         }
     }
     u64 st = app_copy(e->clip, (u64)n);
-    put_s(l, "edit: copied ");
+    cut = cut && sel && k == b;                  /* a cut: all of a selection, or nothing */
+    put_s(l, cut ? "edit: cut " : "edit: copied ");
     put_dec(l, (u64)n);
     put_s(l, " bytes");
     put_s(l, outcome(st));
     say(l);
-    set_status(e, st != OK ? "not copied" : sel ? "copied the selection" : "copied", 0);
+    if (st != OK) set_status(e, "not copied", 0);
+    else if (!cut) set_status(e, k < b ? "only its first 4 KiB copied, nothing cut" : sel ? "copied the selection" : "copied", 0);
+    else if (editable(e)) {
+        u_close(e);
+        e->marking = 0;
+        u_begin(e, K_DELETE, G_NONE);
+        delete_sel(e);
+        changed(e, "cut");
+    }
 }
 
 /* A piece of a paste, at the cursor (in place of the selection, with the first piece); after
@@ -918,7 +949,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     e->cw = font_width(&e->ui.mono, "M");
     e->len = e->cur = e->top = e->left = 0;
     e->mark = -1;
-    e->marking = e->drag = e->prompt = e->flen = 0;
+    e->marking = e->drag = e->prompt = e->flen = e->last = 0;
     e->dirty = e->locked = 0;
     e->click_at = 0;
     e->click_x = e->click_y = 0;
@@ -989,7 +1020,7 @@ __attribute__((section(".text.start"))) void _start(void) {
         } else if (ev.kind == EV_UP) {
             release(e, &l, x, y);
         } else if (ev.kind == EV_COPY) {
-            copy(e, &l);
+            copy(e, &l, ev.a == COPY_CUT);
         } else if (ev.kind == EV_PASTE) {
             if (!paste_in(e, &l, ev)) continue;              /* drawn once, when the last piece is in */
         } else continue;

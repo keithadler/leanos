@@ -50,11 +50,13 @@ This is the start. The next steps, in order:
   Security and Apps (every program on the card, ten to a page; type to find one; Running,
   or Ctrl+Q, lists what runs, and quits a program that hangs); the dock also keeps Clock, Calculator, Tour and Web from the SD card. What
   opens at startup is a list on the SD card (`startup.txt`: Apps and the tour, to begin with).
-- **Copy and paste, by hand only**: Ctrl+C and Ctrl+V (or the Edit menu in the menu bar)
-  between Notes, Terminal and `edit`. The display server keeps the clipboard. It asks the
-  window in front for its text only when you press Ctrl+C, takes the answer only from that
-  window, and hands the text only to the window in front when you press Ctrl+V. No program
-  can read the clipboard, or put text on it, by asking.
+- **Copy, cut and paste, by hand only**: Ctrl+C, Ctrl+X and Ctrl+V (or the Edit menu in
+  the menu bar) between Notes, Terminal and `edit`. The display server keeps the clipboard.
+  It asks the window in front for its text only when you press Ctrl+C or Ctrl+X, takes the
+  answer only from that window, and hands the text only to the window in front when you
+  press Ctrl+V. On a cut the window deletes its own selection; the display never deletes
+  anything, and a program that does not know cut only copies. No program can read the
+  clipboard, or put text on it, by asking.
 - **Opening files, by hand only**: Return or a double-click on a file in Files opens it in
   its program (pictures in `view`, text in `edit`; a program's own file starts it). Files
   cannot start programs: the display server takes its request only right after your key or
@@ -168,7 +170,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 48 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, Force Quit, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, Klondike played to a win, the calendar and its events, Files as a file manager, opening a file from Files in its program, the picture viewer, paint and the BMP files it saves, Terminal's pipes and its text commands (sort, uniq, tr, cut, cal, calc and more), windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 49 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, Force Quit, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, Klondike played to a win, the calendar and its events, Files as a file manager, opening a file from Files in its program, the picture viewer, paint and the BMP files it saves, Terminal's pipes and its text commands (sort, uniq, tr, cut, cal, calc and more), windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, the keys a keyboard has (function keys, Shift with the arrows), every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -195,13 +197,14 @@ Things to try once it is up:
   The zone and the background you pick there are kept on the card (`settings.txt`).
 - Click the **globe** in the dock and go to `info.cern.ch`.
 - In **Notes**, Ctrl+N (or +) makes a new note and the list on the left shows each one's
-  first line. The arrows, Home, End, Page Up and Page Down move the cursor (Delete deletes
-  after it), long notes wrap and scroll, Tab goes to the list (Up and Down, then Return),
+  first line. The arrows, Home, End, Page Up and Page Down move the cursor (with Shift,
+  they select; Delete deletes after it), long notes wrap and scroll, Tab goes to the list (Up and Down, then Return),
   and Ctrl+D twice deletes a note. Each note is a file: `cat notes/1.txt` in Terminal.
 - `run edit notes/1.txt` in Terminal edits that one file, and nothing else: up to 64 KiB,
-  with the mouse (click, drag and double-click to select), Ctrl+A and a mark (Ctrl+B) to
-  select from the keyboard, copy and paste of the selection, undo and redo (Ctrl+Z, Ctrl+Y),
-  find (Ctrl+F) and go to a line (Ctrl+G). A file larger than one 16 KiB request is saved
+  with the mouse (click, drag and double-click to select), Shift with the arrows, Home and
+  End, Ctrl+A and a mark (Ctrl+B) to select from the keyboard, cut, copy and paste of the
+  selection, undo and redo (Ctrl+Z, Ctrl+Y), find (Ctrl+F, and F3 for the next) and go to
+  a line (Ctrl+G). A file larger than one 16 KiB request is saved
   into `apps/edit/save.part~` and renamed over it in one step, so a power cut never leaves
   half of it.
 - `run calendar` shows the month, today in blue once a time server has said the date. The
@@ -223,8 +226,9 @@ Things to try once it is up:
   too. Select one and press Quit (or Delete); it asks "Quit NAME?", and Return (or Quit
   again) stops it, answering or not, as Terminal's `kill SLOT` does. Its window goes.
 - Click a window's yellow button: it leaves the screen, and its dock icon gets an amber dot;
-  click the icon to bring it back. The green button moves a window to the middle and back,
-  and Ctrl+O brings the next window to the front (all three are in the Window menu too).
+  click the icon to bring it back. The green button (or F11) moves a window to the middle
+  and back, and Ctrl+O brings the next window to the front (all three are in the Window
+  menu too).
 
 ## Run it on a Raspberry Pi 4
 

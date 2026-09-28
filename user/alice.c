@@ -13,6 +13,9 @@
    line it is on as shown, Page Up and Page Down a window of lines (the note scrolls by as
    many); Backspace deletes before it, the Delete key the letter after it, Return starts a
    line, and the note scrolls to keep the cursor in view. A click puts the cursor there.
+   Shift with an arrow, Home, End, Page Up or Page Down moves it and selects from where it
+   was (a selection grows from its other end); any other move drops it, and typing, a paste,
+   Backspace or Delete replaces or deletes what is selected.
    Tab goes to the list, where Up and Down choose a note and Return (or Tab) goes back to
    it; a click in the list chooses one too. Ctrl+N (or the + button) makes a new note;
    Ctrl+D (or the Delete button, under the list) asks to delete the open one, and Ctrl+D
@@ -26,8 +29,12 @@
    instead, and saves nothing if those are all taken. A note that could not be saved stays
    open (another is not shown in its place) and is tried again a little later.
 
-   Copy (Ctrl+C) takes the whole note (its first 4 KiB: what the clipboard holds); a
-   paste (Ctrl+V) goes in at the cursor. */
+   Copy (Ctrl+C) takes the selection, or, with nothing selected, the whole note (either way
+   its first 4 KiB: what the clipboard holds). Cut (Ctrl+X) copies the same, and then
+   deletes the selection, once the display has taken it; with nothing selected it copies
+   the whole note, as Ctrl+C does, and deletes nothing (nor does it delete a selection over
+   4 KiB, of which it copies a part). A paste (Ctrl+V) goes in at the
+   cursor, in place of the selection. */
 #include "app.h"
 #include "fs.h"
 
@@ -95,6 +102,7 @@ struct notes {
     int len, at, top, nlines, goal;           /* the open note: its length, the cursor, the first
                                                  line shown, its lines; the x (1/64 px) Up and
                                                  Down keep, -1 for none */
+    int mark;                                 /* the selection's other end (the cursor is one), or -1 */
     int focus;                                /* 0: the note, 1: the list */
     int confirm;                              /* asked once to delete */
     int unsaved, stale, locked, pasted;       /* unsaved: changed since it was saved; locked:
@@ -196,6 +204,11 @@ static void follow(struct notes *n) {
     if (n->list_top > most) n->list_top = most;
 }
 
+/* The selection: there is one, and its ends. */
+static int has_sel(const struct notes *n) { return n->mark >= 0 && n->mark != n->at; }
+static int sel_lo(const struct notes *n) { return n->mark < n->at ? n->mark : n->at; }
+static int sel_hi(const struct notes *n) { return n->mark < n->at ? n->at : n->mark; }
+
 /* ---- drawing ---- */
 
 /* `s`, cut to `width` pixels with "..." if it is wider. */
@@ -254,6 +267,14 @@ static void draw(struct notes *n) {
         int k = n->top + r, y = TEXT_Y + r * LINE_H + asc;
         int from = LINES[k], to = k + 1 < n->nlines ? LINES[k + 1] : n->len;
         if (to > from && t[to - 1] == '\n') to--;
+        if (has_sel(n)) {                   /* the part selected, and the line break if it is */
+            int a = sel_lo(n) > from ? sel_lo(n) : from, b = sel_hi(n) < to ? sel_hi(n) : to;
+            int brk = to < n->len && t[to] == '\n' && sel_lo(n) <= to && sel_hi(n) > to;
+            if (a < b || (a == b && brk)) {
+                int x0 = x_of(n, k, a) / 64, x1 = x_of(n, k, b) / 64 + (brk ? 5 : 0);
+                fill(s, TEXT_X + x0, TEXT_Y + r * LINE_H + 1, x1 - x0, LINE_H - 2, rgb(191, 213, 250));
+            }
+        }
         char buf[160];
         int m = 0;
         for (int i = from; i < to && m < (int)sizeof buf - 1; i++) buf[m++] = t[i] >= 32 && t[i] < 127 ? t[i] : '?';
@@ -282,7 +303,10 @@ static void draw(struct notes *n) {
     }
     c.n = 0;
     if (n->status[0]) put_s(&c, n->status);
-    else {
+    else if (has_sel(n)) {
+        put_dec(&c, (u64)(sel_hi(n) - sel_lo(n)));
+        put_s(&c, " selected");
+    } else {
         put_s(&c, "line ");
         put_dec(&c, (u64)line_of(n, n->at) + 1);
         put_s(&c, " of ");
@@ -405,7 +429,7 @@ COLD static void load(struct notes *n, int i) {
     struct note *e = &n->list[i];
     n->cur = i;
     n->len = n->at = n->top = 0;
-    n->goal = -1;
+    n->goal = n->mark = -1;
     n->locked = n->unsaved = n->confirm = 0;
     n->status[0] = 0;
     if (e->on_card) {
@@ -565,6 +589,7 @@ COLD static void find_notes(struct notes *n, struct line *l) {
 /* ---- editing ---- */
 
 static void changed(struct notes *n) {
+    n->mark = -1;
     n->unsaved = 1;
     n->save_at = millis() + SAVE_AFTER;
     n->stale = 1;
@@ -573,9 +598,20 @@ static void changed(struct notes *n) {
     title_from(&n->list[n->cur], TEXT, n->len);
 }
 
-/* `k` bytes at the cursor. */
+/* The selection goes. */
+static void delete_sel(struct notes *n) {
+    int a = sel_lo(n), b = sel_hi(n);
+    char *t = TEXT;
+    for (int i = b; i < n->len; i++) t[i - (b - a)] = t[i];
+    n->len -= b - a;
+    n->at = a;
+    changed(n);
+}
+
+/* `k` bytes at the cursor, in place of the selection. */
 static void insert(struct notes *n, const char *s, int k) {
     if (n->locked) return;
+    if (has_sel(n)) delete_sel(n);
     if (k > NOTE_MAX - n->len) k = NOTE_MAX - n->len;
     if (k > 0) {
         char *t = TEXT;
@@ -590,6 +626,8 @@ static void insert(struct notes *n, const char *s, int k) {
 
 static void key(struct notes *n, struct line *l, u64 c) {
     if (!n->locked) n->status[0] = 0;               /* "saved" and the like, until a key */
+    int shift = KEY_IS_SHIFTED(c);                  /* Shift and a move: select as it moves */
+    c = KEY_UNSHIFTED(c);
     if (n->focus) {                                 /* the list */
         if (c == KEY_UP) { choose(n, l, n->cur - 1); return; }
         if (c == KEY_DOWN) { choose(n, l, n->cur + 1); return; }
@@ -599,6 +637,10 @@ static void key(struct notes *n, struct line *l, u64 c) {
     }
     fresh(n);
     int k = line_of(n, n->at);
+    if (c >= KEY_UP && c <= KEY_PGDN && c != KEY_DELETE) {
+        if (!shift) n->mark = -1;
+        else if (n->mark < 0) n->mark = n->at;
+    }
     if (c == TAB) n->focus = 1;
     else if (c == KEY_LEFT) { if (n->at > 0) n->at--; n->goal = -1; }
     else if (c == KEY_RIGHT) { if (n->at < n->len) n->at++; n->goal = -1; }
@@ -617,6 +659,8 @@ static void key(struct notes *n, struct line *l, u64 c) {
         if (c == KEY_PGUP && k == 0) n->at = 0;
         else if (c == KEY_PGDN && k + 1 >= n->nlines) n->at = n->len;
         else n->at = at_x(n, to < 0 ? 0 : to < n->nlines ? to : n->nlines - 1, n->goal);
+    } else if ((c == KEY_DELETE || c == 8 || c == 127) && has_sel(n)) {
+        if (!n->locked) delete_sel(n);
     } else if (c == KEY_DELETE) {
         if (n->at >= n->len || n->locked) return;
         char *t = TEXT;
@@ -655,7 +699,7 @@ COLD static void click(struct notes *n, struct line *l, int x, int y) {
     int k = n->top + (y < TEXT_Y ? 0 : (y - TEXT_Y) / LINE_H);
     if (k >= n->nlines) k = n->nlines - 1;
     n->at = at_x(n, k, (x - TEXT_X) * 64);
-    n->goal = -1;
+    n->goal = n->mark = -1;
     n->focus = 0;
 }
 
@@ -676,6 +720,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     n->bold = font_of(assets, F_BOLD);
     for (int c = 32; c < 127; c++) n->adv[c - 32] = n->body.glyphs ? glyph_of(&n->body, (unsigned)c)->advance : 64 * 8;
     n->focus = n->pasted = n->list_top = 0;
+    n->mark = -1;
     fs_init(&n->fs, SPARE_PAGE);
     find_notes(n, &l);
     n->win = surface_of((unsigned *)PAGE(SPARE_PAGE + WIN_OFFSET), WIN_W, WIN_H);
@@ -722,12 +767,21 @@ __attribute__((section(".text.start"))) void _start(void) {
             exit_task();
         }
         if (kind == EV_COPY) {
-            u64 st = app_copy(TEXT, (u64)n->len);
-            put_s(&l, "alice: copied ");
-            put_dec(&l, (u64)(n->len < CLIP_MAX ? n->len : CLIP_MAX));
+            /* the selection, or all the note; a cut deletes the selection once it is taken */
+            int cut = e.x[2] == COPY_CUT, sel = has_sel(n), from = sel ? sel_lo(n) : 0;
+            int m = sel ? sel_hi(n) - from : n->len;
+            u64 st = app_copy(TEXT + from, (u64)m);
+            cut = cut && sel && m <= CLIP_MAX;      /* all of a selection, or nothing */
+            put_s(&l, cut ? "alice: cut " : "alice: copied ");
+            put_dec(&l, (u64)(m < CLIP_MAX ? m : CLIP_MAX));
             put_s(&l, " bytes");
             put_s(&l, outcome(st));
             say(&l);
+            if (!cut || st != OK || n->locked) continue;
+            delete_sel(n);
+            n->focus = 0;
+            draw(n);
+            dirty = 1;
             continue;
         }
         if (kind == EV_PASTE) {
@@ -742,6 +796,7 @@ __attribute__((section(".text.start"))) void _start(void) {
             }
             if (n->confirm) keep(n, &l);
             n->focus = 0;
+            if (has_sel(n) && !n->locked) delete_sel(n);    /* the paste takes its place */
             int before = n->len;
             insert(n, take, m);
             n->pasted += n->len - before;

@@ -375,25 +375,24 @@ static void enumerate(struct usb *u, int ls, int depth) {
 }
 
 /* HID usage to a key leanos knows: ASCII, 128-131 for the arrows, 132-136 for Home, End,
-   Delete (forward), Page Up and Page Down (user/app.h). 0 for anything else. */
+   Delete (forward), Page Up and Page Down, and with Shift, 137-144 for the arrows, Home, End,
+   Page Up and Page Down held with it; 145-156 for F1 to F12, Shift or not (user/app.h). 0 for
+   anything else. */
 static int key_of(int usage, int shift) {
     static const char plain[] = "abcdefghijklmnopqrstuvwxyz1234567890\r\x1b\b\t -=[]\\#;'`,./";
     static const char shifted[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()\r\x1b\b\t _+{}|~:\"~<>?";
+    /* usages 0x4A to 0x52: home, page up, delete forward, end, page down, right, left, down, up */
+    static const unsigned char nav[9] = {132, 135, 134, 133, 136, 130, 131, 129, 128};
+    static const unsigned char nav_shift[9] = {141, 143, 134, 142, 144, 139, 140, 138, 137};
     if (usage >= 4 && usage <= 0x38) return (shift ? shifted : plain)[usage - 4];
-    if (usage == 0x52) return 128;   /* up */
-    if (usage == 0x51) return 129;   /* down */
-    if (usage == 0x4F) return 130;   /* right */
-    if (usage == 0x50) return 131;   /* left */
-    if (usage == 0x4A) return 132;   /* home */
-    if (usage == 0x4D) return 133;   /* end */
-    if (usage == 0x4C) return 134;   /* delete forward */
-    if (usage == 0x4B) return 135;   /* page up */
-    if (usage == 0x4E) return 136;   /* page down */
+    if (usage >= 0x3A && usage <= 0x45) return 145 + (usage - 0x3A);   /* F1 to F12 */
+    if (usage >= 0x4A && usage <= 0x52) return (shift ? nav_shift : nav)[usage - 0x4A];
     return 0;
 }
 
 /* A key with Control held is sent as the serial line sends it: Ctrl+A to Ctrl+Z are bytes 1
-   to 26 (Ctrl+C and Ctrl+V are copy and paste, user/display.c). */
+   to 26 (Ctrl+C, Ctrl+V and Ctrl+X are copy, paste and cut, user/display.c); Control with
+   any other key is dropped, as the serial line's input driver drops it. */
 static void keyboard(struct usb *u, const unsigned char *r, int n) {
     if (n < 8) return;
     int shift = (r[0] & 0x22) != 0, ctrl = (r[0] & 0x11) != 0;
