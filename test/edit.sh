@@ -25,6 +25,17 @@
 #   - a Tab, and a click at column 5 lands after it (a tab shows as 4 columns);
 #   - closing the window saves: the file, read off the card image, is exactly what was
 #     typed.
+# Then, on a card of its own, cut.txt ("one two three two"), Shift, cut and F3:
+#   - Shift+Right four times from the serial line (ESC [ 1 ; 2 C) selects "one ", Ctrl+X
+#     cuts it (the display asks edit with the cut flag, and edit deletes it), End, a space
+#     and Ctrl+V put it back at the end: the text moved;
+#   - Home and Shift+Right three times from the USB keyboard select "two", and the USB
+#     keyboard's Ctrl+X cuts it; Ctrl+Z brings it back, selected, and "TWO" is typed over it;
+#   - Shift+End (ESC [ 1 ; 2 F) selects the rest of the line (Ctrl+C copies 15 bytes), and
+#     Shift+Home (ESC [ 1 ; 2 H) turns the same selection round to "TWO" (3 bytes);
+#   - Ctrl+F "two" finds "TWO", Ctrl+F closes the field; F3 (ESC O R) finds the next "two",
+#     F3 on the USB keyboard goes round to "TWO", F3 as ESC [ 13 ~ to "two" again, and "X"
+#     is typed over it; closing the window saves "TWO three X one ".
 # And on a third card, big.txt (59,800 bytes, 2,300 lines, more than one 16 KiB request) and
 # huge.txt (70,000 bytes, more than the 64 KiB edit holds): big.txt opens whole; Ctrl+G
 # 1500, a word; Ctrl+G 1, a word; Ctrl+S; Ctrl+G past the end, a word; closing saves it.
@@ -144,6 +155,50 @@ has "edit: mark set at line 1, column 1"
 has "edit: cursor at line 1, column 5"
 has "edit: saved sel.txt (50 bytes)"
 
+# ---- Shift selects, Ctrl+X cuts, F3 finds the next ----
+card3=$T/sd-edit-cut.img
+cp build/sd-template.img "$card3" || fail "no card"
+out=$(python3 - "$card3" <<'PY'
+import sys
+sys.path.insert(0, "test")
+from run import boot, mouse, wait_for, pause, usb_key, wclick, DOCK, CLOSE
+click = lambda x, y: [mouse("d", x, y), mouse("u", x, y)]
+keys = lambda s: [c.encode() for c in s]
+CTRL = lambda c: bytes([ord(c) - 96])
+END, S_RIGHT, S_END, S_HOME, F3, F3_RXVT = b"\x1b[F", b"\x1b[1;2C", b"\x1b[1;2F", b"\x1b[1;2H", b"\x1bOR", b"\x1b[13~"
+steps = [wait_for("usb: ready"), *click(*DOCK["Terminal"]), wait_for("terminal: opened"),
+         *keys("write cut.txt one two three two\r"), wait_for("terminal: write"),
+         *keys("run edit cut.txt\r"), wait_for("edit: opened a window"),
+         *[S_RIGHT] * 4, CTRL("x"), wait_for("edit: cut"), END, b" ", CTRL("v"), wait_for("edit: pasted"),
+         pause(0.3), *usb_key("home"), *[x for _ in range(3) for x in usb_key("right", shift=True)],
+         *usb_key("x", ctrl=True), wait_for("edit: cut", 2), pause(0.3),
+         CTRL("z"), wait_for("edit: undid"), *keys("TWO"),
+         S_END, CTRL("c"), wait_for("edit: copied"), S_HOME, CTRL("c"), wait_for("edit: copied", 2),
+         CTRL("f"), *keys("two"), wait_for('edit: find "two"'), CTRL("f"),
+         F3, wait_for('edit: find "two"', 2), pause(0.3), *usb_key("f3"), wait_for('edit: find "two"', 3), pause(0.3),
+         F3_RXVT, wait_for('edit: find "two"', 4), b"X",
+         *wclick("edit", *CLOSE), wait_for("edit: window closed")]
+sys.exit(boot(90, usb=True, steps=steps, until="edit: window closed", sd=sys.argv[1], settle=0.3))
+PY
+)
+status=$?
+echo "$out" | grep -E "^(edit|display: (cut|copied|paste))" | sed 's/^/  | /'
+[ $status -eq 0 ] || fail "the run with cut.txt did not finish (status $status)"
+echo "$out" | grep -q "PANIC" && fail "kernel panicked"
+has "edit: opened cut.txt (17 bytes)"
+count 2 "display: cut: asked a program from the SD card for its text"
+has "edit: cut 4 bytes -> ok"
+has "display: copied 4 bytes from a program from the SD card, for a cut"
+has "edit: pasted 4 bytes"
+has "edit: cut 3 bytes -> ok"
+has "display: copied 3 bytes from a program from the SD card, for a cut"
+echo "$out" | grep -q "^edit: undid a deletion; 3 steps to undo, 1 to redo$" || fail "Ctrl+Z did not take the cut back"
+has "edit: copied 15 bytes -> ok"
+has "edit: copied 3 bytes -> ok"
+count 2 'edit: find "two": at line 1, column 1'
+count 2 'edit: find "two": at line 1, column 11'
+has "edit: saved cut.txt (16 bytes)"
+
 # ---- a file larger than one request, and one larger than edit holds ----
 big=$T/edit-big.txt
 huge=$T/edit-huge.txt
@@ -188,7 +243,7 @@ echo "$out" | grep -q "^edit: saved huge.txt" && fail "huge.txt was saved over"
 has "terminal: ls apps/edit -> 0 files"
 
 # The files, off the card: the file system of user/fs.c (as test/paint.sh reads it).
-python3 - "$card2" "$big" "$huge" "$card" <<'PY' || fail "the files on the card are not what was typed"
+python3 - "$card2" "$big" "$huge" "$card" "$card3" <<'PY' || fail "the files on the card are not what was typed"
 import struct, sys
 
 def files(path):
@@ -226,7 +281,9 @@ assert f["huge.txt"] == open(sys.argv[3], "rb").read(), "huge.txt changed"
 assert not [n for n in f if n.endswith(".part~")], [n for n in f if n.endswith(".part~")]
 sel = files(sys.argv[4])["sel.txt"]
 assert sel == b"\tT small beta gamma beta\nalpha big beta GAMMA beta", sel
-print("ok: big.txt holds the three words where they were typed, huge.txt is as it was, sel.txt is what was typed")
+cut = files(sys.argv[5])["cut.txt"]
+assert cut == b"TWO three X one ", cut
+print("ok: big.txt holds the three words where they were typed, huge.txt is as it was, sel.txt and cut.txt are what was typed")
 PY
 
 # The drag's selection, on screen: edit's light blue behind "beta" (and the word on it).
@@ -246,4 +303,4 @@ inside, outside = lit(12 + 9 * 10 + 1, 12 + 9 * 14 - 1), lit(12, 12 + 9 * 10 - 1
 assert inside > 200 and outside == 0, (inside, outside)
 print("ok: the selection is drawn highlighted")
 PY
-echo "ok: a click places the cursor, a drag and a double-click select, typing replaces a selection, select all and a mark, copy of a selection, undo and redo, find, go to a line, tabs, and a file of 59,800 bytes saved in pieces and read back off the card"
+echo "ok: a click places the cursor, a drag and a double-click select, typing replaces a selection, select all and a mark, Shift selects from the serial line and the USB keyboard, copy and cut of a selection, undo and redo, find and F3, go to a line, tabs, and a file of 59,800 bytes saved in pieces and read back off the card"

@@ -38,7 +38,8 @@
    another's window. A click inside a window goes to its client (EV_DOWN, window
    coordinates); a click on the red button asks the client to close (EV_CLOSE, with that
    window's number), and the window goes from the screen at once, and from the table when
-   its client hears it. The yellow button minimizes a window and the green one zooms it;
+   its client hears it. The yellow button minimizes a window and the green one zooms it (so
+   does F11, for the window in front, which is the one key it keeps of the function keys);
    Ctrl+O brings the next window to the front (see "minimize, zoom, and the next window").
    A window opened with OPEN_DRAG (bit 32 of OPEN's size word) also hears a drag: from a
    press in it until the button comes up, it holds the pointer, and hears every move
@@ -68,9 +69,13 @@
    hand (user/app.h). Ctrl+C (byte 3), or Edit, Copy in the menu bar, asks the window in
    front for its text (EV_COPY), and the display takes a copy (COPY, w0 = 10, 16 bytes in w1
    w2 to a call) only from that window's badge, only until the copy ends, and only within
-   COPY_MS of asking; a copy at any other time, from anyone, is refused. Ctrl+V (byte 22), or
-   Edit, Paste, hands what was copied to the window in front, and only to it, as a run of
-   EV_PASTE events in its queue. No request reads the clipboard. Neither key reaches an app.
+   COPY_MS of asking; a copy at any other time, from anyone, is refused. Ctrl+X (byte 24), or
+   Edit, Cut, is the same, but asks with a = COPY_CUT: the window answers as for a copy, and
+   then deletes its selection itself. The display deletes nothing, and takes the answer by
+   the same rule; a program that does not know cut copies and deletes nothing. Ctrl+V (byte
+   22), or Edit, Paste, hands what was copied to the window in front, and only to it, as a
+   run of EV_PASTE events in its queue. No request reads the clipboard. None of the three
+   keys reaches an app.
 
    Opening a file from Files is by the user's hand too (user/app.h). OPEN_WITH (13), with one
    page lent read-only: a program's name and a file's path, to open the file in the program
@@ -143,10 +148,12 @@ enum { OP_OPEN = 1, OP_WAIT = 2, OP_SET = 3, OP_POLL = 4, OP_ICON = 5, OP_START 
 /* 11 is no request: programs ask it to show that no request reads the clipboard (mallory, tour) */
 enum { EV_KEY = 1, EV_DOWN = 2, EV_UP = 3, EV_MOVE = 4, EV_CLOSE = 5, EV_LAUNCH = 6, EV_COPY = 7, EV_PASTE = 8,
        EV_RDOWN = 9, EV_RUP = 10 };
-enum { KEY_COPY = 3, KEY_PASTE = 22, KEY_NEXT = 15 };   /* Ctrl+C, Ctrl+V, Ctrl+O (the next window) */
+enum { KEY_COPY = 3, KEY_PASTE = 22, KEY_CUT = 24, KEY_NEXT = 15 };   /* Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+O (the next window) */
+#define KEY_F11 155        /* zooms the window in front (user/app.h) */
 #define OPEN_DRAG (1UL << 32)  /* in OPEN's size word: the window hears drags (user/app.h) */
 #define CLIP_MAX 4096     /* as user/app.h */
 #define COPY_MS 2000
+#define COPY_CUT 1        /* EV_COPY's a: the user cut */
 /* OPEN_WITH, as user/app.h: the lent page's layout, and how soon Files must ask. The page is
    mapped here for the call only, after the icons. */
 #define OPEN_WITH_PROG 0
@@ -284,8 +291,8 @@ struct state {
     int menu;                   /* the menu that is open: 0 none, 1 leanos, 2 Edit, 3 Window */
     int menu_x;                 /* where the Edit or Window menu opened */
     /* the clipboard, and the copy the display asked for: which window (+ 1, or 0), its
-       badge, when, and the text so far */
-    int clip_len, copy_win, copy_len;
+       badge, when, whether it is a cut, and the text so far */
+    int clip_len, copy_win, copy_len, copy_cut;
     u64 copy_badge, copy_at;
     unsigned char copy_refused[32];   /* refused copies, per badge, so a flood logs a few */
     char clip[CLIP_MAX], copy_buf[CLIP_MAX];
@@ -788,21 +795,21 @@ static void background(struct state *st) {
 }
 
 /* The menus: the leanos menu, under the logo (Restart, Shut down), the Edit menu, under its
-   name (Copy, Paste: the same as Ctrl+C and Ctrl+V), and the Window menu, under its name
-   (Minimize and Zoom, the same as the window's yellow and green buttons, and Next window,
-   the same as Ctrl+O). */
+   name (Cut, Copy, Paste: the same as Ctrl+X, Ctrl+C and Ctrl+V), and the Window menu, under
+   its name (Minimize and Zoom, the same as the window's yellow and green buttons (Zoom is
+   F11 too), and Next window, the same as Ctrl+O). */
 #define MENU_X 6
 #define MENU_Y (BAR_H + 4)
 #define MENU_W 190
 #define MENU_ITEM 28
 #define MENU_H(n) ((n) * MENU_ITEM + 12)
 #define MENU_H_MAX MENU_H(3)
-static const char *const menu_items[3][3] = {{"Restart", "Shut down", 0}, {"Copy", "Paste", 0},
+static const char *const menu_items[3][3] = {{"Restart", "Shut down", 0}, {"Cut", "Copy", "Paste"},
                                              {"Minimize", "Zoom", "Next window"}};
-static const char *const menu_keys[3][3] = {{0, 0, 0}, {"Ctrl+C", "Ctrl+V", 0}, {0, 0, "Ctrl+O"}};
+static const char *const menu_keys[3][3] = {{0, 0, 0}, {"Ctrl+X", "Ctrl+C", "Ctrl+V"}, {0, "F11", "Ctrl+O"}};
 
 static int menu_left(struct state *st, int m) { return m >= 2 ? st->menu_x : MENU_X; }
-static int menu_n(int m) { return m == 3 ? 3 : 2; }
+static int menu_n(int m) { return m >= 2 ? 3 : 2; }
 
 static void menu(struct state *st) {
     struct surface *s = &st->screen;
@@ -1154,6 +1161,7 @@ COLD static void redraw_all(struct state *st) { composite(st, 0, 0, W, H); }
    The green button zooms: windows are a fixed size (a program draws a fixed buffer), so
    zoom moves the window to the middle of the room between the menu bar and the dock, in
    front, and a second click moves it back (a drag in between forgets where it came from).
+   F11 zooms the window in front the same way, and never reaches its program.
    Ctrl+O sends the window in front to the back, so the next one comes to the front: pressed
    again and again, it goes through every window shown. The Window menu does the same three. */
 
@@ -1518,24 +1526,30 @@ COLD __attribute__((noinline)) static void say3(struct line *l, const char *a, c
     say(l);
 }
 
-/* The user asked to copy (Ctrl+C, or Edit, Copy): ask the window in front for its text. From
-   now until the copy ends, or COPY_MS pass, that window's badge, and no other, may send it.
-   Asked again while its answer may still be arriving, the display waits for that one: a new
-   start in the middle would keep only the answer's tail. */
-COLD static void copy_ask(struct state *st, struct line *l) {
+/* The user asked to copy (Ctrl+C, or Edit, Copy) or to cut (Ctrl+X, or Edit, Cut): ask the
+   window in front for its text, saying which (a cut: a = COPY_CUT; the window deletes what
+   it sends, the display nothing). From now until the copy ends, or COPY_MS pass, that
+   window's badge, and no other, may send it. Asked again while its answer may still be
+   arriving, the display waits for that one: a new start in the middle would keep only the
+   answer's tail. */
+COLD static void copy_ask(struct state *st, struct line *l, int cut) {
     int k = focused(st);
     if (k < 0) return;
     struct win *w = &st->win[k];
+    const char *what = cut ? "cut: " : "copy: ";
     if (st->copy_win == k + 1 && millis() - st->copy_at <= COPY_MS) {
-        say3(l, "copy: still waiting for ", name_of(w->badge), "");
+        say3(l, what, "still waiting for ", name_of(w->badge));
         return;
     }
     st->copy_win = k + 1;
     st->copy_badge = w->badge;
     st->copy_at = millis();
     st->copy_len = 0;
-    deliver_event(st, k, EV_COPY, 0, 0);
-    say3(l, "copy: asked ", name_of(w->badge), " for its text");
+    st->copy_cut = cut;
+    deliver_event(st, k, EV_COPY, cut ? COPY_CUT : 0, 0);
+    put_s(l, "display: ");
+    put_s(l, what);
+    say3(l, "asked ", name_of(w->badge), " for its text");
 }
 
 /* The user asked to paste (Ctrl+V, or Edit, Paste): what was copied goes to the window in
@@ -1595,7 +1609,7 @@ COLD __attribute__((noinline)) static void on_copy(struct state *st, struct line
         st->clip_len = st->copy_len;
         put_s(l, "display: copied ");
         put_dec(l, (u64)st->clip_len);
-        say3(l, " bytes from ", name_of(badge), "");
+        say3(l, " bytes from ", name_of(badge), st->copy_cut ? ", for a cut" : "");
     }
 }
 
@@ -1622,10 +1636,11 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
     /* Every key and press ends what the last one allowed (OPEN_WITH): it is touch()ed again
        below only if it reaches a window's program. */
     if (kind == EV_KEY || kind == EV_DOWN || kind == EV_RDOWN) st->touched = 0;
-    if (kind == EV_KEY && (a == KEY_COPY || a == KEY_PASTE || a == KEY_NEXT)) {
-        if (a == KEY_COPY) copy_ask(st, l);
+    if (kind == EV_KEY && (a == KEY_COPY || a == KEY_CUT || a == KEY_PASTE || a == KEY_NEXT || a == KEY_F11)) {
+        if (a == KEY_COPY || a == KEY_CUT) copy_ask(st, l, a == KEY_CUT);
         else if (a == KEY_PASTE) paste_to(st, l);
-        else next_window(st, l);
+        else if (a == KEY_NEXT) next_window(st, l);
+        else if (focused(st) >= 0) zoom(st, l, focused(st));
         return;
     }
     if (kind == EV_KEY) {
@@ -1665,7 +1680,7 @@ COLD static void on_input(struct state *st, struct line *l, u64 kind, u64 a, u64
         if (st->menu >= 2)
             say3(l, st->menu == 2 ? "the Edit menu, for " : "the Window menu, for ", name_of(st->win[focused(st)].badge), "");
         if (was == 2 && item >= 0) {
-            if (item == 0) copy_ask(st, l);
+            if (item < 2) copy_ask(st, l, item == 0);          /* the items: Cut, Copy, Paste */
             else paste_to(st, l);
         } else if (was == 3 && item >= 0 && focused(st) >= 0) {
             if (item == 0) minimize(st, l, focused(st));
@@ -2365,7 +2380,7 @@ COLD __attribute__((section(".text.start"))) void _start(void) {
     st->menu = 0;
     st->held = 0;
     st->held_up = EV_UP;
-    st->clip_len = st->copy_win = st->copy_len = 0;
+    st->clip_len = st->copy_win = st->copy_len = st->copy_cut = 0;
     for (int i = 0; i < 32; i++) st->copy_refused[i] = 0;
     st->drag_frames = st->drag_us = 0;
     st->bar_time[0] = 0;

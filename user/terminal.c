@@ -4,16 +4,18 @@
    send + grant to the display server and the file server.
 
    Copy (Ctrl+C) takes the command line being typed, or, when it is empty, what the last
-   command printed (as far as the scrollback still shows it). A paste (Ctrl+V) goes onto the
-   command line, line breaks as spaces: pasted text never runs a command until you press
-   Return.
+   command printed (as far as the scrollback still shows it). Cut (Ctrl+X) takes the same,
+   and then empties the command line, once the display has taken it (the output stays: it
+   only copies that). A paste (Ctrl+V) goes onto the command line, line breaks as spaces:
+   pasted text never runs a command until you press Return.
 
    The command line edits as a shell's does: Left and Right move the cursor, Home and End
    to the line's start and end, and typing, Backspace, Delete (the letter under the cursor)
    and a paste work where it is. Up and Down step through the last HIST commands, which
    history lists (the line being typed is kept, and Down past the newest comes back to it);
    !! on a line is the last of them, and !N the Nth history lists, as in a shell.
-   Page Up and Page Down do nothing: Terminal keeps no more lines than it shows. Tab
+   Page Up and Page Down do nothing: Terminal keeps no more lines than it shows. Held with
+   Shift, these keys do as they do without it: the command line has no selection. Tab
    completes a command's name at the start of the line, and a file or folder name after it
    (a folder with a '/'), from the file server's listing; when several match, it completes
    what they share, and a second Tab lists them.
@@ -2131,8 +2133,9 @@ COLD static void complete(struct term *t, struct line *l, int again) {
     flush(l);
 }
 
-/* Ctrl+C: the command line, if something is typed on it, else what the last command printed. */
-COLD static void copy_out(struct term *t, struct line *l) {
+/* Ctrl+C: the command line, if something is typed on it, else what the last command printed.
+   Ctrl+X (`cut`): the same, and the command line goes. */
+COLD static void copy_out(struct term *t, struct line *l, int cut) {
     char buf[ROWS * (COLS + 1)];
     u64 n = 0;
     const char *what = "the command line";
@@ -2148,7 +2151,9 @@ COLD static void copy_out(struct term *t, struct line *l) {
         what = "the last command's output";
     }
     u64 st = app_copy(buf, n);
-    put_s(l, "terminal: copied ");
+    cut = cut && t->len && st == OK;
+    if (cut) t->len = t->cur = 0;
+    put_s(l, cut ? "terminal: cut " : "terminal: copied ");
     put_s(l, what);
     put_s(l, ", ");
     put_dec(l, n);
@@ -2220,7 +2225,11 @@ __attribute__((section(".text.start"))) void _start(void) {
             exit_task();
         }
         if (e.kind == EV_COPY) {
-            copy_out(t, &l);
+            int had = t->len;
+            copy_out(t, &l, e.a == COPY_CUT);
+            if (had == t->len) continue;
+            draw(t);                         /* cut: the command line is empty */
+            dirty = 1;
             continue;
         }
         if (e.kind == EV_PASTE) {
@@ -2231,7 +2240,7 @@ __attribute__((section(".text.start"))) void _start(void) {
             continue;
         }
         if (e.kind != EV_KEY) continue;
-        u64 k = e.a;
+        u64 k = KEY_UNSHIFTED(e.a);
         if (k == '\t') complete(t, &l, t->tabbed);
         else if (k == KEY_UP || k == KEY_DOWN) recall(t, t->hpos + (k == KEY_UP ? -1 : 1));
         else if (k == KEY_LEFT) t->cur -= t->cur > 0;
