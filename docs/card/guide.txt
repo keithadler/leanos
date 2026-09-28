@@ -32,7 +32,8 @@ Copy and paste
 
   What each program copies, and where a paste goes:
   Notes     the whole note (its first 4 KiB); a paste goes in at the cursor
-  edit      the whole file (its first 4 KiB); a paste goes in at the cursor
+  edit      what is selected, or the whole file (its first 4 KiB); a paste goes in at
+            the cursor, in place of what is selected
   Terminal  the command line you are typing, or, when it is empty, what the last
             command printed; a paste goes onto the command line at the cursor, line
             breaks as spaces, so it never runs anything until you press Return
@@ -157,8 +158,16 @@ Programs on the card
           2027-12-30 Dentist at 9:30
   hello   the smallest program
   fuzz    20,000 system calls with made-up arguments, each answer checked
-  edit    a text editor: run edit FILE gives it that file; it saves by itself. Home, End,
-          Delete, Page Up and Page Down work as in Notes (its lines are not wrapped)
+  edit    a text editor: run edit FILE gives it that file, of up to 64 KiB; it saves by
+          itself (Ctrl+S at once). Home, End, Delete, Page Up and Page Down work as in
+          Notes (its lines are not wrapped; a tab shows as up to 4 spaces). Click to put
+          the cursor, drag to select, double-click a word. Ctrl+A selects all; Ctrl+B
+          sets a mark and the keys that move then select from it (Shift with an arrow
+          does not reach programs); Ctrl+B again or Escape drops it. Typing, Backspace
+          and a paste replace what is selected; Ctrl+C copies it. There is no cut: copy,
+          then Backspace. Ctrl+Z undoes, Ctrl+Y redoes. Ctrl+F finds as you type (Return:
+          the next, Escape or Ctrl+F: close), Ctrl+G goes to a line. The status line shows
+          the line and the column
   web     a text web browser: run -net web lets it use the network
   view    a picture viewer: run view FILE shows a BMP, PPM or PGM; run view alone shows the
           pictures in its folder, apps/view. Left and Right (or N and P) go through them, F

@@ -187,7 +187,12 @@ Things to try once it is up:
   first line. The arrows, Home, End, Page Up and Page Down move the cursor (Delete deletes
   after it), long notes wrap and scroll, Tab goes to the list (Up and Down, then Return),
   and Ctrl+D twice deletes a note. Each note is a file: `cat notes/1.txt` in Terminal.
-- `run edit notes/1.txt` in Terminal edits that one file, and nothing else.
+- `run edit notes/1.txt` in Terminal edits that one file, and nothing else: up to 64 KiB,
+  with the mouse (click, drag and double-click to select), Ctrl+A and a mark (Ctrl+B) to
+  select from the keyboard, copy and paste of the selection, undo and redo (Ctrl+Z, Ctrl+Y),
+  find (Ctrl+F) and go to a line (Ctrl+G). A file larger than one 16 KiB request is saved
+  into `apps/edit/save.part~` and renamed over it in one step, so a power cut never leaves
+  half of it.
 - `run calendar` shows the month, today in blue once a time server has said the date. The
   arrows, Page Up and Page Down go through the days and months; Return adds an event to the
   day selected, kept in `apps/calendar/events.txt`, one line each.
