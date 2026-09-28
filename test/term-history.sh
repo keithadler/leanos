@@ -49,7 +49,7 @@ steps = [wait_for("usb: ready"),
          b"grep 23 d.txt\r", wait_for("terminal: grep 23"), b"cat e.txt\r", wait_for("terminal: cat e.txt"),
          b"grep q! e.txt\r", wait_for("terminal: grep q!"), b"cat f.txt\r", wait_for("terminal: cat f.txt"),
          b"grep zy f.txt\r", wait_for("terminal: grep zy"),
-         # Tab: two commands start with ca, listed on the second Tab (from the USB keyboard)
+         # Tab: four commands start with ca, listed on the second Tab (from the USB keyboard)
          b"ca\t", pause(0.3), *usb_key("tab"), wait_for("terminal: completions for ca"),
          b"t\t", wait_for("terminal: completed cat"),
          b"we\t\t", wait_for("terminal: completions for we"),
@@ -99,7 +99,7 @@ has "terminal: cat f.txt -> 2 bytes"
 has "terminal: grep zy -> 1 line"
 
 # Tab completion
-has "terminal: completions for ca -> 2: caps cat"
+has "terminal: completions for ca -> 4: cal calc caps cat"
 has "terminal: completed cat -> cat"
 we=$(echo "$out" | grep "^terminal: completions for we -> 3: ") || fail "missing: the names that start with we"
 for n in web web.icon welcome.txt; do echo "$we" | grep -qw -- "$n" || fail "not listed: $n"; done

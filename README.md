@@ -161,7 +161,7 @@ make run      # or: the same Pi 4, headless, on this terminal's serial console
 ```
 
 ```bash
-make test     # 44 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, the calendar and its events, Files as a file manager, the picture viewer, paint and the BMP files it saves, Terminal's pipes, windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
+make test     # 45 tests: proofs, axioms, boot transcript and boot steps, pixels on screen, apps, Apps' pages and type to find, the hardware self-test, Notes and its notes, Clock's stopwatch and timer, Minesweeper played to a loss and a win, the calendar and its events, Files as a file manager, the picture viewer, paint and the BMP files it saves, Terminal's pipes and its text commands (sort, uniq, tr, cut, cal, calc and more), windows, USB, the USB-A ports against a model of the xHCI controller, network, power cuts, the kernel stack, copy and paste, the time zone, every limit at once, servers that serve in turn, and fuzzers for system calls, the file server and the display
 ```
 
 ```bash
@@ -180,6 +180,9 @@ Things to try once it is up:
 - `echo hello > hi.txt`, `ls >> hi.txt`, `cat guide.txt | grep -i tab | wc` and
   `history | tail -n 3`: `>` puts a command's output in a file, `>>` adds it at the end, and
   `|` hands it to grep, head, tail, wc or cat.
+- `ls | sort -r | head -n 3`, `cat guide.txt | tr a-z A-Z | head -n 2`, `seq 10 | sort -n -r`,
+  `cut -d , -f 2 FILE`, `uniq -c`, `nl`, `tee FILE`, `du`, `tree`, `stat FILE`, `touch FILE`,
+  `cal 2 2028`, `calc (2+3)*4`, `time find`, and `!!` or `!3` to run a command from history again.
 - Pick a time zone in **Settings**: the menu bar, Clock and Terminal's `date` show the time there.
   The zone and the background you pick there are kept on the card (`settings.txt`).
 - Click the **globe** in the dock and go to `info.cern.ch`.
