@@ -7,7 +7,8 @@ kernel's decisions waits until it can be proved.
 
 Every stage ends the same way: `make test` passes (proofs, axiom check, boot
 transcript), a deliberately broken version of the new code is shown to fail its proofs,
-and TRUST.md is updated.
+and TRUST.md is updated. How the system is built today, the sum of the stages below, is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 **Target.** Raspberry Pi 4 Model B: a Cortex-A72, the GIC-400 interrupt controller,
 PL011 UART, and the VideoCore mailbox for the framebuffer. It is tested on QEMU's

@@ -11,6 +11,9 @@ leanos splits the kernel in two:
   needs. Its rule is that no check it makes may change an outcome. The checks it does have
   are there only to stop the machine if the two halves ever disagree.
 
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) describes how the two halves, and the servers
+above them, fit together; this document says what of it is proved and what is trusted.
+
 ## Proved
 
 These hold for every state the kernel can reach: `init`, then any sequence of system calls

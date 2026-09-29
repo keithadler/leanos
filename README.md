@@ -275,6 +275,10 @@ What you need to know first:
 
 ## How it fits together
 
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how the pieces fit, with the
+files, types, functions and theorems to look at, and how to make the common changes. In
+short:
+
 | Path | What it is |
 |---|---|
 | [`LeanOS/Kernel.lean`](LeanOS/Kernel.lean) | Every kernel decision: capabilities, mappings, system calls, scheduling, the boot manifest. Compiled into the image. |
