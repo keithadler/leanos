@@ -914,11 +914,17 @@ extern const uint64_t user_progs[], user_prog_ends[];
 extern const uint64_t user_assets[], user_asset_ends[];
 extern const uint64_t open_assets[], open_assets_end[];   /* the fonts for the open slots */
 
+/* A slot's frames hold new code: what any core fetched from them before is dropped. On
+   every core (IALLUIS; IALLU is this core's cache only): the slot's last program ran on
+   whichever cores the scheduler gave it, the new one starts on whichever is free, and a core
+   that kept the old instructions would run them as the new program, under its measurement.
+   All of it, not these lines by address: the instruction cache is indexed by virtual
+   address, and the task ran these frames at its own addresses, not at the kernel's. */
 static void sync_icache(uint64_t start, uint64_t len) {
     for (uint64_t a = start & ~63UL; a < start + len; a += 64)
         __asm__ volatile("dc cvau, %0" :: "r"(a) : "memory");
     DSB(ish);
-    __asm__ volatile("ic iallu" ::: "memory");
+    __asm__ volatile("ic ialluis" ::: "memory");
     DSB(ish);
     ISB();
 }

@@ -4,6 +4,12 @@
    request, as with the file server: a host name or URL at byte 0, data from byte 256. The
    reply: x1 = status, x2 and x3 as each request says.
 
+   A request is a call: the service does nothing for a plain send. It copies the name or URL
+   (NET_TEXT_MAX bytes with the 0 that ends it) out of the buffer before it reads it, so the
+   buffer may hold anything, and change at any time. A GET has NET_REQUEST_MS in all, however
+   slowly the other side sends, and ends at once if the program that asked is stopped: until
+   it ends the service answers nobody else.
+
    A program from the card is answered only if Terminal allowed it (`run -net`): the USB
    driver keeps, per open slot, the hash of the program allowed there (the kernel measured
    it, `bootinfo`), and refuses anything else in that slot with NET_DENIED. Setting the
@@ -31,6 +37,8 @@ struct net_info {
 };
 
 #define NET_BUF_PAGES 4
+#define NET_TEXT_MAX 240
+#define NET_REQUEST_MS 30000
 #define NET_DATA_OFF 256
 #define NET_CHUNK (NET_BUF_PAGES * 4096 - NET_DATA_OFF)
 #define NET_BODY_MAX (512 * 1024)

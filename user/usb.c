@@ -93,6 +93,10 @@ struct usb {
     int body_status;
     u64 body_owner;              /* the badge that fetched it: only it may read it */
     struct { u64 h0, h1; int on; } allow[6];   /* the program allowed in each open slot */
+    /* the request being answered: when to give it up (0: no request, never), for whom, the
+       program that asked if it is one from the card, and when that was last looked at */
+    u64 req_until, req_badge, req_h0, req_h1, req_seen;
+    int req_gone;
     struct net net;
 };
 
@@ -537,6 +541,28 @@ static int net_send(const unsigned char *frame, unsigned len) {
 
 static u64 net_now(void) { return millis(); }
 
+/* Should the connection a request waits on stop waiting? Yes once the request has had
+   NET_REQUEST_MS in all, however the other side spends them, and yes once the program that
+   asked is gone (stopped, or another started in its slot): nobody will read the answer, and
+   while this service waits it answers nobody else, Terminal and Apps starting a program
+   among them. A program from the card is looked at ten times a second. */
+static int net_give_up(void) {
+    struct usb *u = U;
+    if (!u->req_until) return 0;
+    u64 now = millis();
+    if (now >= u->req_until) return 1;
+    if (u->req_badge >= 10 && u->req_badge <= 15 && now - u->req_seen >= 100) {
+        u->req_seen = now;
+        struct res b = sys1(SYS_BOOTINFO, u->req_badge);
+        if (b.x[4] != 1 || b.x[2] != u->req_h0 || b.x[3] != u->req_h1) {
+            u->req_gone = 1;
+            u->req_until = now;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* While an operation waits: frames, keys and the mouse keep moving. */
 static void net_poll(void) {
     struct usb *u = U;
@@ -585,8 +611,16 @@ static int allowed(struct usb *u, u64 badge) {
     return u->allow[k].on && b.x[4] == 1 && b.x[2] == u->allow[k].h0 && b.x[3] == u->allow[k].h1;
 }
 
+/* One request. `buf` is the caller's buffer, mapped here: memory this driver does not own.
+   The text at its start is copied out before anything reads it, so what is parsed cannot
+   change while it is parsed, and nothing below reads the buffer again. Only INFO and READ
+   write to it, at once. The requests that wait on the network (PING, TIME, GET) never
+   touch it after the copy: if the caller's slot is started again while they wait, the
+   kernel takes the buffer back, and a driver that then read or wrote it would stop. */
 static u64 request(struct usb *u, u64 badge, u64 op, u64 arg, char *buf, u64 *v2, u64 *v3) {
-    buf[239] = 0;
+    char text[NET_TEXT_MAX];
+    for (int i = 0; i < NET_TEXT_MAX - 1; i++) text[i] = buf[i];
+    text[NET_TEXT_MAX - 1] = 0;
     if (!allowed(u, badge) && !(badge == 16 && op == NET_ALLOW)) return NET_DENIED;   /* Apps: only to allow */
     if ((op == NET_TIME && badge != 5) || (op == NET_ALLOW && badge != 5 && badge != 16)) return NET_DENIED;
     if (op == NET_ALLOW) {
@@ -623,7 +657,7 @@ static u64 request(struct usb *u, u64 badge, u64 op, u64 arg, char *buf, u64 *v2
     if (!u->has_net) return NET_NO_DEVICE;
     if (!u->net.up && !dhcp(&u->net)) return NET_NO_ADDRESS;
     if (op == NET_PING) {
-        unsigned ip = resolve(&u->net, buf);
+        unsigned ip = resolve(&u->net, text);
         if (!ip) return NET_NO_HOST;
         long ms = ping(&u->net, ip);
         if (ms < 0) return NET_NO_ANSWER;
@@ -632,7 +666,7 @@ static u64 request(struct usb *u, u64 badge, u64 op, u64 arg, char *buf, u64 *v2
         return NET_OK;
     }
     if (op == NET_TIME) {
-        unsigned secs = set_time(u, buf[0] ? buf : "pool.ntp.org", 1);
+        unsigned secs = set_time(u, text[0] ? text : "pool.ntp.org", 1);
         if (!secs) return NET_NO_ANSWER;
         *v2 = secs;
         return NET_OK;
@@ -641,7 +675,24 @@ static u64 request(struct usb *u, u64 badge, u64 op, u64 arg, char *buf, u64 *v2
         int http_status = 0;
         u64 body = 0;
         u->body_len = 0;
-        long n = http_get(&u->net, buf, u->dma + BODY_OFF, NET_BODY_MAX, &http_status, &body);
+        /* the whole exchange gets NET_REQUEST_MS, and ends early if the caller is gone */
+        struct res who = sys1(SYS_BOOTINFO, badge);
+        u->req_badge = badge;
+        u->req_h0 = who.x[2];
+        u->req_h1 = who.x[3];
+        u->req_seen = millis();
+        u->req_gone = 0;
+        u->req_until = u->req_seen + NET_REQUEST_MS;
+        long n = http_get(&u->net, text, u->dma + BODY_OFF, NET_BODY_MAX, &http_status, &body);
+        int late = n < 0 && net_give_up();
+        u->req_until = 0;
+        if (late) {
+            put_s(&u->l, "usb: network: gave up a page for ");
+            if (badge >= 10 && badge <= 15) { put_s(&u->l, "slot "); put_dec(&u->l, badge); }
+            else put_s(&u->l, "Terminal");
+            put_s(&u->l, u->req_gone ? ": its program is gone" : ": it took too long");
+            say(u);
+        }
         if (n == -2) return NET_UNSUPPORTED;
         if (n == -3) return NET_NO_HOST;
         if (n < 0) return NET_NO_ANSWER;
@@ -686,8 +737,11 @@ static void serve(struct usb *u) {
             u64 badge = r.x[1], op = r.x[2], arg = r.x[3], grant = r.x[5], slot = r.x[6];
             u64 code = NET_BAD, v2 = 0, v3 = 0;
             if (grant) {
+                /* Only a call is a request. A plain send has nobody to answer, and its sender
+                   is not waiting: it runs on, on another core, and could change the buffer
+                   while this reads it. Its capability is let go of all the same. */
                 struct res info = sys1(SYS_CAPINFO, grant - 1);
-                if (info.x[2] == 0 && info.x[3] == NET_BUF_PAGES && (info.x[1] & (R | W)) == (R | W) &&
+                if (slot && info.x[2] == 0 && info.x[3] == NET_BUF_PAGES && (info.x[1] & (R | W)) == (R | W) &&
                     sys2(SYS_MAP, grant - 1, REQ_PAGE).status == OK) {
                     code = request(u, badge, op, arg, (char *)PAGE(REQ_PAGE), &v2, &v3);
                     sys2(SYS_UNMAP, REQ_PAGE, NET_BUF_PAGES);
@@ -711,6 +765,7 @@ __attribute__((section(".text.start"))) void _start(void) {
     u->has_net = u->net_armed = 0;
     u->body_len = 0;
     u->body_owner = 0;
+    u->req_until = 0;
     for (int k = 0; k < 6; k++) u->allow[k].on = 0;
     u->net.up = 0;
     u->net.ip = u->net.mask = u->net.gw = u->net.dns = 0;

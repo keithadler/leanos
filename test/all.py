@@ -6,7 +6,7 @@ captures, its tampered kernel), so no two tests share a file. What a test prints
 build/test/NAME/output.txt and is shown whole when the test ends, never mixed with another's;
 then a table of every test and how long it took. The longest tests start first.
 
-net, web, timezone, calendar and term-more start servers on the host for leanos to reach, so they run one
+net, web, netsafe, timezone, calendar and term-more start servers on the host for leanos to reach, so they run one
 after the other, never beside each other. crash cuts the power on CRASH_LANES cards at once (test/crash.sh)
 and counts for that many.
 
@@ -33,9 +33,9 @@ TESTS = {"boot": 4, "apps": 31, "programs": 25, "power": 8, "piimage": 3, "tampe
          "dfuzz": 38, "spoof": 16, "windows": 9, "serial": 10, "winmgmt": 27, "responsive": 12,
          "files": 18, "term-pipes": 12, "clock": 20, "notes": 20, "mines": 14, "xhci": 8, "selftest": 12,
          "apps-pages": 8, "calendar": 20, "view": 18, "paint": 32, "term-more": 25, "open-with": 15, "solitaire": 35,
-         "force-quit": 12, "keys": 8}
+         "force-quit": 12, "keys": 8, "netsafe": 50}
 # Tests that must not overlap: each group runs as one chain, in this order.
-CHAINS = [("net", "web", "timezone", "calendar", "term-more")]
+CHAINS = [("net", "web", "netsafe", "timezone", "calendar", "term-more")]
 
 
 def default_jobs():

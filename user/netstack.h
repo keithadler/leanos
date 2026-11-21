@@ -5,9 +5,10 @@
    It is a client stack for a small computer on a friendly network (QEMU's user network,
    a home router): no IP options, no fragments, TCP data taken in order only (anything out
    of order is dropped and sent again by the other side), a fixed window. What it needs from
-   usb.c: net_send(frame, length), net_now() in ms, and net_poll(), which receives whatever
+   usb.c: net_send(frame, length), net_now() in ms, net_poll(), which receives whatever
    arrived (calling net_input) and keeps the keyboard and mouse going while an operation
-   waits. */
+   waits, and net_give_up(), which says when a connection should stop waiting: the other
+   side decides how long it sends, and must not decide how long everyone else waits. */
 #pragma once
 #include "lib.h"
 
@@ -47,6 +48,7 @@ struct net {
 static int net_send(const unsigned char *frame, unsigned len);
 static u64 net_now(void);
 static void net_poll(void);
+static int net_give_up(void);
 
 static unsigned short be16(const unsigned char *p) { return (unsigned short)(p[0] << 8 | p[1]); }
 static unsigned be32(const unsigned char *p) { return (unsigned)p[0] << 24 | (unsigned)p[1] << 16 | (unsigned)p[2] << 8 | p[3]; }
@@ -357,7 +359,8 @@ static void tcp_input(struct net *n, unsigned src, const unsigned char *t, unsig
 }
 
 /* Connect to ip:port, send `req`, and take everything the other side sends until it
-   closes, into `out` (up to `max`). The bytes received, or -1. */
+   closes, into `out` (up to `max`). The bytes received, or -1. Every wait ends when
+   net_give_up() says so: the connection is reset, and nothing of it is kept. */
 static long tcp_exchange(struct net *n, unsigned ip, unsigned port, const unsigned char *req, unsigned rlen,
                          unsigned char *out, u64 max) {
     n->tcp_ip = ip;
@@ -371,7 +374,8 @@ static long tcp_exchange(struct net *n, unsigned ip, unsigned port, const unsign
     for (int tries = 0; tries < 4 && n->tcp_state == 1; tries++) {
         tcp_send(n, SYN, 0, 0);
         u64 until = net_now() + 1000;
-        while (n->tcp_state == 1 && net_now() < until) net_poll();
+        while (n->tcp_state == 1 && net_now() < until && !net_give_up()) net_poll();
+        if (net_give_up()) break;
     }
     if (n->tcp_state != 2) { n->tcp_state = 0; return -1; }
     /* the request: sent again until it is acknowledged or the answer starts */
@@ -381,13 +385,21 @@ static long tcp_exchange(struct net *n, unsigned ip, unsigned port, const unsign
         tcp_send(n, PSH | ACK, req, rlen);
         n->tcp_snd = start + rlen;
         u64 until = net_now() + 1000;
-        while (n->tcp_state == 2 && n->tcp_una != start + rlen && !n->rx_len && net_now() < until) net_poll();
-        if (n->tcp_una == start + rlen || n->rx_len || n->tcp_state != 2) break;
+        while (n->tcp_state == 2 && n->tcp_una != start + rlen && !n->rx_len && net_now() < until && !net_give_up())
+            net_poll();
+        if (n->tcp_una == start + rlen || n->rx_len || n->tcp_state != 2 || net_give_up()) break;
     }
+    /* The answer: until the other side closes, or sends nothing for 10 seconds. A byte now
+       and then would keep that wait going for as long as the other side liked. */
     u64 idle = net_now(), seen = n->rx_len;
-    while (n->tcp_state == 2 && net_now() - idle < 10000) {
+    while (n->tcp_state == 2 && net_now() - idle < 10000 && !net_give_up()) {
         net_poll();
         if (n->rx_len != seen) { seen = n->rx_len; idle = net_now(); }
+    }
+    if (n->tcp_state == 2 && net_give_up()) {
+        tcp_send(n, RST | ACK, 0, 0);
+        n->tcp_state = 0;
+        return -1;
     }
     if (n->tcp_state == 3) tcp_send(n, FIN | ACK, 0, 0);
     int ok = n->tcp_state == 3 || n->tcp_state == 2;

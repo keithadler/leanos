@@ -590,7 +590,15 @@ for bare metal: allocator, reference counting, closures, arrays. Its limits:
     doing when it gets the lock. A core whose task was stopped from another core drops the
     call it was making the same way;
   - use TLB maintenance that reaches every core (`tlbi vmalle1is`), since a task may run
-    on any core and another core may change its tables.
+    on any core and another core may change its tables;
+  - after loading a slot, drop the instructions every core fetched from its frames before
+    (`sync_icache`: `ic ialluis`, not `ic iallu`, which is the loading core's cache only).
+    The slot's last program ran on whichever cores it was given, and the new one starts on
+    whichever is free: a core that kept the old instructions would run them as the new
+    program, with what that program was handed and under its measurement, so
+    `only_verified_runs` would say less than it seems to. It used to be `ic iallu`. QEMU
+    has no caches, so neither the fault nor its fix can show there; it was found by reading,
+    and waits for a board to be seen.
   Device interrupts go to core 0 only; timer ticks from cores 1-3 only move the round robin
   on (`exRotate`), so `now` counts core 0's ticks. `timer_bounded_wait` counts timer
   interrupts; that each core takes one every 10 ms is this layer's timer programming. Disk, USB and board requests run with the lock held, so
@@ -796,7 +804,31 @@ the kernel.
   display server starts what the user clicked.
 - The network stack (`user/netstack.h`, in the USB driver) is trusted C, not proved: it
   sees each network request and Terminal's buffer while it answers it, as the file server
-  does. What is proved is where its memory can go: the adapter's DMA only into the driver's
+  does. It is the same task as the USB keyboard and mouse, and it answers one request at a
+  time, so what stops it or holds it stops them too, and every program Terminal or Apps
+  starts next (each start asks it who may use the network). Three things it is trusted
+  with for that, tested by `test/netsafe.sh`, not proved:
+  - Only a call is a request. It used to act on a plain send too, whose sender is not
+    waiting and runs on, on another core: a program allowed the network could change the
+    buffer it had lent while the service read a name in it, past the 0 the service had put
+    at byte 239, off the end of the buffer's four pages, and the USB driver stopped. A
+    plain send's capability is now dropped and nothing else done.
+  - It copies the name or URL out of the caller's buffer before it reads it, and the
+    requests that wait on the network never touch the buffer again. So what it parses
+    cannot change, and a buffer the kernel takes back while it waits (the caller's slot
+    started again) is not one it then reads. Between mapping the buffer and copying those
+    240 bytes it could still be taken back, as with the file server's.
+  - A page gets 30 seconds in all (`NET_REQUEST_MS`), and none once the program that asked
+    is gone (looked at ten times a second). The wait used to end 10 seconds after the last
+    byte, so a server sending a byte now and then held the service for as long as it
+    liked, and stopping the program that asked did not end it. Still true: for up to those
+    30 seconds, and a name lookup and a connection before them, nothing else is answered.
+  What `test/netsafe.sh` does: a program from the card (`user/progs/netrace.c`) sends 200
+  plain sends with the buffer changing under each, and must then be answered; a server
+  that sends a byte every 2 seconds for ever is asked by Terminal, which must hear "no
+  answer" after about 30 seconds, and by `web`, which is then killed, after which the next
+  program must start within seconds. With the service as it was, the first part stops the
+  USB driver. What is proved is where its memory can go: the adapter's DMA only into the driver's
   own frames (`usb_dma_own_memory`, now over `dmaOk`'s own-frames check), and what
   Terminal lends it never further (`net_server_frames`). The USB driver polls its devices
   every 8 ms instead of taking the controller's interrupt, so it can wait for requests

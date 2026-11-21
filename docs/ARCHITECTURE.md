@@ -692,7 +692,9 @@ not proved (TRUST.md, Known gaps).
   ([user/net.h](../user/net.h): `NET_INFO`, `NET_PING`, `NET_GET`, `NET_READ`, `NET_TIME`,
   `NET_ALLOW`), on a small client stack in [user/netstack.h](../user/netstack.h) over the USB
   network adapter (DHCP, DNS, ICMP, TCP, HTTP/1.0, SNTP). Requests use the same 4-page
-  buffer grant as the file server. A program in an open slot is answered only if its slot
+  buffer grant as the file server. Only a call is a request; the name or URL is copied out
+  of the buffer before it is read; and a page gets 30 seconds in all, or none once the
+  program that asked is gone ([test/netsafe.sh](../test/netsafe.sh)). A program in an open slot is answered only if its slot
   was allowed for that program's hash (`run -net` in Terminal; Apps allows `web`). The stack
   is being reworked, so this document stops at its interface.
 - **The input driver** ([user/input.c](../user/input.c)) holds the UART and its interrupt,
@@ -832,10 +834,10 @@ flowchart LR
 
 ## 8. Testing
 
-`make test` runs [test/all.py](../test/all.py): 49 tests, each a shell script
+`make test` runs [test/all.py](../test/all.py): 50 tests, each a shell script
 `test/NAME.sh` run in its own folder `build/test/NAME` (its card, its screens, its output),
 several at once (`JOBS`, default half the cores, at most 4), the longest first. Tests that
-start servers on the host (net, web, timezone, calendar, term-more) form one chain and run
+start servers on the host (net, web, netsafe, timezone, calendar, term-more) form one chain and run
 one after another. `test/all.py NAME...` runs some.
 
 - **[test/run.py](../test/run.py)** boots QEMU's `raspi4b`, headless, with a card (a copy of
