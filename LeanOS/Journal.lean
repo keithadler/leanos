@@ -111,11 +111,11 @@ theorem recover_clean (csum : List Blk → Nat) (J : Nat) (d : Disk) (h : d J = 
 theorem recover_commit (csum : List Blk → Nat) (J : Nat) (d : Disk) {n : Nat} {ts : List Nat} {s : Nat}
     (h : d J = .header n ts s) (hc : n ≠ 0 ∧ ts.length = n ∧ csum (readJ d J 0 n) = s) :
     recover csum J d = upd (applyW (ts.zip (readJ d J 0 n)) d) J clean := by
-  unfold recover; rw [h]; exact if_pos hc
+  unfold recover; rw [h]; exact ite_eq_left hc
 
 theorem recover_nothing (csum : List Blk → Nat) (J : Nat) (d : Disk) {ts : List Nat} {s : Nat}
     (h : d J = .header 0 ts s) : recover csum J d = upd d J clean := by
-  unfold recover; rw [h]; exact if_neg (fun hc => hc.1 rfl)
+  unfold recover; rw [h]; exact ite_eq_right (fun hc => hc.1 rfl)
 
 /-! ## The theorem -/
 

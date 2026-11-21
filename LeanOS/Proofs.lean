@@ -95,7 +95,7 @@ theorem mem_dropRange : ∀ {vpn count : Nat} {ms : List Mapping} {m : Mapping},
   | vpn, count, x :: ms, m => by
     by_cases hx : vpn ≤ x.vpn ∧ x.vpn < vpn + count
     · have : (decide (vpn ≤ x.vpn) && decide (x.vpn < vpn + count)) = true := by simp [hx.1, hx.2]
-      simp only [dropRange, this, if_true, mem_dropRange (ms := ms)]
+      simp only [dropRange, this, ite_true, mem_dropRange (ms := ms)]
       constructor
       · rintro ⟨h, hn⟩; exact ⟨List.mem_cons_of_mem _ h, hn⟩
       · rintro ⟨h, hn⟩
@@ -104,7 +104,7 @@ theorem mem_dropRange : ∀ {vpn count : Nat} {ms : List Mapping} {m : Mapping},
         · exact ⟨h, hn⟩
     · have : (decide (vpn ≤ x.vpn) && decide (x.vpn < vpn + count)) = false := by
         simpa [Bool.and_eq_true, decide_eq_true_eq] using hx
-      simp only [dropRange, this, Bool.false_eq_true, if_false, List.mem_cons, mem_dropRange (ms := ms)]
+      simp only [dropRange, this, Bool.false_eq_true, ite_false, List.mem_cons, mem_dropRange (ms := ms)]
       constructor
       · rintro (rfl | ⟨h, hn⟩)
         · exact ⟨Or.inl rfl, hx⟩
@@ -1615,7 +1615,7 @@ theorem reply_grants_nothing {s : KState} {t : Task} (ht : nth? s.tasks s.cur = 
 
 /-- **A reply wakes only its caller.** Replying changes the status of no task other than
 the replier, except a task that was waiting for this replier's reply. -/
-theorem reply_wakes_only_caller {s : KState} {t : Task} (ht : nth? s.tasks s.cur = some t)
+theorem reply_wakes_only_caller {s : KState} {t : Task} (_ht : nth? s.tasks s.cur = some t)
     (slot w0 w1 w2 j : Nat) (hj : j ≠ s.cur) {u u' : Task} (hu : nth? s.tasks j = some u)
     (hu' : nth? (sysReply s t slot w0 w1 w2).state.tasks j = some u')
     (hch : u'.status ≠ u.status) : u.status = .awaiting s.cur := by
@@ -1628,7 +1628,7 @@ theorem reply_wakes_only_caller {s : KState} {t : Task} (ht : nth? s.tasks s.cur
     · rename_i haw
       split at hu'
       · rename_i v hv
-        simp only [ret, wake_tasks, wake_cur, setTask, nth?_setNth, Ne.symm hj, if_false] at hu'
+        simp only [ret, wake_tasks, wake_cur, setTask, nth?_setNth, Ne.symm hj, ite_false] at hu'
         by_cases hkj : k = j
         · subst hkj
           obtain ⟨w, hw, hst⟩ := awaitsFrom_spec haw
@@ -2401,7 +2401,7 @@ theorem sysBlock_io {s : KState} {t : Task} {ci idx va k : Nat} {w : Bool}
         have hc' := hcond
         simp only [Bool.and_eq_true] at hc'
         refine ⟨c, b, n, hc, hb, hc'.1.1, hc'.1.2, hc'.2, ?_⟩
-        simp only [if_pos hcond, and_self]
+        simp only [ite_eq_left hcond, and_self]
       · simp at h
     · simp at h
 
@@ -2648,10 +2648,10 @@ theorem exec_reads_only_readable (s : KState) (num a0 a1 a2 a3 a4 : Nat)
   obtain ⟨k, t', hload, hopen, hva, hlen, ht', himg⟩ := sysStart_image ht hl
   refine ⟨k, t', hload, hopen, ht', ?_, ?_⟩
   · rw [hlen]
-    simp only [imageOk, hopen, if_true, Bool.and_eq_true, Nat.ble_eq] at himg
+    simp only [imageOk, hopen, ite_true, Bool.and_eq_true, Nat.ble_eq] at himg
     exact himg.1.1.2
   · rw [hva, hlen]
-    simp only [imageOk, hopen, if_true, Bool.and_eq_true, Nat.ble_eq] at himg
+    simp only [imageOk, hopen, ite_true, Bool.and_eq_true, Nat.ble_eq] at himg
     obtain ⟨⟨⟨h1, _⟩, hub⟩, hall⟩ := himg
     intro a ha1 ha2
     refine ⟨by omega, readableAt_spec (allReadable_spec hall ?_ ?_)⟩
@@ -2782,7 +2782,7 @@ theorem irq_runs_holder (s : KState) (n j : Nat) {u u' : Task}
         have hr : runnable (setTask s k { v with status := .ready, result := 0 :: .nil }).busy
             (setTask s k { v with status := .ready, result := 0 :: .nil }).tasks k = true := by
           simp [runnable, isReady, setTask, nth?_setNth, hv, hb]
-        unfold preempt; rw [if_pos hr]; exact ⟨rfl, rfl⟩
+        unfold preempt; rw [ite_eq_left hr]; exact ⟨rfl, rfl⟩
       · simp [setTask, nth?_setNth, hkj, hu] at hu'; subst hu'; exact absurd rfl hch
 
 /-- **An interrupt never runs a task another core runs.** Taking an interrupt either leaves
@@ -2813,7 +2813,7 @@ theorem send_wakes_next (s : KState) (t : Task) (ci w0 w1 w2 gi : Nat) (call : B
   unfold sysSend at hr
   repeat' (first | split at hr | dsimp only at hr)
   all_goals subst hr
-  all_goals simp only [ret, wake_tasks, wake_cur, schedule_tasks, setTask, nth?_setNth, Ne.symm hj, if_false,
+  all_goals simp only [ret, wake_tasks, wake_cur, schedule_tasks, setTask, nth?_setNth, Ne.symm hj, ite_false,
     Option.map_some, hu] at hu'
   all_goals first
     | (cases hu'; exact absurd hr' hnr)
@@ -2837,7 +2837,7 @@ theorem recv_wakes_next (s : KState) (t : Task) (ci : Nat) (block : Bool) (deadl
   repeat' (first | split at hr | dsimp only at hr)
   all_goals subst hr
   all_goals simp only [ret, serve, wakeSender_tasks, wakeSender_cur, schedule_tasks, setTask, nth?_setNth,
-    Ne.symm hj, if_false, Option.map_some, hu] at hu'
+    Ne.symm hj, ite_false, Option.map_some, hu] at hu'
   all_goals first
     | (cases hu'; exact absurd hr' hnr)
     | (split at hu'
@@ -2857,7 +2857,7 @@ theorem reply_wakes_next (s : KState) (t : Task) (slot w0 w1 w2 : Nat) {j : Nat}
   unfold sysReply at hr
   repeat' (first | split at hr | dsimp only at hr)
   all_goals subst hr
-  all_goals simp only [ret, wake_tasks, wake_cur, setTask, nth?_setNth, Ne.symm hj, if_false, Option.map_some,
+  all_goals simp only [ret, wake_tasks, wake_cur, setTask, nth?_setNth, Ne.symm hj, ite_false, Option.map_some,
     hu] at hu'
   all_goals first
     | (cases hu'; exact absurd hr' hnr)
@@ -3047,7 +3047,7 @@ theorem sleep_on_time (s : KState) (t : Task) (ms : Nat) (hms : 0 < ms)
   unfold sysSleep
   dsimp only
   have hpos : (ms + tickMs - 1) / tickMs ≠ 0 := by simp [tickMs]; omega
-  simp only [hpos, if_false, schedule_tasks, setTask, nth?_setNth, if_pos, ht, Option.map_some]
+  simp only [hpos, ite_false, schedule_tasks, setTask, nth?_setNth, ite_eq_left, ht, Option.map_some]
   refine ⟨s.now + (ms + tickMs - 1) / tickMs, _, rfl, rfl, Nat.le_add_right _ _, ?_, ?_⟩ <;>
     simp only [Nat.add_sub_cancel_left, tickMs] <;> omega
 
@@ -3083,10 +3083,10 @@ theorem boardRequest_listed (w v : Nat) : boardRequest w v = 0 ∨ boardRequest 
   by_cases h1 : w = 1
   · simp [h1, boardRequests]
   by_cases h2 : w = 2
-  · simp only [h2, if_true]
+  · simp only [h2, ite_true]
     rcases v with _ | _ | _ | v <;> simp [nth?, cpuSpeeds, boardRequests]
   by_cases h3 : w = 3 ∧ v < 2
-  · simp only [h3, if_true, and_self]
+  · simp only [h3, ite_true, and_self]
     right
     rcases h3 with ⟨_, hv⟩
     rcases v with _ | _ | v
@@ -3214,34 +3214,34 @@ theorem sysUsb_spec {s : KState} {t : Task} {ci op reg v : Nat} (h : (sysUsb s t
     refine ⟨c, rfl, ho, ?_⟩
     by_cases hop0 : op = 0
     · subst hop0
-      simp only [if_true] at h ⊢
+      simp only [ite_true] at h ⊢
       split at h
       · rename_i hr
         simp only [Bool.and_eq_true, beq_iff_eq, Nat.ble_eq] at hr
-        simp only [if_pos (by simp [hr.1.1, hr.1.2, hr.2] : (c.rights.r && reg % 4 == 0 && Nat.ble (reg + 1) 0x1000) = true)]
+        simp only [ite_eq_left (by simp [hr.1.1, hr.1.2, hr.2] : (c.rights.r && reg % 4 == 0 && Nat.ble (reg + 1) 0x1000) = true)]
         left; exact ⟨by simp, hr.1.1, hr.1.2, by omega⟩
       · simp at h
-    · simp only [hop0, if_false] at h ⊢
+    · simp only [hop0, ite_false] at h ⊢
       split at h
       · rename_i hw
-        rw [if_pos hw]
+        rw [ite_eq_left hw]
         simp only [Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq] at hw
         obtain ⟨⟨_, hwr⟩, hf⟩ := hw
         split at h
         · simp at h
         · rename_i hd
-          rw [if_neg hd]
+          rw [ite_eq_right hd]
           split at h
           · simp at h
           · rename_i hz
-            rw [if_neg hz]
+            rw [ite_eq_right hz]
             split at h
             · rename_i hen
-              rw [if_pos hen]
+              rw [ite_eq_left hen]
               try dsimp only at h ⊢
               split at h
               · rename_i hok
-                rw [if_pos hok]
+                rw [ite_eq_left hok]
                 right; right
                 simp only [Bool.and_eq_true, beq_iff_eq, Nat.ble_eq, inChan] at hen
                 refine ⟨by simp, hwr, ?_, by simp, by simp, hok⟩
@@ -3249,7 +3249,7 @@ theorem sysUsb_spec {s : KState} {t : Task} {ci op reg v : Nat} (h : (sysUsb s t
                 unfold chanOf; omega
               · simp at h
             · rename_i hen
-              rw [if_neg hen]
+              rw [ite_eq_right hen]
               right; left
               refine ⟨by simp, hwr, hf, ?_, ?_⟩
               · rintro ⟨hi, hr | hr⟩
@@ -3334,7 +3334,7 @@ theorem usb_dma_own_memory {s : KState} (hr : Reachable s) {num a0 a1 a2 a3 a4 :
   unfold owner
   have hp : (x - frameBase) / pageSize < poolFrames := by
     simp only [pageSize, frameBase, framesPerTask, usbTask, poolFrames, maxTasks] at *; omega
-  rw [if_pos hp]
+  rw [ite_eq_left hp]
   simp only [framesPerTask, usbTask] at hf1 hf2 ⊢
   omega
 

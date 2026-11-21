@@ -368,7 +368,7 @@ theorem recv_in_turn {s s' : KState} (h : Reachable s) {e k : Nat} (hk : Takes e
   · simp [lastServed, serve, setTask, nth?_setNth, hv]
   · simp [lastServed, serve, setTask, nth?_setNth, Ne.symm he']
   · rintro ⟨u', m', hu', hst'⟩
-    simp only [serve, wakeSender_tasks, setTask, nth?_setNth, Ne.symm hkc, if_false, if_true, hu,
+    simp only [serve, wakeSender_tasks, setTask, nth?_setNth, Ne.symm hkc, ite_false, ite_true, hu,
       Option.map_some] at hu'
     cases hu'
     split at hst' <;> cases hst'

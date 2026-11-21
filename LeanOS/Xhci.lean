@@ -274,13 +274,13 @@ theorem xDataOk_spec {j : Nat} {cs : List Cap} {a n : Nat} (h : xDataOk j cs a n
 theorem trbAt_cmd {z : Nat} (hz : z < xCmdTrbs) (p st ctl : Nat) :
     Model.trbAt (xTrbAddr z) p st ctl = Model.commandTrb p st ctl := by
   unfold Model.trbAt xTrbAddr
-  rw [if_pos hz, if_pos (by xlits; omega)]
+  rw [ite_eq_left hz, ite_eq_left (by xlits; omega)]
 
 /-- A TRB in the transfer rings is read as a transfer TRB. -/
 theorem trbAt_ring {z : Nat} (hz : ¬ z < xCmdTrbs) (hz' : z < xTrbs) (p st ctl : Nat) :
     Model.trbAt (xTrbAddr z) p st ctl = Model.transferTrb p st ctl := by
   unfold Model.trbAt xTrbAddr
-  rw [if_neg hz, if_neg (by xlits; omega), if_pos (by xlits; omega)]
+  rw [ite_eq_right hz, ite_eq_right (by xlits; omega), ite_eq_left (by xlits; omega)]
 
 /-- A Link TRB the kernel allows goes to its own ring. -/
 theorem link_ok {j : Nat} {cs : List Cap} {cmd : Bool} {p st ctl : Nat}
@@ -290,11 +290,11 @@ theorem link_ok {j : Nat} {cs : List Cap} {cmd : Bool} {p st ctl : Nat}
   obtain ⟨⟨hp, hin⟩, hi⟩ := h
   have hp16 : Model.ptr16 p = p := by simp only [Model.ptr16]; omega
   cases cmd
-  · simp only [Bool.false_eq_true, if_false, Bool.and_eq_true, Nat.ble_eq, decide_eq_true_eq] at hin ⊢
+  · simp only [Bool.false_eq_true, ite_false, Bool.and_eq_true, Nat.ble_eq, decide_eq_true_eq] at hin ⊢
     simp only [Model.transferTrb, type_eq, intr_eq, ht, hi, hp16]
     intro a ha; simp [tLink] at ha; subst ha
     exact ⟨hp, by xlits; omega, by xlits; omega⟩
-  · simp only [if_true, Bool.and_eq_true, Nat.ble_eq, decide_eq_true_eq] at hin ⊢
+  · simp only [ite_true, Bool.and_eq_true, Nat.ble_eq, decide_eq_true_eq] at hin ⊢
     simp only [Model.commandTrb, type_eq, intr_eq, ht, hi, hp16]
     intro a ha; simp [tLink] at ha; subst ha
     exact ⟨hp, by xlits; omega, by xlits; omega⟩
@@ -333,7 +333,7 @@ theorem xfer_ok {j : Nat} {cs : List Cap} {p st ctl : Nat}
   rcases h with ((((⟨⟨hty, hidt⟩, hd⟩ | ⟨⟨hty, hidt⟩, hl⟩) | hty) | hty) | hty) <;>
     simp only [tNormal, tData, tSetup, tStatus, tEventData, tNoOp] at hty
   · have h13 : xType ctl = 1 ∨ xType ctl = 2 ∨ xType ctl = 3 ∨ xType ctl = 5 := by omega
-    simp only [h13, hidt, ne_eq, not_true_eq_false, if_false, if_true, Bool.false_eq_true] at ha
+    simp only [h13, hidt, ne_eq, not_true_eq_false, ite_false, ite_true, Bool.false_eq_true] at ha
     rw [mem_one] at ha; subst ha; exact xDataOk_spec hd
   · simp [hty, hidt] at ha
   all_goals simp [hty] at ha
@@ -351,10 +351,10 @@ theorem trb_ok {j : Nat} {cs : List Cap} {z p st ctl : Nat} (hz : z < xTrbs)
     have hcb : ltB z xCmdTrbs = true := by simp [hc]
     rw [hcb] at h
     split at h
-    · simp only [Bool.and_eq_true, beq_iff_eq, if_true] at h
+    · simp only [Bool.and_eq_true, beq_iff_eq, ite_true] at h
       obtain ⟨⟨ht, rfl⟩, rfl⟩ := h
       simpa using link_ok (j := j) (cs := cs) (cmd := true) (ctl := ctl) ht link_cmd_last
-    · simp only [Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq, if_true] at h
+    · simp only [Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq, ite_true] at h
       rcases h with ⟨ht, hl⟩ | h
       · simpa using link_ok (j := j) (cs := cs) (cmd := true) ht hl
       · exact cmd_ok h
@@ -362,10 +362,10 @@ theorem trb_ok {j : Nat} {cs : List Cap} {z p st ctl : Nat} (hz : z < xTrbs)
     have hcb : ltB z xCmdTrbs = false := by simp [hc]
     rw [hcb] at h
     split at h
-    · simp only [Bool.and_eq_true, beq_iff_eq, Bool.false_eq_true, if_false] at h
+    · simp only [Bool.and_eq_true, beq_iff_eq, Bool.false_eq_true, ite_false] at h
       obtain ⟨⟨ht, rfl⟩, rfl⟩ := h
       simpa using link_ok (j := j) (cs := cs) (cmd := false) (ctl := ctl) ht link_ring_last
-    · simp only [Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq, Bool.false_eq_true, if_false] at h
+    · simp only [Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq, Bool.false_eq_true, ite_false] at h
       rcases h with ⟨ht, hl⟩ | h
       · simpa using link_ok (j := j) (cs := cs) (cmd := false) ht hl
       · exact xfer_ok h
@@ -381,13 +381,13 @@ theorem guard_noop {z ctl p st : Nat} (hz : z < xTrbs) (hl : xLast z = false)
   by_cases hc : z < xCmdTrbs
   · rw [trbAt_cmd hc]
     have : Model.trbType (xGuard z ctl) = 23 := by
-      simp only [xGuard, hl, ltB_eq, hc, decide_true, if_true, Bool.false_eq_true, if_false,
+      simp only [xGuard, hl, ltB_eq, hc, decide_true, ite_true, Bool.false_eq_true, ite_false,
         Model.trbType, tNoOpCmd]
       omega
     simp [Model.commandTrb, this]
   · rw [trbAt_ring hc hz]
     have : Model.trbType (xGuard z ctl) = 8 := by
-      simp only [xGuard, hl, ltB_eq, hc, decide_false, Bool.false_eq_true, if_false,
+      simp only [xGuard, hl, ltB_eq, hc, decide_false, Bool.false_eq_true, ite_false,
         Model.trbType, tNoOp]
       omega
     simp [Model.transferTrb, this, hi.resolve_left hc]
@@ -407,7 +407,7 @@ theorem guard_ok {j : Nat} {cs : List Cap} {z p st ctl : Nat} (hz : z < xTrbs)
         unfold xTrbOk at h
         dsimp only at h
         have hcb : ltB z xCmdTrbs = false := by simp [hc]
-        simp only [hl, hcb, Bool.false_eq_true, if_false, Bool.or_eq_true, Bool.and_eq_true,
+        simp only [hl, hcb, Bool.false_eq_true, ite_false, Bool.or_eq_true, Bool.and_eq_true,
           xLinkOk, xXferOk, beq_iff_eq] at h
         rcases h with ⟨-, -, h⟩ | ⟨h, -⟩ <;> exact h
   · have : xGuard z ctl = ctl := by simp [xGuard, hl]
@@ -424,31 +424,31 @@ theorem ctx_ok {j : Nat} {cs : List Cap} {z lo hi : Nat} (h : xCtxOk z lo hi = t
   intro a ha
   unfold Model.inputUnit at ha
   dsimp only at ha
-  rw [if_neg (by simp only [xInputs]; omega)] at ha
+  rw [ite_eq_right (by simp only [xInputs]; omega)] at ha
   split at h5
   · rename_i hc
     simp only [Bool.and_eq_true, beq_iff_eq, pageSize] at hc
-    rw [if_pos hc, intr_eq] at ha
+    rw [ite_eq_left hc, intr_eq] at ha
     simp only [beq_iff_eq] at h5
     rw [h5] at ha
     exact absurd ha (by simp)
   · rename_i hc
     simp only [Bool.and_eq_true, beq_iff_eq, pageSize] at hc
-    rw [if_neg hc] at ha
+    rw [ite_eq_right hc] at ha
     split at h5
     · rename_i hc2
       simp only [Bool.and_eq_true, beq_iff_eq, pageSize, Nat.ble_eq] at hc2
-      rw [if_pos hc2] at ha
+      rw [ite_eq_left hc2] at ha
       simp only [Bool.and_eq_true, beq_iff_eq, ltB_eq, decide_eq_true_eq, xInRings, Nat.ble_eq] at h5
       obtain ⟨⟨hs, hd⟩, hlo, hhi⟩ := h5
-      rw [if_neg (by simp only [ne_eq, Decidable.not_not]; omega)] at ha
+      rw [ite_eq_right (by simp only [ne_eq, Decidable.not_not]; omega)] at ha
       rw [mem_one] at ha; subst ha
       simp only [XOk, XAllowed, Model.ptr16]
       xlits
       omega
     · rename_i hc2
       simp only [Bool.and_eq_true, beq_iff_eq, pageSize, Nat.ble_eq] at hc2
-      rw [if_neg hc2] at ha
+      rw [ite_eq_right hc2] at ha
       exact absurd ha not_mem_nil'
 
 /-- A register write the kernel passes on touches only the command ring (CRCR) or the event
@@ -486,7 +486,7 @@ start of the event ring. -/
 theorem run_ok {j : Nat} {cs : List Cap} :
     ∀ a ∈ xAccessesOf 3 xDcbaa (xCmd + 1) xErst xEvents, XOk j cs a := by
   intro a ha
-  simp only [xAccessesOf, Nat.reduceEqDiff, if_false, if_true, List.mem_cons, List.not_mem_nil,
+  simp only [xAccessesOf, Nat.reduceEqDiff, ite_false, ite_true, List.mem_cons, List.not_mem_nil,
     or_false] at ha
   rcases ha with rfl | rfl | rfl | rfl <;> simp only [XOk, XAllowed, Model.ptr16] <;> xlits <;>
     first | omega | decide
@@ -529,7 +529,7 @@ theorem sysXhci_ok (s : KState) (t : Task) (ci op x y z : Nat) :
             % 2 ^ 32 = y / 4294967296 % 4294967296 := by omega
         have e2 : (y / 4294967296 % 4294967296 + xGuard z (y / 4294967296 % 4294967296) * 4294967296)
             / 2 ^ 32 = xGuard z (y / 4294967296 % 4294967296) := by omega
-        simp only [xAccessesOf, Nat.reduceEqDiff, if_false, if_true, e1, e2]
+        simp only [xAccessesOf, Nat.reduceEqDiff, ite_false, ite_true, e1, e2]
         intro a ha
         rcases mem_app.1 ha with ha | ha
         · exact trb_ok hz hok a ha
@@ -539,7 +539,7 @@ theorem sysXhci_ok (s : KState) (t : Task) (ci op x y z : Nat) :
     · split
       · rename_i hok
         rw [acc_xReply]
-        simp only [xAccessesOf, Nat.reduceEqDiff, if_false, if_true, Nat.le_add_right,
+        simp only [xAccessesOf, Nat.reduceEqDiff, ite_false, ite_true, Nat.le_add_right,
           Nat.add_sub_cancel_left]
         exact ctx_ok hok
       · simp [acc_ret]
@@ -628,7 +628,7 @@ theorem xhci_region_readonly {s : KState} (h : Reachable s) {j : Nat} {t : Task}
     unfold XhciFrame at hx
     simp only [xhciFirst, xhciPages, framesPerTask, usbTask] at hx
     have hp : f < poolFrames := by simp only [poolFrames, framesPerTask, maxTasks]; omega
-    unfold owner; rw [if_pos hp]
+    unfold owner; rw [ite_eq_left hp]
     simp only [framesPerTask, usbTask]; omega
   rw [ho] at hr hc0
   refine ⟨?_, ?_⟩
@@ -673,7 +673,7 @@ theorem data_allowed {s : KState} (hr : Reachable s) {t : Task} (ht : nth? s.tas
     have hf2 : (x - frameBase) / pageSize < framesPerTask * (usbTask + 1) := by
       simp only [pageSize, frameBase, framesPerTask, usbTask] at *; omega
     unfold owner
-    rw [if_pos (by simp only [pageSize, frameBase, framesPerTask, usbTask, poolFrames, maxTasks] at *; omega)]
+    rw [ite_eq_left (by simp only [pageSize, frameBase, framesPerTask, usbTask, poolFrames, maxTasks] at *; omega)]
     simp only [framesPerTask, usbTask] at hf1 hf2 ⊢
     omega
   · intro hin
@@ -847,17 +847,17 @@ theorem xhci_guard_safe (s : KState) (num a0 a1 a2 a3 a4 : Nat)
     · left; unfold xTrbAddr at hi; xlits; split at hi <;> omega
     · exact Or.inr hi
   · unfold xTrbOk at hok; dsimp only at hok
-    rw [hl, if_pos rfl] at hok
+    rw [hl, ite_eq_left rfl] at hok
     simp only [Bool.and_eq_true, beq_iff_eq] at hok
     obtain ⟨⟨-, hp⟩, hs⟩ := hok
     simp only [xLast, Bool.or_eq_true, beq_iff_eq] at hl
     unfold xTrbAddr
     xlits
     rcases hl with hl | hl
-    · left; refine ⟨by rw [if_pos (by omega)]; omega, ?_, hs⟩
-      rw [hp]; simp only [ltB_eq, decide_eq_true_eq]; rw [if_pos (by omega)]
-    · right; left; refine ⟨by rw [if_neg (by omega)]; omega, ?_, hs⟩
-      rw [hp]; simp only [ltB_eq, decide_eq_true_eq]; rw [if_neg (by omega)]
+    · left; refine ⟨by rw [ite_eq_left (by omega)]; omega, ?_, hs⟩
+      rw [hp]; simp only [ltB_eq, decide_eq_true_eq]; rw [ite_eq_left (by omega)]
+    · right; left; refine ⟨by rw [ite_eq_right (by omega)]; omega, ?_, hs⟩
+      rw [hp]; simp only [ltB_eq, decide_eq_true_eq]; rw [ite_eq_right (by omega)]
 
 /-! ## What the xHCI memory holds from boot -/
 
@@ -869,8 +869,8 @@ theorem xhciBoot_other {i : Nat} (h0 : 514 ≤ i) (hc1 : i ≠ 3 * 512 + 2 * (xC
     (hin : ¬ (32 * 512 ≤ i ∧ i < 48 * 512 ∧ i % 8 = 1 ∧ 2 ≤ i % 512 / 8 ∧ i % 512 / 8 < 33)) :
     xhciBoot i = 0 := by
   unfold xhciBoot
-  rw [if_neg (by omega), if_neg (by omega), if_neg (by omega), if_neg (by omega), if_neg hc1,
-    if_neg hc2, if_neg hr1, if_neg hr2, if_neg hin]
+  rw [ite_eq_right (by omega), ite_eq_right (by omega), ite_eq_right (by omega), ite_eq_right (by omega), ite_eq_right hc1,
+    ite_eq_right hc2, ite_eq_right hr1, ite_eq_right hr2, ite_eq_right hin]
 
 theorem boot_cmd {k : Nat} (hk : k + 1 < xCmdTrbs) :
     xhciBoot (3 * 512 + 2 * k) = 0 ∧ xhciBoot (3 * 512 + 2 * k + 1) = 0 := by
@@ -899,9 +899,9 @@ theorem boot_input_hi {q c u : Nat} (hq : q < xInputs) (hc : c < 33) (hu : u < 2
   simp only [xInputs] at hq
   split
   · unfold xhciBoot
-    rw [if_neg (by omega), if_neg (by omega), if_neg (by omega), if_neg (by omega),
-      if_neg (by simp only [xCmdTrbs]; omega), if_neg (by simp only [xCmdTrbs]; omega),
-      if_neg (by simp only [xRingTrbs]; omega), if_neg (by simp only [xRingTrbs]; omega), if_pos (by omega)]
+    rw [ite_eq_right (by omega), ite_eq_right (by omega), ite_eq_right (by omega), ite_eq_right (by omega),
+      ite_eq_right (by simp only [xCmdTrbs]; omega), ite_eq_right (by simp only [xCmdTrbs]; omega),
+      ite_eq_right (by simp only [xRingTrbs]; omega), ite_eq_right (by simp only [xRingTrbs]; omega), ite_eq_left (by omega)]
   · exact xhciBoot_other (by omega) (by simp only [xCmdTrbs]; omega) (by simp only [xCmdTrbs]; omega)
       (by simp only [xRingTrbs]; omega) (by simp only [xRingTrbs]; omega) (by omega)
 
@@ -928,11 +928,11 @@ theorem xhci_boot_ok :
   · right; left; exact ⟨by decide, by decide⟩
   · intro i h1 h2
     have : xhciBoot i = xOut + (i - 1) % xSlots * pageSize := by
-      unfold xhciBoot; rw [if_pos h2, if_neg (by omega)]
+      unfold xhciBoot; rw [ite_eq_left h2, ite_eq_right (by omega)]
     rw [this]; exact ⟨(i - 1) % xSlots, Nat.mod_lt _ (by decide), rfl⟩
   · intro k hk
     have : xhciBoot (256 + k) = xScratch + k % xScratchPages * pageSize := by
-      unfold xhciBoot; rw [if_neg (by omega), if_pos (by omega), Nat.add_sub_cancel_left]
+      unfold xhciBoot; rw [ite_eq_right (by omega), ite_eq_left (by omega), Nat.add_sub_cancel_left]
     rw [this]; exact ⟨k % xScratchPages, Nat.mod_lt _ (by decide), rfl⟩
   · have e1 : xhciBoot 512 = xEvents := by unfold xhciBoot; simp
     have e2 : xhciBoot 513 = xEventTrbs := by unfold xhciBoot; simp
@@ -953,14 +953,14 @@ theorem xhci_boot_ok :
       have e4 : (tLink * 1024 + 2) * 4294967296 / 2 ^ 32 = 6146 := by decide
       have e5 : Model.trbType 6146 = 6 := by decide
       rw [e1, e2, e3, e4] at ha
-      simp only [Model.commandTrb, e5, if_true, Model.intrTarget, Nat.zero_div, Nat.zero_mod,
-        ne_eq, not_true_eq_false, if_false, mem_one] at ha
+      simp only [Model.commandTrb, e5, ite_true, Model.intrTarget, Nat.zero_div, Nat.zero_mod,
+        ne_eq, not_true_eq_false, ite_false, mem_one] at ha
       subst ha
       simp only [XAllowed]; decide
   · intro m hm a ha
     have hm2 : m + xCmdTrbs < xTrbs := by simp only [xTrbs, xCmdTrbs, xRingTrbs] at hm ⊢; omega
     have hA : xRings + 16 * m = xTrbAddr (m + xCmdTrbs) := by
-      unfold xTrbAddr; rw [if_neg (by omega), Nat.add_sub_cancel]
+      unfold xTrbAddr; rw [ite_eq_right (by omega), Nat.add_sub_cancel]
     rw [hA, trbAt_ring (by omega) hm2] at ha
     by_cases hl : m + 1 < xRingTrbs
     · obtain ⟨e1, e2⟩ := boot_ring hl
@@ -976,7 +976,7 @@ theorem xhci_boot_ok :
       have e5 : Model.trbType 6146 = 6 := by decide
       rw [e1, e2, e3, e4] at ha
       simp only [Model.transferTrb, e5, Model.intrTarget, Nat.zero_div, Nat.zero_mod,
-        ne_eq, not_true_eq_false, if_false, if_true] at ha
+        ne_eq, not_true_eq_false, ite_false, ite_true] at ha
       simp at ha
       subst ha
       simp only [XAllowed]; decide
@@ -990,19 +990,19 @@ theorem xhci_boot_ok :
     have hin : ¬ (q * 4096 + c * 64 + u * 16 ≥ xInputs * 4096 ∨ (q * 4096 + c * 64 + u * 16) % 16 ≠ 0 ∨
         (q * 4096 + c * 64 + u * 16) % 64 / 16 ≥ 2 ∨ (q * 4096 + c * 64 + u * 16) % 4096 / 64 ≥ 33) := by
       simp only [xInputs] at hq ⊢; omega
-    rw [if_neg hin, hcz, huz] at ha
+    rw [ite_eq_right hin, hcz, huz] at ha
     by_cases h2 : 2 ≤ c ∧ u = 0
-    · rw [if_pos h2] at hi
-      rw [hi, if_neg (by omega), if_pos h2] at ha
-      simp only [Nat.zero_div, Nat.zero_mod, ne_eq, not_true_eq_false, if_false, mem_one] at ha
+    · rw [ite_eq_left h2] at hi
+      rw [hi, ite_eq_right (by omega), ite_eq_left h2] at ha
+      simp only [Nat.zero_div, Nat.zero_mod, ne_eq, not_true_eq_false, ite_false, mem_one] at ha
       subst ha
       simp only [XAllowed]; decide
-    · rw [if_neg h2] at hi
+    · rw [ite_eq_right h2] at hi
       rw [hi] at ha
       by_cases h1 : c = 1 ∧ u = 0
-      · rw [if_pos h1] at ha
+      · rw [ite_eq_left h1] at ha
         simp [Model.intrTarget] at ha
-      · rw [if_neg h1, if_neg h2] at ha
+      · rw [ite_eq_right h1, ite_eq_right h2] at ha
         exact absurd ha not_mem_nil'
 
 /-! ## The checks let a driver do its work

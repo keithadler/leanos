@@ -430,6 +430,11 @@ void lean_internal_panic_unreachable(void) { kpanic("unreachable code reached");
 void lean_internal_panic_rc_overflow(void) { kpanic("reference count overflow"); }
 void lean_internal_panic_overflow(void) { kpanic("integer overflow"); }
 
+/* Lean 4.36: each module's initializer calls this first, to bring up the hosted runtime
+   (its allocator and thread state). The kernel's runtime needs no setup: the heap is ready
+   before the first Lean call. */
+void lean_initialize_runtime_module(void) {}
+
 lean_object *lean_sorry(uint8_t u) { (void)u; kpanic("executed `sorry`"); }
 
 #define UNSUPPORTED(name, R, ...) \
@@ -445,5 +450,5 @@ UNSUPPORTED(lean_string_mk, O, O a)
 UNSUPPORTED(lean_string_to_utf8, O, O a)
 UNSUPPORTED(lean_mk_string_unchecked, O, char const *s, size_t sz, size_t len)
 UNSUPPORTED(lean_mk_string, O, char const *s)
-UNSUPPORTED(lean_string_push, O, O s, uint32_t c)
+UNSUPPORTED(lean_string_push_cold, O, O s, uint32_t c)
 UNSUPPORTED(lean_string_append, O, O a, O b)

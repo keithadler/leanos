@@ -55,17 +55,17 @@ theorem devPages_eq : devPages = 1 := rfl
 
 theorem physOf_pool {s : KState} {f : Nat} (hf : f < poolFrames) :
     physOf s f = 67108864 + f * 4096 := by
-  unfold physOf; rw [if_pos hf]; rfl
+  unfold physOf; rw [ite_eq_left hf]; rfl
 
 theorem physOf_fb {s : KState} {f : Nat} (hf : ¬ f < poolFrames) (hd : f < devBase) :
     physOf s f = s.fbBase + (f - 5120) * 4096 := by
-  unfold physOf; rw [if_neg hf, if_pos hd]; rfl
+  unfold physOf; rw [ite_eq_right hf, ite_eq_left hd]; rfl
 
 theorem physOf_dev {s : KState} {f : Nat} (hd : devBase ≤ f) :
     physOf s f = 0xFE201000 := by
   have h1 : ¬ f < poolFrames := by rw [devBase_eq] at hd; rw [poolFrames_eq]; omega
   have h2 : ¬ f < devBase := by omega
-  unfold physOf; rw [if_neg h1, if_neg h2]; simp [devicePA]
+  unfold physOf; rw [ite_eq_right h1, ite_eq_right h2]; simp [devicePA]
 
 theorem fbSane_spec {b : Nat} (h : fbSane b = true) :
     b % 4096 = 0 ∧ 88080384 ≤ b ∧ b + 2457600 ≤ 0xFE000000 := by
@@ -178,7 +178,7 @@ theorem pageDesc_read (s : KState) (m : Mapping) (hr : m.rights.r = true) :
       (if m.frame < poolFrames then 4 else if m.frame < devBase then 8 else 0) +
       (if m.rights.w then 64 else 192) + 768 + 1024 + 2048 + 9007199254740992 +
       (if m.rights.x then 0 else 18014398509481984) := by
-  simp only [pageDesc, hr, if_true, dValid, dTableOrPage, attrNormal, attrNoCache, attrDevice,
+  simp only [pageDesc, hr, ite_true, dValid, dTableOrPage, attrNormal, attrNoCache, attrDevice,
     apUserRW, apUserRO, shInner, accessFlag, notGlobal, privNoExec, userNoExec]
   all_goals omega
 
@@ -232,7 +232,7 @@ theorem walk_eq_view {s : KState} (h : Reachable s) (i : Nat)
   · have : ¬ (userBase ≤ va ∧ va < userBase + userPages * pageSize) := by
       simp [userBase, userPages, pageSize] at hva ⊢; omega
     simp [hva, this]
-  simp only [hva, if_false]
+  simp only [hva, ite_false]
   have hk1 : Arm.field va 30 9 < 512 := by simp [Arm.field]; omega
   rw [h1 _ hk1]
   by_cases h2k : Arm.field va 30 9 = 2
@@ -243,7 +243,7 @@ theorem walk_eq_view {s : KState} (h : Reachable s) (i : Nat)
     have ht1 : Arm.field (l2 + 3) 0 2 = 3 := by simp [Arm.field]; omega
     have ho1 : Arm.outAddr (l2 + 3) 12 = l2 := by simp [Arm.outAddr, Arm.field]; omega
     simp only [ht1, ho1]
-    simp only [show (3 : Nat) = 1 ↔ False by decide, if_false, if_true]
+    simp only [show (3 : Nat) = 1 ↔ False by decide, ite_false, ite_true]
     have hk2 : Arm.field va 21 9 < 512 := by simp [Arm.field]; omega
     rw [h2 _ hk2]
     by_cases h0 : Arm.field va 21 9 < l3Tables
@@ -258,7 +258,7 @@ theorem walk_eq_view {s : KState} (h : Reachable s) (i : Nat)
           l3 + Arm.field va 21 9 * 4096 := by
         simp only [Arm.outAddr, Arm.field] at h16 ⊢; simp; omega
       simp only [ht2, ho2]
-      simp only [show (3 : Nat) = 1 ↔ False by decide, if_false, if_true]
+      simp only [show (3 : Nat) = 1 ↔ False by decide, ite_false, ite_true]
       have hk3 : Arm.field va 12 9 < 512 := by simp [Arm.field]; omega
       -- the level-3 entry is entry `vpn` of the task's 8192-word array
       have hidx : Arm.field va 21 9 * 512 + Arm.field va 12 9 < userPages := by
@@ -270,7 +270,7 @@ theorem walk_eq_view {s : KState} (h : Reachable s) (i : Nat)
         simp [Arm.field] at h2k h16; simp [userBase, userPages, pageSize]; omega
       have hvpn : (va - userBase) / pageSize = Arm.field va 21 9 * 512 + Arm.field va 12 9 := by
         simp [Arm.field] at h2k h16 ⊢; simp [userBase, pageSize]; omega
-      simp only [hin, and_self, if_true, hvpn]
+      simp only [hin, and_self, ite_true, hvpn]
       unfold l3Word
       split
       · rename_i m hm
@@ -295,18 +295,18 @@ theorem walk_eq_view {s : KState} (h : Reachable s) (i : Nat)
   · -- every other gigabyte holds only kernel entries, which user mode cannot use
     have hout : ¬ (userBase ≤ va ∧ va < userBase + userPages * pageSize) := by
       simp [Arm.field] at h2k; simp [userBase, userPages, pageSize]; omega
-    simp only [hout, if_false]
+    simp only [hout, ite_false]
     have hd1 : l1Word l2 (Arm.field va 30 9) = kernelL1Word (Arm.field va 30 9) := by
       simp [l1Word, h2k]
     rw [hd1]
     unfold kernelL1Word
     by_cases hz : Arm.field va 30 9 = 0
-    · simp only [hz, if_true]
+    · simp only [hz, ite_true]
       simp [Arm.leaf, Arm.field, dValid, attrNormal, shInner, accessFlag, userNoExec]
     · by_cases h3k : Arm.field va 30 9 = 3
-      · simp only [h3k, if_true, if_false, show (3 : Nat) = 0 ↔ False by decide]
+      · simp only [h3k, ite_true, ite_false, show (3 : Nat) = 0 ↔ False by decide]
         simp [Arm.leaf, Arm.field, dValid, attrDevice, accessFlag, privNoExec, userNoExec]
-      · simp only [hz, h3k, if_false]
+      · simp only [hz, h3k, ite_false]
         simp [Arm.field]
 
 /-! ## Consequences -/
