@@ -46,17 +46,26 @@ def run(name, ready):
     return [*keys(f"run {name}\r"), wait(ready), *front]
 
 def qemu_cpu():
-    """Host CPU seconds QEMU (this script's child) has used so far."""
-    total = 0.0
-    kids = subprocess.run(["pgrep", "-P", str(os.getpid())], capture_output=True, text=True).stdout.split()
-    for pid in kids:
-        t = subprocess.run(["ps", "-o", "time=", "-p", pid], capture_output=True, text=True).stdout.strip()
-        if not t:
-            continue
-        days, _, t = t.rpartition("-")
-        secs = sum(float(p) * 60 ** i for i, p in enumerate(reversed(t.split(":"))))
-        total += secs + 86400 * int(days or 0)
-    return total
+    """Host CPU seconds QEMU (this script's child) has used so far, or None if the host
+    would not say. On a busy host pgrep or ps now and then comes back with nothing (with
+    four tests at once, one such reading counted as 0 seconds made the measurement -253% of
+    a core, and the test failed with a system that was fine), so a reading that finds no
+    QEMU is taken again, for up to a second, and never counted as 0."""
+    for _ in range(20):
+        total, found = 0.0, False
+        kids = subprocess.run(["pgrep", "-P", str(os.getpid())], capture_output=True, text=True).stdout.split()
+        for pid in kids:
+            t = subprocess.run(["ps", "-o", "time=", "-p", pid], capture_output=True, text=True).stdout.strip()
+            if not t:
+                continue
+            days, _, t = t.rpartition("-")
+            secs = sum(float(p) * 60 ** i for i, p in enumerate(reversed(t.split(":"))))
+            total += secs + 86400 * int(days or 0)
+            found = True
+        if found:
+            return total
+        time.sleep(0.05)
+    return None
 
 samples = []
 def on_line(line):
@@ -65,7 +74,10 @@ def on_line(line):
         samples.append((time.monotonic(), qemu_cpu()))
         if len(samples) % 2 == 0:
             (t0, c0), (t1, c1) = samples[-2:]
-            print(f"freeze: QEMU used {100 * (c1 - c0) / (t1 - t0):.0f}% of a host core for {t1 - t0:.1f} s", flush=True)
+            if c0 is None or c1 is None or c1 < c0:   # CPU time used never goes down
+                print(f"freeze: the host did not say how much CPU QEMU used ({c0} s, then {c1} s)", flush=True)
+            else:
+                print(f"freeze: QEMU used {100 * (c1 - c0) / (t1 - t0):.0f}% of a host core for {t1 - t0:.1f} s", flush=True)
 
 IDLE = [*keys("ps\r"), wait("terminal: ps"), pause(6), *keys("ps\r"), wait("terminal: ps")]
 steps = [*wclick("alice", *CLOSE), wait("alice: window closed"),
@@ -116,7 +128,7 @@ echo "$out" | grep -q "^leanos: switched off" || fail "the machine did not switc
 
 # No spinning: 11 windows waiting cost about what 2 do.
 cpu=$(echo "$out" | sed -n 's/^freeze: QEMU used \([0-9]*\)% .*/\1/p')
-[ "$(echo "$cpu" | wc -l | tr -d ' ')" = 2 ] || fail "no CPU measurement"
+[ "$(echo "$cpu" | wc -l | tr -d ' ')" = 2 ] || fail "no CPU measurement: $(echo "$out" | grep "^freeze: " | tr '\n' ';')"
 two=$(echo "$cpu" | sed -n 1p)
 eleven=$(echo "$cpu" | sed -n 2p)
 [ "$eleven" -le $((two + 40)) ] || fail "with 11 windows waiting QEMU used $eleven% of a host core, with 2 $two%: something spins"
